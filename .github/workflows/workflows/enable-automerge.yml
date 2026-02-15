@@ -1,0 +1,22 @@
+name: enable-automerge-for-agents
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  enable:
+    if: |
+      github.event.pull_request.draft == false &&
+      (github.event.pull_request.user.login == 'github-copilot' || contains(github.event.pull_request.user.login, 'copilot') )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (squash)
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          merge-method: squash
