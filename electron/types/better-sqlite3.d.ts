@@ -10,8 +10,8 @@ declare module 'better-sqlite3' {
       prepare(sql: string): Statement;
       exec(sql: string): void;
       close(): void;
-      pragma?(source: string, options?: any): any;
-      transaction?<T extends (...args: any[]) => any>(fn: T): T;
+      pragma(source: string, options?: any): any;
+      transaction<T extends (...args: any[]) => any>(fn: T): T;
     }
 
     interface Statement {
