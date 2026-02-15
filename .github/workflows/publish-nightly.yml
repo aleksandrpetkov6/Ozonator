@@ -17,9 +17,11 @@ jobs:
     # Publish only for direct pushes/merges to main (not PRs)
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
+
     defaults:
       run:
         shell: pwsh
+
     steps:
       - uses: actions/checkout@v4
 
@@ -40,48 +42,70 @@ jobs:
       - name: Build (dist)
         run: npm run dist -- --publish never
 
-      - name: Prepare assets (exe + portable zip)
-        id: prep
+      - name: Collect assets (exe + portable zip)
+        id: collect
         run: |
           $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
 
-          if (-not (Test-Path "release")) { throw "release/ folder not found" }
+          # Installer
+          $installer = $null
+          $preferred = @(
+            (Join-Path $PWD 'release\Озонатор.exe'),
+            (Join-Path $PWD 'release\Ozonator.exe'),
+            (Join-Path $PWD 'Озонатор.exe'),
+            (Join-Path $PWD 'Ozonator.exe')
+          )
 
-          # Installer: take the newest .exe in release/
-          $exe = Get-ChildItem -Path "release" -Recurse -File -Filter "*.exe" |
-                 Sort-Object LastWriteTime -Descending |
-                 Select-Object -First 1
-          if (-not $exe) { throw "No .exe found in release/" }
-
-          # Portable: zip win-unpacked if present
-          $portableZip = Join-Path $PWD "portable-win-unpacked.zip"
-          $winUnpacked = Get-ChildItem -Path "release" -Directory -Recurse |
-                         Where-Object { $_.Name -eq "win-unpacked" } |
-                         Select-Object -First 1
-          $hasPortable = $false
-          if ($winUnpacked) {
-            if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
-            Compress-Archive -Path (Join-Path $winUnpacked.FullName "*") -DestinationPath $portableZip
-            $hasPortable = $true
+          foreach ($p in $preferred) {
+            if (Test-Path $p) { $installer = $p; break }
           }
 
-          "exe_path=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "portable_ok=$($hasPortable.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if (-not $installer -and (Test-Path 'release')) {
+            $exe = Get-ChildItem -Path 'release' -Recurse -File -Filter '*.exe' |
+                   Sort-Object LastWriteTime -Descending |
+                   Select-Object -First 1
+            if ($exe) { $installer = $exe.FullName }
+          }
+
+          if (-not $installer) { throw "Installer .exe not found" }
+
+          Copy-Item $installer 'artifacts\Ozonator.exe' -Force
+
+          # Portable: zip win-unpacked (optional)
+          $portableZip = Join-Path $PWD 'artifacts\portable-win-unpacked.zip'
+          $portableOk = $false
+          $winUnpacked = $null
+
+          if (Test-Path 'release') {
+            $winUnpacked = Get-ChildItem -Path 'release' -Directory -Recurse |
+                           Where-Object { $_.Name -eq 'win-unpacked' } |
+                           Select-Object -First 1
+          }
+
+          if ($winUnpacked) {
+            if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
+            Compress-Archive -Path (Join-Path $winUnpacked.FullName '*') -DestinationPath $portableZip
+            $portableOk = $true
+          }
+
+          "exe_path=$((Resolve-Path 'artifacts\Ozonator.exe').Path)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "portable_ok=$($portableOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "portable_zip=$portableZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Publish/Update nightly release (tag: nightly)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
-
-          $env:GH_TOKEN = "${{ secrets.GITHUB_TOKEN }}"
 
           gh release view nightly 1>$null 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create nightly --title "nightly" --notes "Automated nightly build" --prerelease
           }
 
-          gh release upload nightly "${{ steps.prep.outputs.exe_path }}" --clobber
+          gh release upload nightly "${{ steps.collect.outputs.exe_path }}" --clobber
 
-          if ("${{ steps.prep.outputs.portable_ok }}" -eq "true") {
-            gh release upload nightly "${{ steps.prep.outputs.portable_zip }}" --clobber
+          if ("${{ steps.collect.outputs.portable_ok }}" -eq "true") {
+            gh release upload nightly "${{ steps.collect.outputs.portable_zip }}" --clobber
           }
