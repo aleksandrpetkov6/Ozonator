@@ -120,7 +120,7 @@ jobs:
         if: always() && steps.install.outputs.ok == 'true'
         continue-on-error: true
         run: |
-          npm run dist *>&1 | Tee-Object -FilePath logs\dist.log
+          npm run dist -- --publish never *>&1 | Tee-Object -FilePath logs\dist.log
           $ok = ($LASTEXITCODE -eq 0)
           "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
