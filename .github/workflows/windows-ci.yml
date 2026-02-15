@@ -132,25 +132,33 @@ jobs:
           $installerOk = $false
           $portableOk = $false
 
-          # 1) Installer: prefer already-renamed root artifact if project uses build.artifactName "../Озонатор.${ext}"
-          $rootExe = Join-Path $PWD 'Озонатор.exe'
-          if (Test-Path $rootExe) {
-            Copy-Item $rootExe -Destination 'artifacts\Озонатор.exe' -Force
-            $installerOk = $true
-          } else {
-            # Find Setup*.exe in release\**
-            if (Test-Path 'release') {
-              $setup = Get-ChildItem -Path 'release' -Recurse -File -Filter '*.exe' |
-                Where-Object { $_.Name -match '(?i)setup' } |
-                Sort-Object LastWriteTime -Descending |
-                Select-Object -First 1
+          # 1) Installer
+$installerOk = $false
 
-              if ($null -ne $setup) {
-                Copy-Item $setup.FullName -Destination 'artifacts\Озонатор.exe' -Force
-                $installerOk = $true
-              }
-            }
-          }
+$preferred = @(
+  (Join-Path $PWD 'release\Озонатор.exe'),
+  (Join-Path $PWD 'Озонатор.exe')
+)
+
+foreach ($p in $preferred) {
+  if (Test-Path $p) {
+    Copy-Item $p 'artifacts\Озонатор.exe' -Force
+    $installerOk = $true
+    break
+  }
+}
+
+if (-not $installerOk -and (Test-Path 'release')) {
+  $exe = Get-ChildItem -Path 'release' -Recurse -File -Filter '*.exe' |
+         Sort-Object LastWriteTime -Descending |
+         Select-Object -First 1
+  if ($exe) {
+    Copy-Item $exe.FullName 'artifacts\Озонатор.exe' -Force
+    $installerOk = $true
+  }
+}
+
+"installer_ok=$installerOk" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
           # 2) Portable: zip win-unpacked
           $winUnpacked = $null
