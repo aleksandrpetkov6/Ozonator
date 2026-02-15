@@ -6,18 +6,20 @@
     "strict": true,
     "jsx": "react-jsx",
     "baseUrl": ".",
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "skipLibCheck": true
   },
   "exclude": [
-    "node_modules",
-    "dist",
-    "out",
-    "release",
     "_backup_patch",
-    "playwright.config.*",
-    "tests/e2e/**",
-    "playwright-report/**",
-    "test-results/**"
+    "dist",
+    "node_modules",
+    "out",
+    "playwright-report",
+    "playwright.config.js",
+    "playwright.config.ts",
+    "release",
+    "test-results"
   ]
 }
