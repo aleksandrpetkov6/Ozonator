@@ -172,7 +172,7 @@ jobs:
 
       - name: Optional E2E (Playwright Electron)
         id: e2e
-        if: always() && steps.install.outputs.ok == 'true' && github.event_name == 'workflow_dispatch' && inputs.run_e2e
+        if: always() && steps.install.outputs.ok == 'true'
         continue-on-error: true
         run: |
           # E2E is stage 2: run only if repo already contains Playwright config + tests.
@@ -472,7 +472,7 @@ jobs:
 
 
       - name: Upload artifact — e2e-results
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.run_e2e
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results
