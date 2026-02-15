@@ -1,0 +1,87 @@
+name: publish-nightly-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+jobs:
+  build_and_release:
+    # Publish only for direct pushes/merges to main (not PRs)
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build (dist)
+        run: npm run dist -- --publish never
+
+      - name: Prepare assets (exe + portable zip)
+        id: prep
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path "release")) { throw "release/ folder not found" }
+
+          # Installer: take the newest .exe in release/
+          $exe = Get-ChildItem -Path "release" -Recurse -File -Filter "*.exe" |
+                 Sort-Object LastWriteTime -Descending |
+                 Select-Object -First 1
+          if (-not $exe) { throw "No .exe found in release/" }
+
+          # Portable: zip win-unpacked if present
+          $portableZip = Join-Path $PWD "portable-win-unpacked.zip"
+          $winUnpacked = Get-ChildItem -Path "release" -Directory -Recurse |
+                         Where-Object { $_.Name -eq "win-unpacked" } |
+                         Select-Object -First 1
+          $hasPortable = $false
+          if ($winUnpacked) {
+            if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
+            Compress-Archive -Path (Join-Path $winUnpacked.FullName "*") -DestinationPath $portableZip
+            $hasPortable = $true
+          }
+
+          "exe_path=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "portable_ok=$($hasPortable.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "portable_zip=$portableZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Publish/Update nightly release (tag: nightly)
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $env:GH_TOKEN = "${{ secrets.GITHUB_TOKEN }}"
+
+          gh release view nightly 1>$null 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create nightly --title "nightly" --notes "Automated nightly build" --prerelease
+          }
+
+          gh release upload nightly "${{ steps.prep.outputs.exe_path }}" --clobber
+
+          if ("${{ steps.prep.outputs.portable_ok }}" -eq "true") {
+            gh release upload nightly "${{ steps.prep.outputs.portable_zip }}" --clobber
+          }
