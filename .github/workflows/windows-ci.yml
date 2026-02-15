@@ -442,7 +442,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Озонатор.exe
+          name: Ozonator.exe
           path: artifacts/Озонатор.exe
           if-no-files-found: warn
 
