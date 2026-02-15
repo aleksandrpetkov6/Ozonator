@@ -8,5 +8,16 @@
     "baseUrl": ".",
     "types": ["node"],
     "skipLibCheck": true
-  }
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "out",
+    "release",
+    "_backup_patch",
+    "playwright.config.*",
+    "tests/e2e/**",
+    "playwright-report/**",
+    "test-results/**"
+  ]
 }
