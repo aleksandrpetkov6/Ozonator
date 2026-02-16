@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       patch_path:
-        description: "Path to .patch file in repo"
+        description: "Path to .patch file in repo (e.g. patches/latest.patch)"
         required: true
         default: "patches/latest.patch"
       base_branch:
-        description: "Base branch"
+        description: "Base branch (usually main)"
         required: true
         default: "main"
 
@@ -25,9 +25,20 @@ jobs:
         with:
           ref: ${{ inputs.base_branch }}
 
+      - name: Validate patch file exists
+        run: |
+          if [ ! -f "${{ inputs.patch_path }}" ]; then
+            echo "::error::Patch file not found: ${{ inputs.patch_path }}"
+            echo "Create it in the repo first (e.g. Add file -> Create new file -> patches/latest.patch)"
+            exit 1
+          fi
+
+      - name: Check patch applies cleanly
+        run: |
+          git apply --check "${{ inputs.patch_path }}"
+
       - name: Apply patch
         run: |
-          test -f "${{ inputs.patch_path }}"
           git apply --whitespace=fix "${{ inputs.patch_path }}"
 
       - name: Create Pull Request
