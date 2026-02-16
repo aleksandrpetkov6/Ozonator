@@ -72,19 +72,37 @@ jobs:
           echo "---- PATCH PREVIEW (first 60 lines) ----"
           sed -n '1,60p' "$OUT" || true
 
-      - name: Check patch applies cleanly
+      - name: Check patch applicability
+        id: chk
         shell: bash
         run: |
           set -euo pipefail
-          git apply --check "${{ steps.mat.outputs.out }}"
+          PATCH="${{ steps.mat.outputs.out }}"
+
+          if git apply --check "$PATCH"; then
+            echo "status=apply" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If reverse-check works, the patch is likely already applied.
+          if git apply --check -R "$PATCH"; then
+            echo "status=already_applied" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::error::Patch does not apply (and is not detected as already applied)."
+          echo "status=fail" >> "$GITHUB_OUTPUT"
+          exit 1
 
       - name: Apply patch
+        if: steps.chk.outputs.status == 'apply'
         shell: bash
         run: |
           set -euo pipefail
           git apply --whitespace=fix "${{ steps.mat.outputs.out }}"
 
       - name: Create Pull Request
+        if: steps.chk.outputs.status == 'apply'
         id: cpr
         uses: peter-evans/create-pull-request@v6
         with:
@@ -110,6 +128,13 @@ jobs:
         if: always()
         shell: bash
         run: |
+          STATUS="${{ steps.chk.outputs.status }}"
           echo "Trigger: ${{ env.TRIGGER }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Patch applied from: ${{ env.PATCH_PATH }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Patch: ${{ env.PATCH_PATH }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Status: ${STATUS:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${STATUS:-}" = "already_applied" ]; then
+            echo "No changes: patch appears to be already applied to '${{ env.BASE_BRANCH }}'." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           echo "PR: ${{ steps.cpr.outputs.pull-request-url }}" >> "$GITHUB_STEP_SUMMARY"
