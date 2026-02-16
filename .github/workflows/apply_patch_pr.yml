@@ -41,9 +41,10 @@ jobs:
         run: |
           git apply --whitespace=fix "${{ inputs.patch_path }}"
 
-      - name: Create Pull Request
+       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
+          token: ${{ secrets.PR_BOT_TOKEN }}
           branch: bot/apply-patch-${{ github.run_id }}
           base: ${{ inputs.base_branch }}
           title: "Apply patch: ${{ inputs.patch_path }}"
