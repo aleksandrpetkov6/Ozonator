@@ -1,7 +1,0 @@
-diff --git a/ci_ping.txt b/ci_ping.txt
-index 1f4a3d2..2f0d7db 100644
---- a/ci_ping.txt
-+++ b/ci_ping.txt
-@@ -1 +1 @@
--ci ping
-+ci ping v2
