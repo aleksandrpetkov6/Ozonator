@@ -25,43 +25,74 @@ jobs:
         with:
           ref: ${{ inputs.base_branch }}
 
-      - name: Validate patch file exists
+      - name: Require PR_BOT_TOKEN
+        shell: bash
         run: |
-          if [ ! -f "${{ inputs.patch_path }}" ]; then
-            echo "::error::Patch file not found: ${{ inputs.patch_path }}"
-            echo "Create it in the repo first (Add file -> Upload files / Create new file)."
+          set -euo pipefail
+          if [ -z "${{ secrets.PR_BOT_TOKEN }}" ]; then
+            echo "::error::Missing required secret PR_BOT_TOKEN (fine-grained PAT)."
             exit 1
           fi
 
-      - name: Materialize patch (supports .b64)
+      - name: Validate patch file exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "${{ inputs.patch_path }}" ]; then
+            echo "::error::Patch file not found: ${{ inputs.patch_path }}"
+            echo "Tip: add it via GitHub web UI → Add file → Upload files (do not paste)."
+            echo ""
+            echo "Files in patches/:"
+            ls -la patches || true
+            exit 1
+          fi
+
+      - name: Materialize patch
         id: mat
         shell: bash
         run: |
           set -euo pipefail
           SRC="${{ inputs.patch_path }}"
           OUT="/tmp/patch.patch"
-
           cp "$SRC" "$OUT"
-
           echo "out=$OUT" >> "$GITHUB_OUTPUT"
-          echo "---- PATCH PREVIEW (first 40 lines) ----"
-          sed -n '1,40p' "$OUT"
+          echo "---- PATCH PREVIEW (first 60 lines) ----"
+          sed -n '1,60p' "$OUT" || true
 
       - name: Check patch applies cleanly
+        shell: bash
         run: |
+          set -euo pipefail
           git apply --check "${{ steps.mat.outputs.out }}"
 
       - name: Apply patch
+        shell: bash
         run: |
+          set -euo pipefail
           git apply --whitespace=fix "${{ steps.mat.outputs.out }}"
 
       - name: Create Pull Request
+        id: cpr
         uses: peter-evans/create-pull-request@v6
         with:
-          # If PR_BOT_TOKEN exists, use it so PR triggers other workflows. Otherwise fallback to GITHUB_TOKEN.
           token: ${{ secrets.PR_BOT_TOKEN }}
-          branch: patch/apply-${{ github.run_id }}-${{ github.run_attempt }}
+          branch: bot/apply-patch-${{ github.run_id }}-${{ github.run_attempt }}
           base: ${{ inputs.base_branch }}
           title: "Apply patch: ${{ inputs.patch_path }}"
           commit-message: "Apply patch: ${{ inputs.patch_path }}"
           body: "Automated patch apply via workflow_dispatch."
+
+      - name: Enable auto-merge (squash)
+        if: steps.cpr.outputs.pull-request-number != ''
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.PR_BOT_TOKEN }}
+          pull-request-number: ${{ steps.cpr.outputs.pull-request-number }}
+          merge-method: squash
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "Patch applied from: ${{ inputs.patch_path }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "PR: ${{ steps.cpr.outputs.pull-request-url }}" >> "$GITHUB_STEP_SUMMARY"

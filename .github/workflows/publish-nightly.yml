@@ -65,7 +65,11 @@ jobs:
             $hasPortable = $true
           }
 
-          "exe_path=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $stableExe = Join-Path $PWD "Ozonator.exe"
+
+          Copy-Item $exe.FullName $stableExe -Force
+
+          "exe_path=$stableExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "portable_ok=$($hasPortable.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "portable_zip=$portableZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
