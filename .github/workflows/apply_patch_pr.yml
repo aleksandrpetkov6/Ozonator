@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       patch_path:
-        description: "Path to .patch file in repo (e.g. patches/latest.patch)"
+        description: "Path to patch file in repo (.patch or .b64)"
         required: true
         default: "patches/latest.patch"
       base_branch:
@@ -33,22 +33,36 @@ jobs:
             exit 1
           fi
 
-      - name: Show patch header (first 40 lines)
+      - name: Materialize patch (supports .b64)
+        id: mat
+        shell: bash
         run: |
-          sed -n '1,40p' "${{ inputs.patch_path }}"
+          set -euo pipefail
+          SRC="${{ inputs.patch_path }}"
+          OUT="/tmp/patch.patch"
+
+          if [[ "$SRC" == *.b64 ]]; then
+            base64 -d "$SRC" > "$OUT"
+          else
+            cp "$SRC" "$OUT"
+          fi
+
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+          echo "---- PATCH PREVIEW (first 40 lines) ----"
+          sed -n '1,40p' "$OUT"
 
       - name: Check patch applies cleanly
         run: |
-          git apply --check "${{ inputs.patch_path }}"
+          git apply --check "${{ steps.mat.outputs.out }}"
 
       - name: Apply patch
         run: |
-          git apply --whitespace=fix "${{ inputs.patch_path }}"
+          git apply --whitespace=fix "${{ steps.mat.outputs.out }}"
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          # If PR_BOT_TOKEN is present, use it (so PR triggers other workflows). Otherwise fallback to GITHUB_TOKEN.
+          # If PR_BOT_TOKEN exists, use it so PR triggers other workflows. Otherwise fallback to GITHUB_TOKEN.
           token: ${{ secrets.PR_BOT_TOKEN || github.token }}
           branch: bot/apply-patch-${{ github.run_id }}
           base: ${{ inputs.base_branch }}
