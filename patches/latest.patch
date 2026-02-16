@@ -1,8 +1,6 @@
-diff --git a/.github/workflows/apply_patch_pr.yml b/.github/workflows/apply_patch_pr.yml
-index 006072a..9991e35 100644
 --- a/.github/workflows/apply_patch_pr.yml
 +++ b/.github/workflows/apply_patch_pr.yml
-@@ -4,7 +4,7 @@ on:
+@@ -4,7 +4,7 @@
    workflow_dispatch:
      inputs:
        patch_path:
@@ -11,33 +9,36 @@ index 006072a..9991e35 100644
          required: true
          default: "patches/latest.patch"
        base_branch:
-@@ -25,47 +25,65 @@ jobs:
+@@ -25,47 +25,65 @@
          with:
            ref: ${{ inputs.base_branch }}
  
+-      - name: Validate patch file exists
 +      - name: Require PR_BOT_TOKEN
 +        shell: bash
-+        run: |
+         run: |
+-          if [ ! -f "${{ inputs.patch_path }}" ]; then
+-            echo "::error::Patch file not found: ${{ inputs.patch_path }}"
+-            echo "Create it in the repo first (Add file -> Upload files / Create new file)."
 +          if [ -z "${{ secrets.PR_BOT_TOKEN }}" ]; then
 +            echo "::error::Missing required secret PR_BOT_TOKEN (fine-grained PAT)."
-+            exit 1
-+          fi
-+
-       - name: Validate patch file exists
-+        shell: bash
-         run: |
-+          set -euo pipefail
-           if [ ! -f "${{ inputs.patch_path }}" ]; then
-             echo "::error::Patch file not found: ${{ inputs.patch_path }}"
--            echo "Create it in the repo first (Add file -> Upload files / Create new file)."
-+            echo "Tip: add it via GitHub web UI → Add file → Upload files (do not paste)."
-+            echo ""
-+            echo "Files in patches/:"
-+            ls -la patches || true
              exit 1
            fi
  
 -      - name: Materialize patch (supports .b64)
++      - name: Validate patch file exists
++        shell: bash
++        run: |
++          set -euo pipefail
++          if [ ! -f "${{ inputs.patch_path }}" ]; then
++            echo "::error::Patch file not found: ${{ inputs.patch_path }}"
++            echo "Tip: add it via GitHub web UI → Add file → Upload files (do not paste)."
++            echo ""
++            echo "Files in patches/:"
++            ls -la patches || true
++            exit 1
++          fi
++
 +      - name: Materialize patch
          id: mat
          shell: bash
@@ -54,9 +55,10 @@ index 006072a..9991e35 100644
 -
 +          cp "$SRC" "$OUT"
            echo "out=$OUT" >> "$GITHUB_OUTPUT"
-           echo "---- PATCH PREVIEW (first 40 lines) ----"
+-          echo "---- PATCH PREVIEW (first 40 lines) ----"
 -          sed -n '1,40p' "$OUT"
-+          sed -n '1,40p' "$OUT" || true
++          echo "---- PATCH PREVIEW (first 60 lines) ----"
++          sed -n '1,60p' "$OUT" || true
  
        - name: Check patch applies cleanly
 +        shell: bash
@@ -75,9 +77,8 @@ index 006072a..9991e35 100644
          uses: peter-evans/create-pull-request@v6
          with:
 -          # If PR_BOT_TOKEN exists, use it so PR triggers other workflows. Otherwise fallback to GITHUB_TOKEN.
--          token: ${{ secrets.PR_BOT_TOKEN || github.token }}
-+          token: ${{ secrets.PR_BOT_TOKEN }}
-           branch: bot/apply-patch-${{ github.run_id }}
+           token: ${{ secrets.PR_BOT_TOKEN }}
+           branch: bot/apply-patch-${{ github.run_id }}-${{ github.run_attempt }}
            base: ${{ inputs.base_branch }}
            title: "Apply patch: ${{ inputs.patch_path }}"
            commit-message: "Apply patch: ${{ inputs.patch_path }}"
