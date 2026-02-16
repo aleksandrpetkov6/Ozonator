@@ -1,17 +1,81 @@
-diff --git a/electron/main/index.ts b/electron/main/index.ts
-index 0af0f5c..f2b17c4 100644
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -29,7 +29,11 @@ function createWindow() {
-   })
+--- a/.github/workflows/apply_patch_pr.yml
++++ b/.github/workflows/apply_patch_pr.yml
+@@ -11,10 +11,23 @@
+         description: "Base branch (usually main)"
+         required: true
+         default: "main"
++  push:
++    branches: [main]
++    paths:
++      - patches/latest.patch
++
++concurrency:
++  group: apply-patch-pr
++  cancel-in-progress: true
  
-   mainWindow.once('ready-to-show', () => {
--    try { mainWindow?.show() } catch {}
-+    try {
-+      // Стартуем развернутыми на весь экран (maximize), но не в fullscreen/kiosk.
-+      mainWindow?.maximize()
-+      mainWindow?.show()
-+    } catch {}
-   })
+ permissions:
+   contents: write
+   pull-requests: write
++
++env:
++  PATCH_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.patch_path || 'patches/latest.patch' }}
++  BASE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.base_branch || 'main' }}
++  TRIGGER: ${{ github.event_name }}
  
-   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+ jobs:
+   apply:
+@@ -23,7 +36,7 @@
+       - name: Checkout
+         uses: actions/checkout@v4
+         with:
+-          ref: ${{ inputs.base_branch }}
++          ref: ${{ env.BASE_BRANCH }}
+ 
+       - name: Require PR_BOT_TOKEN
+         shell: bash
+@@ -38,8 +51,8 @@
+         shell: bash
+         run: |
+           set -euo pipefail
+-          if [ ! -f "${{ inputs.patch_path }}" ]; then
+-            echo "::error::Patch file not found: ${{ inputs.patch_path }}"
++          if [ ! -f "${{ env.PATCH_PATH }}" ]; then
++            echo "::error::Patch file not found: ${{ env.PATCH_PATH }}"
+             echo "Tip: add it via GitHub web UI → Add file → Upload files (do not paste)."
+             echo ""
+             echo "Files in patches/:"
+@@ -52,7 +65,7 @@
+         shell: bash
+         run: |
+           set -euo pipefail
+-          SRC="${{ inputs.patch_path }}"
++          SRC="${{ env.PATCH_PATH }}"
+           OUT="/tmp/patch.patch"
+           cp "$SRC" "$OUT"
+           echo "out=$OUT" >> "$GITHUB_OUTPUT"
+@@ -77,10 +90,13 @@
+         with:
+           token: ${{ secrets.PR_BOT_TOKEN }}
+           branch: bot/apply-patch-${{ github.run_id }}-${{ github.run_attempt }}
+-          base: ${{ inputs.base_branch }}
+-          title: "Apply patch: ${{ inputs.patch_path }}"
+-          commit-message: "Apply patch: ${{ inputs.patch_path }}"
+-          body: "Automated patch apply via workflow_dispatch."
++          base: ${{ env.BASE_BRANCH }}
++          title: "Apply patch: ${{ env.PATCH_PATH }}"
++          commit-message: "Apply patch: ${{ env.PATCH_PATH }}"
++          body: |
++            Automated patch apply.
++            Trigger: ${{ env.TRIGGER }}
++            Source patch: ${{ env.PATCH_PATH }}
+ 
+       - name: Enable auto-merge (squash)
+         if: steps.cpr.outputs.pull-request-number != ''
+@@ -94,5 +110,6 @@
+         if: always()
+         shell: bash
+         run: |
+-          echo "Patch applied from: ${{ inputs.patch_path }}" >> "$GITHUB_STEP_SUMMARY"
++          echo "Trigger: ${{ env.TRIGGER }}" >> "$GITHUB_STEP_SUMMARY"
++          echo "Patch applied from: ${{ env.PATCH_PATH }}" >> "$GITHUB_STEP_SUMMARY"
+           echo "PR: ${{ steps.cpr.outputs.pull-request-url }}" >> "$GITHUB_STEP_SUMMARY"
