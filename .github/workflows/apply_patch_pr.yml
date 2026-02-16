@@ -29,7 +29,7 @@ jobs:
         run: |
           if [ ! -f "${{ inputs.patch_path }}" ]; then
             echo "::error::Patch file not found: ${{ inputs.patch_path }}"
-            echo "Create it in the repo first (e.g. Add file -> Create new file -> patches/latest.patch)"
+            echo "Create it in the repo first (Add file -> Create new file -> patches/latest.patch)"
             exit 1
           fi
 
@@ -41,7 +41,7 @@ jobs:
         run: |
           git apply --whitespace=fix "${{ inputs.patch_path }}"
 
-       - name: Create Pull Request
+      - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.PR_BOT_TOKEN }}
