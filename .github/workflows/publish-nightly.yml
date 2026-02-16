@@ -51,15 +51,16 @@ jobs:
 
           # Installer: take the newest .exe in release/
           $exe = Get-ChildItem -Path "release" -Recurse -File -Filter "*.exe" |
-                 Sort-Object LastWriteTime -Descending |
-                 Select-Object -First 1
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
           if (-not $exe) { throw "No .exe found in release/" }
 
           # Portable: zip win-unpacked if present
           $portableZip = Join-Path $PWD "portable-win-unpacked.zip"
           $winUnpacked = Get-ChildItem -Path "release" -Directory -Recurse |
-                         Where-Object { $_.Name -eq "win-unpacked" } |
-                         Select-Object -First 1
+            Where-Object { $_.Name -eq "win-unpacked" } |
+            Select-Object -First 1
+
           $hasPortable = $false
           if ($winUnpacked) {
             if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
