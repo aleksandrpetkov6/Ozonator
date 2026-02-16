@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       run_e2e:
-        description: 'Run optional E2E (Playwright Electron)'
+        description: "Run optional E2E (Playwright Electron)"
         type: boolean
         default: false
 
@@ -36,7 +36,6 @@ jobs:
         id: install
         run: |
           $ok = $true
-
           try {
             npm ci *>&1 | Tee-Object -FilePath logs\install.log
             if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
@@ -70,7 +69,6 @@ jobs:
 
           $status = 'skipped'
           $ok = $true
-
           if ($hasTypecheck) {
             npm run typecheck *>&1 | Tee-Object -FilePath logs\typecheck.log
             $ok = ($LASTEXITCODE -eq 0)
@@ -101,7 +99,6 @@ jobs:
 
           $status = 'skipped'
           $ok = $true
-
           if ($hasTest) {
             npm test *>&1 | Tee-Object -FilePath logs\unit.log
             $ok = ($LASTEXITCODE -eq 0)
@@ -174,7 +171,6 @@ jobs:
           "installer_ok=$($installerOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "portable_ok=$($portableOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-
       - name: Optional E2E (Playwright Electron)
         id: e2e
         if: always() && steps.install.outputs.ok == 'true'
@@ -185,7 +181,7 @@ jobs:
           $hasTests = Test-Path 'tests\e2e'
 
           if (-not $hasCfg -or -not $hasTests) {
-            "E2E skipped: playwright.config.ts and/or tests\\e2e are not present in repo" | Tee-Object -FilePath logs\e2e.log
+            "E2E skipped: playwright.config.ts and/or tests\e2e are not present in repo" | Tee-Object -FilePath logs\e2e.log
             "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             exit 0
@@ -334,29 +330,41 @@ jobs:
           )
 
           # Map CI steps to test statuses
-          $installOk = '${{ steps.install.outputs.ok }}'
-          $lintOk = '${{ steps.lint.outputs.ok }}'
-          $typeOk = '${{ steps.typecheck.outputs.ok }}'
-          $unitOk = '${{ steps.unit.outputs.ok }}'
-          $distOk = '${{ steps.dist.outputs.ok }}'
-          $installerOk = '${{ steps.collect.outputs.installer_ok }}'
-          $portableOk = '${{ steps.collect.outputs.portable_ok }}'
-          $e2eRan = '${{ github.event_name == 'workflow_dispatch' && inputs.run_e2e }}'
-          $e2eOk = '${{ steps.e2e.outputs.ok }}'
-          $typeStatus = '${{ steps.typecheck.outputs.status }}'
-          $unitStatus = '${{ steps.unit.outputs.status }}'
+          $installOk  = "${{ steps.install.outputs.ok }}"
+          $lintOk     = "${{ steps.lint.outputs.ok }}"
+          $typeOk     = "${{ steps.typecheck.outputs.ok }}"
+          $unitOk     = "${{ steps.unit.outputs.ok }}"
+          $distOk     = "${{ steps.dist.outputs.ok }}"
+          $installerOk= "${{ steps.collect.outputs.installer_ok }}"
+          $portableOk = "${{ steps.collect.outputs.portable_ok }}"
+          $e2eRan     = "${{ github.event_name == 'workflow_dispatch' && inputs.run_e2e }}"
+          $e2eOk      = "${{ steps.e2e.outputs.ok }}"
+          $typeStatus = "${{ steps.typecheck.outputs.status }}"
+          $unitStatus = "${{ steps.unit.outputs.status }}"
 
           # Default: NOT RUN
           $statusMap = @{}
-          foreach ($t in $tests) { $statusMap[$t.n] = @{ status='NR'; why='требует ручной проверки/не настроено в CI (этап 1)' } }
+          foreach ($t in $tests) {
+            $statusMap[$t.n] = @{ status='NR'; why='требует ручной проверки/не настроено в CI (этап 1)' }
+          }
 
           # What we can honestly mark as PASS/FAIL in stage 1
-          if ($lintOk -ne '') { $statusMap[6] = @{ status=($lintOk -eq 'true' ? 'PASS' : 'FAIL'); why='см. logs\\lint.log' } }
-          if ($lintOk -ne '') { $statusMap[7] = @{ status=($lintOk -eq 'true' ? 'PASS' : 'FAIL'); why='см. logs\\lint.log' } }
-          if ($typeOk -ne '') { $statusMap[8] = @{ status=($typeOk -eq 'true' ? 'PASS' : 'FAIL'); why="$typeStatus; см. logs\\typecheck.log" } }
-          if ($unitOk -ne '') { $statusMap[9] = @{ status=($unitOk -eq 'true' ? 'PASS' : 'FAIL'); why="$unitStatus; см. logs\\unit.log" } }
+          if ($lintOk -ne '') {
+            $statusMap[6] = @{ status=($lintOk -eq 'true' ? 'PASS' : 'FAIL'); why='см. logs\lint.log' }
+            $statusMap[7] = @{ status=($lintOk -eq 'true' ? 'PASS' : 'FAIL'); why='см. logs\lint.log' }
+          }
 
-          if ($distOk -ne '') { $statusMap[26] = @{ status=($distOk -eq 'true' ? 'PASS' : 'FAIL'); why='см. logs\\dist.log' } }
+          if ($typeOk -ne '') {
+            $statusMap[8] = @{ status=($typeOk -eq 'true' ? 'PASS' : 'FAIL'); why="$typeStatus; см. logs\typecheck.log" }
+          }
+
+          if ($unitOk -ne '') {
+            $statusMap[9] = @{ status=($unitOk -eq 'true' ? 'PASS' : 'FAIL'); why="$unitStatus; см. logs\unit.log" }
+          }
+
+          if ($distOk -ne '') {
+            $statusMap[26] = @{ status=($distOk -eq 'true' ? 'PASS' : 'FAIL'); why='см. logs\dist.log' }
+          }
 
           # Artifacts generation check (maps to Smoke/Sanity in CI context)
           if ($installerOk -eq 'true' -and $portableOk -eq 'true') {
@@ -370,11 +378,11 @@ jobs:
           # Optional E2E stage 2
           if ($e2eRan -eq 'true') {
             if ($e2eOk -eq 'true') {
-              $statusMap[13] = @{ status='PASS'; why='см. logs\\e2e.log и playwright-report (если включён)'}
-              $statusMap[14] = @{ status='PASS'; why='см. logs\\e2e.log и скриншоты (если настроены)'}
+              $statusMap[13] = @{ status='PASS'; why='см. logs\e2e.log и playwright-report (если включён)'}
+              $statusMap[14] = @{ status='PASS'; why='см. logs\e2e.log и скриншоты (если настроены)'}
             } else {
-              $statusMap[13] = @{ status='FAIL'; why='см. logs\\e2e.log'}
-              $statusMap[14] = @{ status='FAIL'; why='см. logs\\e2e.log'}
+              $statusMap[13] = @{ status='FAIL'; why='см. logs\e2e.log'}
+              $statusMap[14] = @{ status='FAIL'; why='см. logs\e2e.log'}
             }
           } else {
             $statusMap[13] = @{ status='NR'; why='E2E для Electron (Playwright) не включён в этапе 1' }
@@ -389,38 +397,35 @@ jobs:
           $lines.Add(('Job: {0}' -f $env:GITHUB_JOB))
           $lines.Add('')
           $lines.Add('Логи:')
-          $lines.Add(' - logs\\install.log')
-          $lines.Add(' - logs\\lint.log')
-          $lines.Add(' - logs\\typecheck.log')
-          $lines.Add(' - logs\\unit.log')
-          $lines.Add(' - logs\\dist.log')
-          $lines.Add(' - logs\\e2e.log (если запускался)')
+          $lines.Add(' - logs\install.log')
+          $lines.Add(' - logs\lint.log')
+          $lines.Add(' - logs\typecheck.log')
+          $lines.Add(' - logs\unit.log')
+          $lines.Add(' - logs\dist.log')
+          $lines.Add(' - logs\e2e.log (если запускался)')
           $lines.Add('')
           $lines.Add('Артефакты (ожидаемые):')
-          $lines.Add(' - artifacts\\Озонатор.exe')
-          $lines.Add(' - artifacts\\portable-win-unpacked.zip')
-          $lines.Add(' - artifacts\\TestReport.txt')
-          $lines.Add('')
+          $lines.Add(' - artifacts\Озонатор.exe')
+          $lines.Add(' - artifacts\portable-win-unpacked.zip')
+          $lines.Add(' - artifacts\TestReport.txt')
 
           $executedCount = 0
           $failList = New-Object System.Collections.Generic.List[string]
-
           foreach ($t in $tests) {
             $st = $statusMap[$t.n]
             if ($st.status -ne 'NR') { $executedCount += 1 }
             if ($st.status -eq 'FAIL') { $failList.Add([string]$t.n) }
           }
-
           $notRunCount = 118 - $executedCount
           $cycles = 1
 
-          # Summarize why not all 118
           $why = 'CI автоматизирует только часть матрицы (этап 1: lint/typecheck/unit/dist + сбор артефактов). Остальные пункты требуют ручной UX-оценки, реального пользователя, окружения/инфраструктуры, либо будут автоматизированы в этапе 2 (E2E Playwright Electron).'
+
           $lines.Insert(0, ("{0} из 118, {1} цикл(а/ов). {2} тестов не выполнялись, так как {3}" -f $executedCount, $cycles, $notRunCount, $why))
           $lines.Insert(1, '')
+
           $lines.Add('')
           $lines.Add('Матрица 118 (статус по каждому пункту):')
-
           if ($failList.Count -gt 0) {
             $lines.Add(('Провалены тесты: ' + ($failList -join ', ')))
           } else {
@@ -428,16 +433,11 @@ jobs:
           }
           $lines.Add('')
 
-
           foreach ($t in $tests) {
             $st = $statusMap[$t.n]
-            if ($st.status -eq 'PASS') {
-              $lines.Add((StatusLine $t.n $t.name 'PASS' ''))
-            } elseif ($st.status -eq 'FAIL') {
-              $lines.Add((StatusLine $t.n $t.name 'FAIL' $st.why))
-            } else {
-              $lines.Add((StatusLine $t.n $t.name 'NR' $st.why))
-            }
+            if ($st.status -eq 'PASS') { $lines.Add((StatusLine $t.n $t.name 'PASS' '')) }
+            elseif ($st.status -eq 'FAIL') { $lines.Add((StatusLine $t.n $t.name 'FAIL' $st.why)) }
+            else { $lines.Add((StatusLine $t.n $t.name 'NR' $st.why)) }
           }
 
           $out = Join-Path $PWD 'artifacts\TestReport.txt'
@@ -474,8 +474,6 @@ jobs:
           name: build-logs
           path: logs/**
 
-
-
       - name: Upload artifact — e2e-results
         if: always()
         uses: actions/upload-artifact@v4
@@ -484,13 +482,12 @@ jobs:
           path: |
             playwright-report/**
             test-results/**
-          if-no-files-found: warn
+          if-no-files-found: ignore
 
       - name: Final gate (fail job if CI checks failed)
         if: always() && steps.install.outputs.ok == 'true'
         run: |
           $failed = @()
-
           if ('${{ steps.lint.outputs.ok }}' -eq 'false') { $failed += 'lint' }
           if ('${{ steps.typecheck.outputs.ok }}' -eq 'false') { $failed += 'typecheck' }
           if ('${{ steps.unit.outputs.ok }}' -eq 'false') { $failed += 'unit' }
