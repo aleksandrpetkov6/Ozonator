@@ -1,0 +1,104 @@
+diff --git a/.github/workflows/apply_patch_pr.yml b/.github/workflows/apply_patch_pr.yml
+--- a/.github/workflows/apply_patch_pr.yml
++++ b/.github/workflows/apply_patch_pr.yml
+@@ -1,2 +1,118 @@
+-name: Apply patch and open PR on: workflow_dispatch: inputs: patch_path: description: "Path to patch file in repo (.patch or .b64)" required: true default: "patches/latest.patch" base_branch: description: "Base branch (usually main)" required: true default: "main" permissions: contents: write pull-requests: write jobs: apply: runs-on: ubuntu-latest steps: - name: Checkout uses: actions/checkout@v4 with: ref: ${{ inputs.base_branch }} - name: Validate patch file exists run: | if [ ! -f "${{ inputs.patch_path }}" ]; then echo "::error::Patch file not found: ${{ inputs.patch_path }}" echo "Create it in the repo first (Add file -> Upload files / Create new file)." exit 1 fi - name: Materialize patch (supports .b64) id: mat shell: bash run: | set -euo pipefail SRC="${{ inputs.patch_path }}" OUT="/tmp/patch.patch" if [[ "$SRC" == *.b64 ]]; then base64 -d "$SRC" > "$OUT" else cp "$SRC" "$OUT" fi echo "out=$OUT" >> "$GITHUB_OUTPUT" echo "---- PATCH PREVIEW (first 40 lines) ----" sed -n '1,40p' "$OUT" - name: Check patch applies cleanly run: | git apply --check "${{ steps.mat.outputs.out }}" - name: Apply patch run: | git apply --whitespace=fix "${{ steps.mat.outputs.out }}" - name: Create Pull Request uses: peter-evans/create-pull-request@v6 with: # If PR_BOT_TOKEN exists, use it so PR triggers other workflows.
+-Otherwise fallback to GITHUB_TOKEN. token: ${{ secrets.PR_BOT_TOKEN || github.token }} branch: bot/apply-patch-${{ github.run_id }} base: ${{ inputs.base_branch }} title: "Apply patch: ${{ inputs.patch_path }}" commit-message: "Apply patch: ${{ inputs.patch_path }}" body: "Automated patch apply via workflow_dispatch."
++name: Apply patch and open PR
++
++on:
++  workflow_dispatch:
++    inputs:
++      patch_path:
++        description: "Path to patch file in repo (.patch or .b64)"
++        required: true
++        default: "patches/latest.patch"
++      base_branch:
++        description: "Base branch (usually main)"
++        required: true
++        default: "main"
++
++permissions:
++  contents: write
++  pull-requests: write
++
++jobs:
++  apply:
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++        with:
++          ref: ${{ inputs.base_branch }}
++
++      - name: Require PR_BOT_TOKEN
++        shell: bash
++        run: |
++          if [ -z "${{ secrets.PR_BOT_TOKEN }}" ]; then
++            echo "::error::Missing required secret PR_BOT_TOKEN (fine-grained PAT)."
++            exit 1
++          fi
++
++      - name: Validate patch file exists
++        shell: bash
++        run: |
++          set -euo pipefail
++          if [ ! -f "${{ inputs.patch_path }}" ]; then
++            echo "::error::Patch file not found: ${{ inputs.patch_path }}"
++            echo "Tip: add it via GitHub web UI → Add file → Upload files (do not paste)."
++            echo ""
++            echo "Files in patches/:"
++            ls -la patches || true
++            exit 1
++          fi
++
++      - name: Materialize patch (supports .b64)
++        id: mat
++        shell: bash
++        run: |
++          set -euo pipefail
++          SRC="${{ inputs.patch_path }}"
++          OUT="/tmp/patch.patch"
++
++          if [[ "$SRC" == *.b64 ]]; then
++            # Be tolerant to accidental whitespace/newlines in base64.
++            tr -d '
+
+	 ' < "$SRC" | base64 -d > "$OUT"
++          else
++            cp "$SRC" "$OUT"
++          fi
++
++          echo "out=$OUT" >> "$GITHUB_OUTPUT"
++          echo "---- PATCH PREVIEW (first 40 lines) ----"
++          sed -n '1,40p' "$OUT" || true
++
++      - name: Check patch applies cleanly
++        shell: bash
++        run: |
++          set -euo pipefail
++          git apply --check "${{ steps.mat.outputs.out }}"
++
++      - name: Apply patch
++        shell: bash
++        run: |
++          set -euo pipefail
++          git apply --whitespace=fix "${{ steps.mat.outputs.out }}"
++
++      - name: Create Pull Request
++        id: cpr
++        uses: peter-evans/create-pull-request@v6
++        with:
++          token: ${{ secrets.PR_BOT_TOKEN }}
++          branch: bot/apply-patch-${{ github.run_id }}
++          base: ${{ inputs.base_branch }}
++          title: "Apply patch: ${{ inputs.patch_path }}"
++          commit-message: "Apply patch: ${{ inputs.patch_path }}"
++          body: "Automated patch apply via workflow_dispatch."
++
++      - name: Summary
++        if: always()
++        shell: bash
++        run: |
++          echo "Patch applied from: ${{ inputs.patch_path }}" >> "$GITHUB_STEP_SUMMARY"
++          echo "PR: ${{ steps.cpr.outputs.pull-request-url }}" >> "$GITHUB_STEP_SUMMARY"
