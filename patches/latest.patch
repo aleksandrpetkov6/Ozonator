@@ -1,12 +1,17 @@
 diff --git a/electron/main/index.ts b/electron/main/index.ts
+index 0af0f5c..f2b17c4 100644
 --- a/electron/main/index.ts
 +++ b/electron/main/index.ts
-@@ -3,0 +4,9 @@
-+
-+// Открывать первое окно развернутым (maximize) сразу при старте приложения.
-+// Это именно «развернуть», а не fullscreen/kiosk (чтобы оставались рамка, кнопки и панель задач).
-+app.once('browser-window-created', (_event, window) => {
-+  try {
-+    if (!window.isMaximized()) window.maximize()
-+  } catch {}
-+})
+@@ -29,7 +29,11 @@ function createWindow() {
+   })
+ 
+   mainWindow.once('ready-to-show', () => {
+-    try { mainWindow?.show() } catch {}
++    try {
++      // Стартуем развернутыми на весь экран (maximize), но не в fullscreen/kiosk.
++      mainWindow?.maximize()
++      mainWindow?.show()
++    } catch {}
+   })
+ 
+   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
