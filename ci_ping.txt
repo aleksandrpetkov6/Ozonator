@@ -1,1 +1,1 @@
-ci ping
+ci ping v2
