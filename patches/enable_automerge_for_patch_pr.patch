@@ -1,0 +1,32 @@
+diff --git a/.github/workflows/enable-automerge.yml b/.github/workflows/enable-automerge.yml
+index 0a0a0a0..b1b1b1b 100644
+--- a/.github/workflows/enable-automerge.yml
++++ b/.github/workflows/enable-automerge.yml
+@@ -1 +1,30 @@
+-name: enable-automerge-for-agents on: pull_request: types: [opened, reopened, synchronize, ready_for_review] permissions: pull-requests: write contents: write jobs: enable: if: > github.event.pull_request.draft == false && (github.event.pull_request.user.login == 'github-copilot' || contains(github.event.pull_request.user.login, 'copilot')) runs-on: ubuntu-latest steps: - name: Enable auto-merge (squash) uses: peter-evans/enable-pull-request-automerge@v3 with: token: ${{ secrets.GITHUB_TOKEN }} merge-method: squash
++name: enable-automerge-for-agents
++
++on:
++  pull_request:
++    types: [opened, reopened, synchronize, ready_for_review]
++
++permissions:
++  pull-requests: write
++  contents: write
++
++jobs:
++  enable:
++    if: >-
++      github.event.pull_request.draft == false &&
++      (
++        github.event.pull_request.user.login == 'github-copilot' ||
++        contains(github.event.pull_request.user.login, 'copilot') ||
++        startsWith(github.event.pull_request.head.ref, 'bot/apply-patch-')
++      )
++    runs-on: ubuntu-latest
++    steps:
++      - name: Enable auto-merge (squash)
++        uses: peter-evans/enable-pull-request-automerge@v3
++        with:
++          token: ${{ secrets.GITHUB_TOKEN }}
++          merge-method: squash
