@@ -30,7 +30,11 @@ function createWindow() {
   })
 
   mainWindow.once('ready-to-show', () => {
-    try { mainWindow?.show() } catch {}
+    try {
+      // Стартуем развернутыми на весь экран (maximize), но не в fullscreen/kiosk.
+      mainWindow?.maximize()
+      mainWindow?.show()
+    } catch {}
   })
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
