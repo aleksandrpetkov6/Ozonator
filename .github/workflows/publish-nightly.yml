@@ -23,6 +23,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -66,7 +68,6 @@ jobs:
           }
 
           $stableExe = Join-Path $PWD "Ozonator.exe"
-
           Copy-Item $exe.FullName $stableExe -Force
 
           "exe_path=$stableExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -79,13 +80,16 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          gh release view nightly 1>$null 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create nightly --title "nightly" --notes "Automated nightly build" --prerelease
+          # Recreate release each time so the tag 'nightly' always points to the current commit.
+          try {
+            gh release delete nightly --yes --cleanup-tag
+          } catch {
+            # ok if not exists
           }
 
-          gh release upload nightly "${{ steps.prep.outputs.exe_path }}" --clobber
-
+          $assets = @("${{ steps.prep.outputs.exe_path }}")
           if ("${{ steps.prep.outputs.portable_ok }}" -eq "true") {
-            gh release upload nightly "${{ steps.prep.outputs.portable_zip }}" --clobber
+            $assets += "${{ steps.prep.outputs.portable_zip }}"
           }
+
+          gh release create nightly $assets --title "nightly" --notes "Automated nightly build" --prerelease --target $env:GITHUB_SHA
