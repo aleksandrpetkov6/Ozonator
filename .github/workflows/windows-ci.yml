@@ -137,7 +137,7 @@ jobs:
 
           foreach ($p in $preferred) {
             if (Test-Path $p) {
-              Copy-Item $p 'artifacts\Озонатор.exe' -Force
+              Copy-Item $p 'artifacts\Ozonator.exe' -Force
               $installerOk = $true
               break
             }
@@ -148,7 +148,7 @@ jobs:
               Sort-Object LastWriteTime -Descending |
               Select-Object -First 1
             if ($exe) {
-              Copy-Item $exe.FullName 'artifacts\Озонатор.exe' -Force
+              Copy-Item $exe.FullName 'artifacts\Ozonator.exe' -Force
               $installerOk = $true
             }
           }
@@ -337,7 +337,7 @@ jobs:
           $distOk     = "${{ steps.dist.outputs.ok }}"
           $installerOk= "${{ steps.collect.outputs.installer_ok }}"
           $portableOk = "${{ steps.collect.outputs.portable_ok }}"
-          $e2eRan     = "${{ github.event_name == 'workflow_dispatch' && inputs.run_e2e }}"
+          $e2eStatus  = "${{ steps.e2e.outputs.status }}"
           $e2eOk      = "${{ steps.e2e.outputs.ok }}"
           $typeStatus = "${{ steps.typecheck.outputs.status }}"
           $unitStatus = "${{ steps.unit.outputs.status }}"
@@ -375,8 +375,8 @@ jobs:
             $statusMap[24] = @{ status='FAIL'; why='артефакты не собраны полностью (installer/portable) — см. job logs' }
           }
 
-          # Optional E2E stage 2
-          if ($e2eRan -eq 'true') {
+          # Optional E2E stage 2 (reflects steps.e2e.outputs.status)
+          if ($e2eStatus -eq 'ran') {
             if ($e2eOk -eq 'true') {
               $statusMap[13] = @{ status='PASS'; why='см. logs\e2e.log и playwright-report (если включён)'}
               $statusMap[14] = @{ status='PASS'; why='см. logs\e2e.log и скриншоты (если настроены)'}
@@ -384,10 +384,17 @@ jobs:
               $statusMap[13] = @{ status='FAIL'; why='см. logs\e2e.log'}
               $statusMap[14] = @{ status='FAIL'; why='см. logs\e2e.log'}
             }
-          } else {
-            $statusMap[13] = @{ status='NR'; why='E2E для Electron (Playwright) не включён в этапе 1' }
+          } elseif ($e2eStatus -like 'failed*') {
+            $statusMap[13] = @{ status='FAIL'; why="E2E failed: $e2eStatus; см. logs\e2e.log" }
+            $statusMap[14] = @{ status='FAIL'; why="E2E failed: $e2eStatus; см. logs\e2e.log" }
+          } elseif ($e2eStatus -eq 'skipped') {
+            $statusMap[13] = @{ status='NR'; why='E2E skipped (нет playwright.config.ts и/или tests\e2e)' }
             $statusMap[14] = @{ status='NR'; why='UAT требует реального пользователя; автопрогон будет в этапе 2' }
+          } else {
+            $statusMap[13] = @{ status='NR'; why="E2E status unknown: $e2eStatus" }
+            $statusMap[14] = @{ status='NR'; why="UAT требует реального пользователя; автопрогон будет в этапе 2" }
           }
+
 
           $lines = New-Object System.Collections.Generic.List[string]
           $lines.Add('TestReport — Windows CI (GitHub Actions)')
@@ -405,7 +412,7 @@ jobs:
           $lines.Add(' - logs\e2e.log (если запускался)')
           $lines.Add('')
           $lines.Add('Артефакты (ожидаемые):')
-          $lines.Add(' - artifacts\Озонатор.exe')
+          $lines.Add(' - artifacts\Ozonator.exe')
           $lines.Add(' - artifacts\portable-win-unpacked.zip')
           $lines.Add(' - artifacts\TestReport.txt')
 
@@ -443,12 +450,12 @@ jobs:
           $out = Join-Path $PWD 'artifacts\TestReport.txt'
           $lines | Out-File -FilePath $out -Encoding UTF8
 
-      - name: Upload artifact — Озонатор.exe
+      - name: Upload artifact — Ozonator.exe
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Ozonator.exe
-          path: artifacts/Озонатор.exe
+          path: artifacts/Ozonator.exe
           if-no-files-found: warn
 
       - name: Upload artifact — portable-win-unpacked.zip
