@@ -25,17 +25,22 @@ jobs:
         with:
           ref: ${{ inputs.base_branch }}
 
-      - name: Validate patch file exists
+      - name: Validate patch file exists + show header
         run: |
           if [ ! -f "${{ inputs.patch_path }}" ]; then
             echo "::error::Patch file not found: ${{ inputs.patch_path }}"
-            echo "Create it in the repo first (Add file -> Create new file -> patches/latest.patch)"
+            echo "Repo root:"
+            ls -la
             exit 1
           fi
+          echo "Patch stats:"
+          wc -l "${{ inputs.patch_path }}" || true
+          echo "Patch head (first 30 lines):"
+          head -n 30 "${{ inputs.patch_path }}" || true
 
       - name: Check patch applies cleanly
         run: |
-          git apply --check "${{ inputs.patch_path }}"
+          git apply --check --whitespace=fix "${{ inputs.patch_path }}"
 
       - name: Apply patch
         run: |
