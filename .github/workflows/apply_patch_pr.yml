@@ -63,8 +63,8 @@ jobs:
         uses: peter-evans/create-pull-request@v6
         with:
           # If PR_BOT_TOKEN exists, use it so PR triggers other workflows. Otherwise fallback to GITHUB_TOKEN.
-          token: ${{ secrets.PR_BOT_TOKEN || github.token }}
-          branch: bot/apply-patch-${{ github.run_id }}
+          token: ${{ secrets.PR_BOT_TOKEN }}
+          branch: bot/apply-patch-${{ github.run_id }}-${{ github.run_attempt }}
           base: ${{ inputs.base_branch }}
           title: "Apply patch: ${{ inputs.patch_path }}"
           commit-message: "Apply patch: ${{ inputs.patch_path }}"
