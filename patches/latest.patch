@@ -1,0 +1,6 @@
+diff --git a/ci_ping.txt b/ci_ping.txt
+new file mode 100644
+--- /dev/null
++++ b/ci_ping.txt
+@@ -0,0 +1 @@
++ci ping
