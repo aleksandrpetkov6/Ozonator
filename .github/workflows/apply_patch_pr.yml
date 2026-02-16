@@ -41,11 +41,7 @@ jobs:
           SRC="${{ inputs.patch_path }}"
           OUT="/tmp/patch.patch"
 
-          if [[ "$SRC" == *.b64 ]]; then
-            base64 -d "$SRC" > "$OUT"
-          else
-            cp "$SRC" "$OUT"
-          fi
+          cp "$SRC" "$OUT"
 
           echo "out=$OUT" >> "$GITHUB_OUTPUT"
           echo "---- PATCH PREVIEW (first 40 lines) ----"
