@@ -69,7 +69,7 @@ jobs:
           "portable_ok=$($hasPortable.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "portable_zip=$portableZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Publish/Update nightly release (tag: nightly)
+      - name: "Publish/Update nightly release (tag: nightly)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
