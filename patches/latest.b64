@@ -1,0 +1,7 @@
+cd /d ПУТЬ_К_ПАПКЕ_С_РЕПО
+del /q patches\*.b64
+del /q patches\*.patch
+copy /y ПУТЬ_К_СКАЧАННОМУ_latest.b64 patches\latest.b64
+git add patches/latest.b64
+git commit -m "chore(patches): keep single latest.b64"
+git push
