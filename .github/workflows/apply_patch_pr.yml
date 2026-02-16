@@ -25,22 +25,21 @@ jobs:
         with:
           ref: ${{ inputs.base_branch }}
 
-      - name: Validate patch file exists + show header
+      - name: Validate patch file exists
         run: |
           if [ ! -f "${{ inputs.patch_path }}" ]; then
             echo "::error::Patch file not found: ${{ inputs.patch_path }}"
-            echo "Repo root:"
-            ls -la
+            echo "Create it in the repo first (Add file -> Upload files / Create new file)."
             exit 1
           fi
-          echo "Patch stats:"
-          wc -l "${{ inputs.patch_path }}" || true
-          echo "Patch head (first 30 lines):"
-          head -n 30 "${{ inputs.patch_path }}" || true
+
+      - name: Show patch header (first 40 lines)
+        run: |
+          sed -n '1,40p' "${{ inputs.patch_path }}"
 
       - name: Check patch applies cleanly
         run: |
-          git apply --check --whitespace=fix "${{ inputs.patch_path }}"
+          git apply --check "${{ inputs.patch_path }}"
 
       - name: Apply patch
         run: |
@@ -49,7 +48,8 @@ jobs:
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ secrets.PR_BOT_TOKEN }}
+          # If PR_BOT_TOKEN is present, use it (so PR triggers other workflows). Otherwise fallback to GITHUB_TOKEN.
+          token: ${{ secrets.PR_BOT_TOKEN || github.token }}
           branch: bot/apply-patch-${{ github.run_id }}
           base: ${{ inputs.base_branch }}
           title: "Apply patch: ${{ inputs.patch_path }}"
