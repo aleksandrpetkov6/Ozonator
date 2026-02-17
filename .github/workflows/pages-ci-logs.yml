@@ -1,0 +1,186 @@
+name: Publish CI logs to GitHub Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    # минимум 5 минут; можно сделать реже, если будет тяжело
+    - cron: "*/5 * * * *"
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/pages-ci-logs.yml"
+
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for Pages workflow only)
+        uses: actions/checkout@v4
+
+      - name: Prepare tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq unzip zip
+
+      - name: Collect latest logs for ALL workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          rm -rf site
+          mkdir -p site/workflows
+
+          # 1) список workflows
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${REPO}/actions/workflows?per_page=100" > workflows.json
+
+          total="$(jq '.total_count' workflows.json)"
+          echo "Found workflows: ${total}"
+
+          # index.html
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+            <title>Ozonator — CI logs</title>
+            <style>
+              body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+              h1 { margin: 0 0 12px; }
+              .note { color: #555; margin: 0 0 24px; }
+              table { border-collapse: collapse; width: 100%; }
+              th, td { border-bottom: 1px solid #eee; padding: 10px 8px; text-align: left; vertical-align: top; }
+              th { position: sticky; top: 0; background: #fff; }
+              a { text-decoration: none; }
+              a:hover { text-decoration: underline; }
+              .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; color: #444; }
+              .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#f3f4f6; font-size:12px; }
+            </style>
+          </head>
+          <body>
+            <h1>Ozonator — CI logs</h1>
+            <p class="note">Latest run logs per workflow (auto-updated).</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Workflow</th>
+                  <th>Latest run</th>
+                  <th>Logs</th>
+                  <th>Meta</th>
+                </tr>
+              </thead>
+              <tbody>
+          HTML
+
+          # 2) по каждому workflow — последний run + logs.zip
+          jq -c '.workflows[] | {id, name, path, state}' workflows.json | while read -r wf; do
+            id="$(echo "$wf" | jq -r '.id')"
+            name="$(echo "$wf" | jq -r '.name')"
+            path="$(echo "$wf" | jq -r '.path')"
+            state="$(echo "$wf" | jq -r '.state')"
+
+            # безопасный slug
+            slug="$(printf '%s__%s' "$id" "$path" | sed 's/[^a-zA-Z0-9._-]/_/g')"
+            outdir="site/workflows/${slug}"
+            mkdir -p "$outdir/latest"
+
+            # последний run на default branch
+            runs_json="${outdir}/runs.json"
+            gh api -H "Accept: application/vnd.github+json" \
+              "/repos/${REPO}/actions/workflows/${id}/runs?per_page=1&branch=${DEFAULT_BRANCH}" > "$runs_json" || true
+
+            run_id="$(jq -r '.workflow_runs[0].id // empty' "$runs_json")"
+            run_html="$(jq -r '.workflow_runs[0].html_url // empty' "$runs_json")"
+            run_conclusion="$(jq -r '.workflow_runs[0].conclusion // empty' "$runs_json")"
+            run_created="$(jq -r '.workflow_runs[0].created_at // empty' "$runs_json")"
+
+            if [ -z "${run_id}" ]; then
+              echo "No runs for workflow: $name ($path)"
+              cat >> site/index.html <<HTML
+                <tr>
+                  <td><div>${name}</div><div class="mono">${path}</div></td>
+                  <td><span class="pill">no runs</span></td>
+                  <td>—</td>
+                  <td class="mono">state=${state}</td>
+                </tr>
+          HTML
+              continue
+            fi
+
+            echo "Downloading logs for: $name ($path) run_id=$run_id"
+
+            # скачать logs.zip
+            tmpzip="$(mktemp -t logs.XXXXXX.zip)"
+            gh api -H "Accept: application/vnd.github+json" \
+              "/repos/${REPO}/actions/runs/${run_id}/logs" --output "$tmpzip" || true
+
+            # распаковать
+            rm -rf "${outdir}/latest"/*
+            unzip -q "$tmpzip" -d "${outdir}/latest" || true
+            rm -f "$tmpzip"
+
+            # 3) минимальная санитаризация (на всякий)
+            # GitHub обычно маскирует secrets сам, но подстрахуемся:
+            find "${outdir}/latest" -type f -name "*.txt" -print0 | while IFS= read -r -d '' f; do
+              # вырезаем строки, похожие на утечки токенов/ключей
+              perl -0777 -pe '
+                s/(authorization:\s*bearer\s+)[A-Za-z0-9._-]+/${1}***REDACTED***/ig;
+                s/((api[-_ ]?key|client[-_ ]?id|token|secret)\s*[:=]\s*)[^\s"]+/${1}***REDACTED***/ig;
+              ' -i "$f" || true
+            done
+
+            # meta
+            cat > "${outdir}/meta.json" <<JSON
+          {"workflow_id": ${id}, "workflow_name": "$(printf '%s' "$name" | sed 's/"/\\"/g')", "workflow_path": "$(printf '%s' "$path" | sed 's/"/\\"/g')", "run_id": ${run_id}, "run_url": "$(printf '%s' "$run_html" | sed 's/"/\\"/g')", "conclusion": "$(printf '%s' "$run_conclusion" | sed 's/"/\\"/g')", "created_at": "$(printf '%s' "$run_created" | sed 's/"/\\"/g')"}
+          JSON
+
+            # ссылка на “главный” файл логов (если есть)
+            first_log="$(find "${outdir}/latest" -maxdepth 1 -type f -name "*.txt" | head -n 1 | xargs -I{} basename "{}")"
+            if [ -z "${first_log}" ]; then
+              logs_link="workflows/${slug}/latest/"
+            else
+              logs_link="workflows/${slug}/latest/${first_log}"
+            fi
+
+            cat >> site/index.html <<HTML
+              <tr>
+                <td><div>${name}</div><div class="mono">${path}</div></td>
+                <td><a href="${run_html}">${run_id}</a><div class="mono">${run_conclusion}</div></td>
+                <td><a href="${logs_link}">open</a></td>
+                <td class="mono">${run_created}</td>
+              </tr>
+          HTML
+          done
+
+          cat >> site/index.html <<'HTML'
+              </tbody>
+            </table>
+          </body>
+          </html>
+          HTML
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
