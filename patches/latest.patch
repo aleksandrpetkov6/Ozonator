@@ -1,1002 +1,991 @@
 diff --git a/electron/main/index.ts b/electron/main/index.ts
-index fd98f91..a69526d 100644
+index a69526d..30f70a5 100644
 --- a/electron/main/index.ts
 +++ b/electron/main/index.ts
-@@ -124,7 +124,9 @@ ipcMain.handle('net:check', async () => {
- })
+@@ -1,6 +1,7 @@
+ import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net } from 'electron'
+ import { join } from 'path'
+-import { ensureDb, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts } from './storage/db'
++import { existsSync, readFileSync, writeFileSync } from 'fs'
++import { ensureDb, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, persistentVersionPath } from './storage/db'
+ import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
+ import { ozonGetStoreName, ozonProductInfoList, ozonProductList, ozonTestAuth } from './ozon'
  
- ipcMain.handle('ozon:testAuth', async () => {
--  const logId = dbLogStart('check_auth')
-+  let storeClientId: string | null = null
-+  try { storeClientId = loadSecrets().clientId } catch {}
-+  const logId = dbLogStart('check_auth', storeClientId)
- 
-   try {
-     const secrets = loadSecrets()
-@@ -138,22 +140,28 @@ ipcMain.handle('ozon:testAuth', async () => {
-       // не критично
-     }
- 
--    dbLogFinish(logId, { status: 'success' })
-+    dbLogFinish(logId, { status: 'success', storeClientId: secrets.clientId })
- 
-     const refreshed = loadSecrets()
-     return { ok: true, storeName: refreshed.storeName ?? null }
-   } catch (e: any) {
--    dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details })
-+    dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
-     return { ok: false, error: e?.message ?? String(e) }
-   }
- })
- 
- ipcMain.handle('ozon:syncProducts', async () => {
--  const logId = dbLogStart('sync_products')
-+  let storeClientId: string | null = null
-+  try { storeClientId = loadSecrets().clientId } catch {}
-+  const logId = dbLogStart('sync_products', storeClientId)
- 
-   try {
-     const secrets = loadSecrets()
- 
-+    const existingOfferIds = new Set(dbGetProducts(secrets.clientId).map((p: any) => p.offer_id))
-+    let processed = 0
-+    let added = 0
-+
-     let lastId = ''
-     const limit = 1000
-     let pages = 0
-@@ -163,6 +171,8 @@ ipcMain.handle('ozon:syncProducts', async () => {
-     for (let guard = 0; guard < 200; guard++) {
-       const { items, lastId: next, total: totalMaybe } = await ozonProductList(secrets, { lastId, limit })
-       pages += 1
-+      // items.length — сколько пришло с API
-+      // processed/added — считаем как обновлено/новых
-       total += items.length
- 
-       const ids = items.map(i => i.product_id).filter(Boolean) as number[]
-@@ -191,6 +201,15 @@ ipcMain.handle('ozon:syncProducts', async () => {
-         }
-       })
- 
-+      processed += enriched.length
-+      for (const it of enriched) {
-+        const offer = String((it as any).offer_id)
-+        if (!existingOfferIds.has(offer)) {
-+          existingOfferIds.add(offer)
-+          added += 1
-+        }
-+      }
-+
-       dbUpsertProducts(enriched)
- 
-       if (!next) break
-@@ -211,13 +230,15 @@ ipcMain.handle('ozon:syncProducts', async () => {
-       }
-     }
- 
-+    const updated = Math.max(0, processed - added)
-+
-     dbLogFinish(logId, {
-       status: 'success',
-       itemsCount: total,
-+      storeClientId: secrets.clientId,
-       meta: {
--        pages,
--        infoBatches: pages,
--        infoFetched: total,
-+        updated,
-+        added,
-         storeClientId: secrets.clientId,
-         storeName: loadSecrets().storeName ?? null,
-       },
-@@ -225,7 +246,7 @@ ipcMain.handle('ozon:syncProducts', async () => {
- 
-     return { ok: true, itemsCount: total, pages }
-   } catch (e: any) {
--    dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details })
-+    dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
-     return { ok: false, error: e?.message ?? String(e) }
-   }
- })
-@@ -248,7 +269,14 @@ ipcMain.handle('data:getProducts', async () => {
- 
- ipcMain.handle('data:getSyncLog', async () => {
-   try {
--    const logs = dbGetSyncLog()
-+    let storeClientId: string | null = null
-+    try {
-+      storeClientId = loadSecrets().clientId
-+    } catch {
-+      storeClientId = null
-+    }
-+
-+    const logs = dbGetSyncLog(storeClientId)
-     return { ok: true, logs }
-   } catch (e: any) {
-     return { ok: false, error: e?.message ?? String(e), logs: [] }
-diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
-index 5e497e1..42a16c1 100644
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
-@@ -38,7 +38,8 @@ export function ensureDb() {
-       items_count INTEGER NULL,
-       error_message TEXT NULL,
-       error_details TEXT NULL,
--      meta TEXT NULL
-+      meta TEXT NULL,
-+      store_client_id TEXT NULL
-     );
- 
-     CREATE INDEX IF NOT EXISTS idx_sync_log_started_at ON sync_log(started_at);
-@@ -66,6 +67,16 @@ export function ensureDb() {
- 
-   // Чтобы не смешивать товары разных магазинов при смене ключей
-   add('store_client_id', 'TEXT NULL')
-+
-+  // Логи: фильтрация по магазину
-+  const logCols = new Set(
-+    (db.prepare('PRAGMA table_info(sync_log)').all() as any[]).map((r) => String(r.name))
-+  )
-+  if (!logCols.has('store_client_id')) {
-+    db.exec(`ALTER TABLE sync_log ADD COLUMN store_client_id TEXT NULL;`)
-+    logCols.add('store_client_id')
-+  }
-+
+@@ -55,12 +56,51 @@ function createWindow() {
+   nativeTheme.themeSource = 'light'
  }
  
- function mustDb(): Database.Database {
-@@ -193,12 +204,12 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
-   `).all() as any
- }
- 
--export function dbLogStart(type: 'check_auth' | 'sync_products'): number {
-+export function dbLogStart(type: 'check_auth' | 'sync_products', storeClientId?: string | null): number {
-   const startedAt = new Date().toISOString()
-   const info = mustDb().prepare(`
--    INSERT INTO sync_log (type, status, started_at)
--    VALUES (?, 'pending', ?)
--  `).run(type, startedAt)
-+    INSERT INTO sync_log (type, status, started_at, store_client_id)
-+    VALUES (?, 'pending', ?, ?)
-+  `).run(type, startedAt, storeClientId ?? null)
- 
-   return Number(info.lastInsertRowid)
- }
-@@ -209,11 +220,12 @@ export function dbLogFinish(id: number, args: {
-   errorMessage?: string
-   errorDetails?: any
-   meta?: any
-+  storeClientId?: string | null
- }) {
-   const finishedAt = new Date().toISOString()
-   mustDb().prepare(`
-     UPDATE sync_log
--    SET status=?, finished_at=?, items_count=?, error_message=?, error_details=?, meta=?
-+    SET status=?, finished_at=?, items_count=?, error_message=?, error_details=?, meta=?, store_client_id=COALESCE(?, store_client_id)
-     WHERE id=?
-   `).run(
-     args.status,
-@@ -222,11 +234,22 @@ export function dbLogFinish(id: number, args: {
-     args.errorMessage ?? null,
-     args.errorDetails ? JSON.stringify(args.errorDetails).slice(0, 20000) : null,
-     args.meta ? JSON.stringify(args.meta).slice(0, 20000) : null,
-+    args.storeClientId ?? null,
-     id
-   )
- }
- 
--export function dbGetSyncLog() {
-+export function dbGetSyncLog(storeClientId?: string | null) {
-+  if (storeClientId) {
-+    return mustDb().prepare(`
-+      SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
-+      FROM sync_log
-+      WHERE store_client_id = ?
-+      ORDER BY id DESC
-+      LIMIT 500
-+    `).all(storeClientId)
-+  }
 +
-   return mustDb().prepare(`
-     SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
-     FROM sync_log
-diff --git a/src/renderer/src/ui/App.tsx b/src/renderer/src/ui/App.tsx
-index 8f3a219..d0336b1 100644
---- a/src/renderer/src/ui/App.tsx
-+++ b/src/renderer/src/ui/App.tsx
-@@ -33,9 +33,37 @@ export default function App() {
-   const runningRef = useRef(false)
-   useEffect(() => { runningRef.current = running }, [running])
- 
--  const [lastOkAt, setLastOkAt] = useState<string | null>(null)
-   const [lastError, setLastError] = useState<string | null>(null)
- 
-+  const [storeName, setStoreName] = useState<string | null>(null)
-+  const [productsQuery, setProductsQuery] = useState('')
-+  const [productsTotal, setProductsTotal] = useState(0)
-+  const [productsFiltered, setProductsFiltered] = useState(0)
-+
-+  const pathname = location.pathname || '/'
-+  const isProducts = pathname === '/' || pathname.startsWith('/products')
-+
-+  async function refreshStoreName() {
-+    try {
-+      const resp = await window.api.loadSecrets()
-+      if (resp?.ok) {
-+        const name = (resp.secrets as any)?.storeName
-+        const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
-+        setStoreName(cleaned)
-+        document.title = cleaned ? `Озонатор — ${cleaned}` : 'Озонатор'
-+      }
-+    } catch {
-+      // ignore
-+    }
-+  }
-+
-+  useEffect(() => {
-+    refreshStoreName()
-+    const onStore = () => refreshStoreName()
-+    window.addEventListener('ozon:store-updated', onStore)
-+    return () => window.removeEventListener('ozon:store-updated', onStore)
-+  }, [])
-+
-   const dotState = useMemo(() => {
-     if (!online) return 'offline'
-     if (running) return 'running'
-@@ -57,7 +85,7 @@ export default function App() {
-     // ключи должны быть сохранены
-     const st = await window.api.secretsStatus()
-     if (!st.hasSecrets) {
--      if (reason === 'manual') setLastError('Ключи не сохранены. Откройте Настройки → Магазин.')
-+      if (reason === 'manual') setLastError('Ключи не сохранены. Откройте Настройки.')
-       return
-     }
- 
-@@ -68,12 +96,12 @@ export default function App() {
-       if (!resp.ok) {
-         setLastError(resp.error ?? 'Ошибка синхронизации')
-       } else {
--        setLastOkAt(new Date().toISOString())
-         setLastError(null)
- 
--        // Обновляем список товаров + лог
-+        // Обновляем список товаров + лог + имя магазина (если подтянулось)
-         window.dispatchEvent(new Event('ozon:products-updated'))
-         window.dispatchEvent(new Event('ozon:logs-updated'))
-+        window.dispatchEvent(new Event('ozon:store-updated'))
-       }
-     } finally {
-       setRunning(false)
-@@ -110,16 +138,36 @@ export default function App() {
-     <div className="appShell">
-       <div className="topbar">
-         <div className="topbarInner">
--          <NavLink className="appNameLink" to="/">Озонатор</NavLink>
-+          <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
-+            <div className="appName">Озонатор</div>
-+            {storeName && <div className="appStoreName">{storeName}</div>}
-+          </div>
- 
-           <div className="topbarSlot">
--            <div className="segmented">
--              <NavLink to="/products">Товары</NavLink>
--              <NavLink to="/logs">Лог</NavLink>
-+            <div className="segmented" aria-label="Навигация">
-+              <NavLink to="/products">
-+                <span>Товары</span>
-+                <span className="segCount">Всего: {productsTotal}</span>
-+              </NavLink>
-             </div>
-+
-+            {isProducts && (
-+              <div className="topbarSearch">
-+                <input
-+                  className="searchInput search"
-+                  value={productsQuery}
-+                  onChange={(e) => setProductsQuery(e.target.value)}
-+                  placeholder="Поиск по таблице…"
-+                />
-+              </div>
-+            )}
-           </div>
- 
-           <div className="topbarRight">
-+            <NavLink className="iconLink" to="/logs" title="Лог">
-+              🗒️
-+            </NavLink>
-+
-             <NavLink className="iconLink" to="/settings" title="Настройки">
-               ⚙️
-             </NavLink>
-@@ -138,24 +186,42 @@ export default function App() {
-         </div>
-       </div>
- 
--      <div className={(() => {
--        const p = location.pathname || '/'
--        const isProducts = p === '/' || p.startsWith('/products')
--        return isProducts ? 'container containerWide' : 'container'
--      })()}>
--        {lastError && <div className="notice error">{lastError}</div>}
--        {!lastError && lastOkAt && (
--          <div className="notice">
--            Синхронизировано: {new Date(lastOkAt).toLocaleString()}
--          </div>
--        )}
--
--        <Routes>
--          <Route path="/" element={<ProductsPage />} />
--          <Route path="/products" element={<ProductsPage />} />
--          <Route path="/logs" element={<LogsPage />} />
--          <Route path="/settings" element={<SettingsPage />} />
--        </Routes>
-+      <div className="pageArea">
-+        <div className={isProducts ? "container containerWide" : "container"}>
-+          {lastError && <div className="notice error">{lastError}</div>}
-+
-+          <Routes>
-+            <Route
-+              path="/"
-+              element={
-+                <ProductsPage
-+                  query={productsQuery}
-+                  onStats={(s) => {
-+                    setProductsTotal(s.total)
-+                    setProductsFiltered(s.filtered)
-+                  }}
-+                />
-+              }
-+            />
-+            <Route
-+              path="/products"
-+              element={
-+                <ProductsPage
-+                  query={productsQuery}
-+                  onStats={(s) => {
-+                    setProductsTotal(s.total)
-+                    setProductsFiltered(s.filtered)
-+                  }}
-+                />
-+              }
-+            />
-+            <Route path="/logs" element={<LogsPage />} />
-+            <Route path="/settings" element={<SettingsPage />} />
-+          </Routes>
-+
-+          {/* пока не показываем filtered рядом, но оставили стейт под быстрые итерации */}
-+          {productsFiltered /* noop */ && false}
-+        </div>
-       </div>
-     </div>
-   )
-diff --git a/src/renderer/src/ui/pages/LogsPage.tsx b/src/renderer/src/ui/pages/LogsPage.tsx
-index 2e93540..9a62d9a 100644
---- a/src/renderer/src/ui/pages/LogsPage.tsx
-+++ b/src/renderer/src/ui/pages/LogsPage.tsx
-@@ -18,9 +18,10 @@ const TYPE_RU: Record<string, string> = {
- }
- 
- const STATUS_RU: Record<string, string> = {
-+  pending: 'Ожидает',
-+  running: 'В процессе',
-   success: 'Успешно',
-   error: 'Ошибка',
--  running: 'В процессе',
- }
- 
- function typeRu(v?: string | null) {
-@@ -47,6 +48,29 @@ function fmtDt(iso?: string | null) {
-   return `${dd}.${mm}.${yy} ${hh}:${mi}:${ss}`
- }
- 
-+function detailsRu(meta?: string | null): string {
-+  if (!meta) return '-'
++function logAppUpdateIfNeeded() {
 +  try {
-+    const m = JSON.parse(meta)
++    const current = app.getVersion()
++    const vp = persistentVersionPath()
 +
-+    // Новый формат: показываем только обновлено + новых
-+    if (typeof m?.updated === 'number' || typeof m?.added === 'number') {
-+      const upd = (typeof m?.updated === 'number') ? m.updated : 0
-+      const add = (typeof m?.added === 'number') ? m.added : 0
-+      return `обновлено: ${upd}, новых: ${add}`
++    let prev: string | null = null
++    if (existsSync(vp)) {
++      try {
++        const j = JSON.parse(readFileSync(vp, 'utf-8'))
++        prev = (j?.version && String(j.version)) ? String(j.version) : null
++      } catch {
++        prev = null
++      }
 +    }
 +
-+    // Старый формат — fallback
-+    const parts: string[] = []
-+    if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
-+    if (typeof m?.infoBatches === 'number') parts.push(`батчей: ${m.infoBatches}`)
-+    if (typeof m?.infoFetched === 'number') parts.push(`расширено: ${m.infoFetched}`)
-+    return parts.length ? parts.join(', ') : meta
++    // Сохраняем текущую версию на диске всегда
++    try {
++      writeFileSync(vp, JSON.stringify({ version: current, updatedAt: new Date().toISOString() }, null, 2), 'utf-8')
++    } catch {}
++
++    if (!prev || prev === current) return
++
++    // Логируем обновление (если БД уже инициализирована)
++    let storeClientId: string | null = null
++    try { storeClientId = loadSecrets().clientId } catch {}
++
++    const logId = dbLogStart('app_update', storeClientId)
++    dbLogFinish(logId, {
++      status: 'success',
++      storeClientId,
++      meta: { from: prev, to: current },
++    })
 +  } catch {
-+    return meta
++    // ignore
 +  }
 +}
 +
- export default function LogsPage() {
-   const [logs, setLogs] = useState<LogRow[]>([])
+ app.whenReady().then(() => {
+   if (!safeStorage.isEncryptionAvailable()) {
+     console.warn('safeStorage encryption is not available on this machine.')
+   }
  
-@@ -76,7 +100,6 @@ export default function LogsPage() {
-             <th>Статус</th>
-             <th>Старт</th>
-             <th>Финиш</th>
--            <th>Кол-во</th>
-             <th>Детали</th>
-             <th>Ошибка</th>
-           </tr>
-@@ -91,26 +114,11 @@ export default function LogsPage() {
-               </td>
-               <td className="small">{fmtDt(l.started_at)}</td>
-               <td className="small">{fmtDt(l.finished_at)}</td>
--              <td>{l.items_count ?? '-'}</td>
--              <td className="small">
--                {(() => {
--                  if (!l.meta) return '-'
--                  try {
--                    const m = JSON.parse(l.meta)
--                    const parts: string[] = []
--                    if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
--                    if (typeof m?.infoBatches === 'number') parts.push(`батчей: ${m.infoBatches}`)
--                    if (typeof m?.infoFetched === 'number') parts.push(`расширено: ${m.infoFetched}`)
--                    return parts.length ? parts.join(', ') : l.meta
--                  } catch {
--                    return l.meta
--                  }
--                })()}
--              </td>
-+              <td className="small">{detailsRu(l.meta)}</td>
-               <td className="small">{l.error_message ?? '-'}</td>
-             </tr>
-           ))}
--          {logs.length === 0 && <tr><td colSpan={8} className="small">Пока нет записей.</td></tr>}
-+          {logs.length === 0 && <tr><td colSpan={7} className="small">Пока нет записей.</td></tr>}
-         </tbody>
-       </table>
-     </div>
+   ensureDb()
++  logAppUpdateIfNeeded()
+   createWindow()
+ 
+   app.on('activate', () => {
+diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
+index 63781a0..3c91d8d 100644
+--- a/electron/main/ozon.ts
++++ b/electron/main/ozon.ts
+@@ -114,6 +114,18 @@ type ProductAttributesV3 = {
+ function chunk<T>(arr: T[], size: number) {
+   const out: T[][] = []
+   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
++
++  // Преобразуем id категории/типа в названия (для UI — только слова, без цифр)
++  try {
++    const { catNameById, typeNameById } = await ozonGetCategoryTypeMaps(secrets)
++    for (const p of out) {
++      if (p.category && catNameById[p.category]) p.category = catNameById[p.category]
++      if (p.type && typeNameById[p.type]) p.type = typeNameById[p.type]
++    }
++  } catch {
++    // не критично — если дерево категорий недоступно, оставим как есть
++  }
++
+   return out
+ }
+ 
+@@ -219,9 +231,9 @@ async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
+           const a = attrs.find(a => Number(a.id) === id)
+           const v = a?.values?.[0]
+           if (!v) continue
+-          const val = (v.value ?? '').toString().trim()
++          const val = (v.value ?? (v as any).name ?? (v as any).title ?? (v as any).text ?? '').toString().trim()
+           if (val) { brand = val; break }
+-          if (v.dictionary_value_id != null) { brand = String(v.dictionary_value_id); break }
++          // dictionary_value_id без значения не показываем — это будет просто число.
+         }
+ 
+         const barcode = x.barcode ? String(x.barcode) : null
+@@ -382,9 +394,19 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
+         offer_id: String(x.offer_id ?? ''),
+         sku: x.sku != null ? String(x.sku) : null,
+         barcode,
+-        brand: (brandRaw != null && String(brandRaw).trim().length) ? String(brandRaw).trim() : null,
++        brand: (() => {
++          if (brandRaw == null) return null
++          if (typeof brandRaw === 'string' && brandRaw.trim()) return brandRaw.trim()
++          if (typeof brandRaw === 'number' || typeof brandRaw === 'boolean') return String(brandRaw)
++          if (typeof brandRaw === 'object') {
++            const n = pickFirstString((brandRaw as any).name, (brandRaw as any).title, (brandRaw as any).value)
++            if (n) return n
++          }
++          const s = String(brandRaw).trim()
++          return s ? s : null
++        })(),
+         category: categoryId != null ? String(categoryId) : null,
+-        type: x.description_category_id != null ? String(x.description_category_id) : null,
++        type: typeId != null ? String(typeId) : null,
+         name,
+         is_visible: isVisible,
+         hidden_reasons: buildHiddenReasons(x),
+@@ -407,5 +429,17 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
+     // атрибуты не критичны — если упали, оставляем базовые поля
+   }
+ 
++
++  // Преобразуем id категории/типа в названия (для UI — только слова, без цифр)
++  try {
++    const { catNameById, typeNameById } = await ozonGetCategoryTypeMaps(secrets)
++    for (const p of out) {
++      if (p.category && catNameById[p.category]) p.category = catNameById[p.category]
++      if (p.type && typeNameById[p.type]) p.type = typeNameById[p.type]
++    }
++  } catch {
++    // не критично — если дерево категорий недоступно, оставим как есть
++  }
++
+   return out
+ }
+diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
+index 42a16c1..dc5a068 100644
+--- a/electron/main/storage/db.ts
++++ b/electron/main/storage/db.ts
+@@ -1,14 +1,41 @@
+ import { app } from 'electron'
+ import { join } from 'path'
++import { existsSync, mkdirSync, copyFileSync } from 'fs'
+ import Database from 'better-sqlite3'
+ import type { ProductRow } from '../types'
+ 
+ let db: Database.Database | null = null
+ 
++function persistentDir() {
++  // userData на Windows может удаляться деинсталлятором.
++  // Для истории логов и базы используем отдельную папку, которую деинсталлятор обычно не трогает.
++  return join(app.getPath('appData'), 'OzonatorPersistent')
++}
++
++function ensurePersistentDir() {
++  const dir = persistentDir()
++  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
++  return dir
++}
++
++export function persistentVersionPath() {
++  return join(ensurePersistentDir(), 'version.json')
++}
++
+ function dbPath() {
+-  return join(app.getPath('userData'), 'app.db')
++  const dir = ensurePersistentDir()
++  const newPath = join(dir, 'app.db')
++
++  // Миграция с прежнего расположения (userData/app.db)
++  const oldPath = join(app.getPath('userData'), 'app.db')
++  if (!existsSync(newPath) && existsSync(oldPath)) {
++    try { copyFileSync(oldPath, newPath) } catch {}
++  }
++
++  return newPath
+ }
+ 
++
+ /**
+  * Инициализация БД + миграции.
+  * Важно: эту функцию вызывает electron/main/index.ts при старте приложения.
 diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index a213394..d757ce7 100644
+index d757ce7..a5c611b 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -21,6 +21,11 @@ type ColDef = {
+@@ -1,248 +1,186 @@
+ import React, { useEffect, useMemo, useRef, useState } from 'react'
+ 
+-type Product = {
+-  offer_id: string
+-  sku?: string | null
+-  barcode?: string | null
+-  brand?: string | null
+-  category?: string | null
+-  type?: string | null
+-  name?: string | null
+-  is_visible?: number | boolean | null
+-  hidden_reasons?: string | null
+-  created_at?: string | null
+-  updated_at?: string | null
++// note: types from backend
++export type Product = {
++  product_id: number
++  offer_id: string | null
++  name: string | null
++  brand: string | null
++  category: string | null
++  type: string | null
++  created_at: string | null
++  archived: number
+ }
+ 
+-type ColDef = {
+-  id: keyof Product | 'archived'
+-  title: string
++type Col = {
++  id: keyof Product
++  label: string
+   w: number
    visible: boolean
  }
  
-+type Props = {
-+  query?: string
-+  onStats?: (s: { total: number; filtered: number }) => void
-+}
-+
- const DEFAULT_COLS: ColDef[] = [
-   { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
-   { id: 'name', title: 'Наименование', w: 320, visible: true },
-@@ -34,6 +39,21 @@ const DEFAULT_COLS: ColDef[] = [
-   { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
+-type Props = {
+-  query?: string
+-  onStats?: (s: { total: number; filtered: number }) => void
+-}
++const STORAGE_KEY = 'ozonator.columns.v4'
+ 
+-const DEFAULT_COLS: ColDef[] = [
+-  { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
+-  { id: 'name', title: 'Наименование', w: 320, visible: true },
+-  { id: 'category', title: 'Категория', w: 280, visible: true },
+-  { id: 'brand', title: 'Бренд', w: 180, visible: true },
+-  { id: 'sku', title: 'SKU', w: 140, visible: true },
+-  { id: 'barcode', title: 'Штрихкод', w: 170, visible: true },
+-  { id: 'type', title: 'Тип', w: 220, visible: true },
+-  { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
+-  { id: 'created_at', title: 'Создан', w: 180, visible: true },
+-  { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
++const DEFAULT_COLS: Col[] = [
++  { id: 'offer_id', label: 'Артикул', w: 160, visible: true },
++  { id: 'product_id', label: 'ID товара', w: 110, visible: true },
++  { id: 'name', label: 'Название', w: 320, visible: true },
++  { id: 'brand', label: 'Бренд', w: 180, visible: true },
++  { id: 'category', label: 'Категория', w: 220, visible: true },
++  { id: 'type', label: 'Тип', w: 180, visible: true },
++  { id: 'created_at', label: 'Дата создан', w: 150, visible: true },
  ]
  
-+const AUTO_MIN_W = 80
-+const AUTO_PAD = 34
-+const AUTO_MAX_W: Record<string, number> = {
-+  offer_id: 240,
-+  sku: 220,
-+  barcode: 260,
-+  brand: 220,
-+  is_visible: 180,
-+  created_at: 240,
-+  updated_at: 240,
-+  type: 320,
-+  category: 380,
-+  name: 460,
-+}
-+
- function readCols(): ColDef[] {
-   try {
-     const raw = localStorage.getItem('ozonator_cols')
-@@ -84,16 +104,20 @@ function visibilityText(p: Product): string {
-   return 'Неизвестно'
+-const AUTO_MIN_W = 80
+-const AUTO_PAD = 34
+-const AUTO_MAX_W: Record<string, number> = {
+-  offer_id: 240,
+-  sku: 220,
+-  barcode: 260,
+-  brand: 220,
+-  is_visible: 180,
+-  created_at: 240,
+-  updated_at: 240,
+-  type: 320,
+-  category: 380,
+-  name: 460,
+-}
+-
+-function readCols(): ColDef[] {
+-  try {
+-    const raw = localStorage.getItem('ozonator_cols')
+-    if (!raw) return DEFAULT_COLS
+-
+-    const parsed = JSON.parse(raw) as Partial<ColDef>[]
+-    const map = new Map<string, Partial<ColDef>>()
+-    for (const x of parsed) {
+-      if (x?.id) map.set(String(x.id), x)
+-    }
+-
+-    // Мержим с дефолтом, чтобы новые колонки появлялись автоматически
+-    const merged: ColDef[] = []
+-    for (const d of DEFAULT_COLS) {
+-      const p = map.get(String(d.id))
+-      merged.push({
+-        id: d.id,
+-        title: d.title,
+-        w: (typeof p?.w === 'number' && p.w > 60) ? p.w : d.w,
+-        visible: (typeof p?.visible === 'boolean') ? p.visible : d.visible,
+-      })
+-      map.delete(String(d.id))
+-    }
+-
+-    // Если в localStorage были старые/лишние колонки — игнорируем
+-    return merged
+-  } catch {
+-    return DEFAULT_COLS
+-  }
+-}
+-
+-function saveCols(cols: ColDef[]) {
+-  localStorage.setItem('ozonator_cols', JSON.stringify(cols))
+-}
+-
+-function toText(v: any): string {
+-  if (v == null) return ''
+-  if (typeof v === 'string') return v
+-  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+-  try { return JSON.stringify(v) } catch { return String(v) }
++function clamp(n: number, min: number, max: number) {
++  return Math.max(min, Math.min(max, n))
  }
  
--export default function ProductsPage() {
-+export default function ProductsPage({ query = '', onStats }: Props) {
+-function visibilityText(p: Product): string {
+-  const v = p.is_visible
+-  if (v === true || v === 1) return 'Виден'
+-  if (v === false || v === 0) return 'Скрыт'
+-  if (p.hidden_reasons && String(p.hidden_reasons).trim()) return 'Скрыт'
+-  return 'Неизвестно'
++function fmtRuDateTime(iso: any) {
++  const s = String(iso ?? '').trim()
++  if (!s) return '-'
++  const d = new Date(s)
++  if (Number.isNaN(d.getTime())) return s
++  const pad = (x: number) => String(x).padStart(2, '0')
++  const yy = String(d.getFullYear()).slice(-2)
++  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${yy} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+ }
+ 
+-export default function ProductsPage({ query = '', onStats }: Props) {
++export default function ProductsPage() {
    const [products, setProducts] = useState<Product[]>([])
--  const [query, setQuery] = useState('')
--
-   const [cols, setCols] = useState<ColDef[]>(readCols)
- 
-   const [draggingId, setDraggingId] = useState<string | null>(null)
-   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right' } | null>(null)
- 
-   const resizingRef = useRef<{ id: string; startX: number; startW: number } | null>(null)
-+  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
-+  const didAutoInitRef = useRef(false)
+-  const [cols, setCols] = useState<ColDef[]>(readCols)
++  const [loading, setLoading] = useState(true)
++  const [error, setError] = useState<string | null>(null)
 +
-+  const hasStoredCols = useMemo(() => {
-+    try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
-+  }, [])
++  const [cols, setCols] = useState<Col[]>(() => {
++    try {
++      const raw = localStorage.getItem(STORAGE_KEY)
++      if (!raw) return DEFAULT_COLS
++      const parsed = JSON.parse(raw)
++      if (!Array.isArray(parsed)) return DEFAULT_COLS
++
++      const safe: Col[] = []
++      const byId = new Map(DEFAULT_COLS.map((c) => [c.id, c]))
++
++      for (const item of parsed) {
++        if (!item || typeof item !== 'object') continue
++        const id = (item as any).id
++        if (!byId.has(id)) continue
++        const base = byId.get(id)!
++        safe.push({
++          id,
++          label: base.label,
++          w: Number.isFinite((item as any).w) ? clamp(Number((item as any).w), 80, 900) : base.w,
++          visible: typeof (item as any).visible === 'boolean' ? (item as any).visible : base.visible,
++        })
++      }
  
-   async function load() {
-     const resp = await window.api.getProducts()
-@@ -118,7 +142,7 @@ export default function ProductsPage() {
-   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
+-  const [draggingId, setDraggingId] = useState<string | null>(null)
+-  const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right' } | null>(null)
++      // add any missing
++      for (const c of DEFAULT_COLS) {
++        if (!safe.find((x) => x.id === c.id)) safe.push(c)
++      }
+ 
+-  const resizingRef = useRef<{ id: string; startX: number; startW: number } | null>(null)
+-  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
+-  const didAutoInitRef = useRef(false)
++      return safe
++    } catch {
++      return DEFAULT_COLS
++    }
++  })
+ 
+-  const hasStoredCols = useMemo(() => {
+-    try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
+-  }, [])
++  const [query, setQuery] = useState('')
+ 
+-  async function load() {
+-    const resp = await window.api.getProducts()
+-    if (resp.ok) setProducts(resp.products as any)
+-  }
++  const draggingIdRef = useRef<string | null>(null)
++  const [dropHint, setDropHint] = useState<{ targetId: string; side: 'left' | 'right' } | null>(null)
+ 
++  const wrapRef = useRef<HTMLDivElement | null>(null)
++  const [resizeLineX, setResizeLineX] = useState<number | null>(null)
++  const resizeRafRef = useRef<number | null>(null)
++
++  // persist columns
+   useEffect(() => {
+-    load()
+-  }, [])
++    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cols)) } catch {}
++  }, [cols])
+ 
++  // load products
+   useEffect(() => {
+-    const onUpdated = () => load()
+-    window.addEventListener('ozon:products-updated', onUpdated)
+-    return () => window.removeEventListener('ozon:products-updated', onUpdated)
++    let cancelled = false
++    ;(async () => {
++      try {
++        setLoading(true)
++        setError(null)
++        const res = await window.api.getProducts()
++        if (!cancelled) setProducts((res as any)?.products ?? [])
++      } catch (e: any) {
++        if (!cancelled) setError(e?.message ?? 'Ошибка загрузки')
++      } finally {
++        if (!cancelled) setLoading(false)
++      }
++    })()
++    return () => { cancelled = true }
+   }, [])
+ 
+-  useEffect(() => {
+-    saveCols(cols)
+-  }, [cols])
++  const visibleCols = useMemo(() => cols.filter((c) => c.visible), [cols])
++  const hiddenCols = useMemo(() => cols.filter((c) => !c.visible), [cols])
+ 
+-  const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
+-  const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
++  const tableWidth = useMemo(() => {
++    const sum = visibleCols.reduce((acc, c) => acc + c.w, 0)
++    return Math.max(860, sum)
++  }, [visibleCols])
  
    const filtered = useMemo(() => {
--    const q = query.trim().toLowerCase()
-+    const q = String(query ?? '').trim().toLowerCase()
+-    const q = String(query ?? '').trim().toLowerCase()
++    const q = query.trim().toLowerCase()
      if (!q) return products
  
-     return products.filter((p) => {
-@@ -137,6 +161,10 @@ export default function ProductsPage() {
+-    return products.filter((p) => {
+-      const hay = visibleCols
+-        .map((c) => {
+-          if (c.id === 'archived') return ''
+-          if (c.id === 'is_visible') return visibilityText(p)
+-          if (c.id === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
+-          if (c.id === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+-          return toText((p as any)[c.id])
+-        })
+-        .join(' ')
+-        .toLowerCase()
++    const fields: (keyof Product)[] = visibleCols.map((c) => c.id)
+ 
+-      return hay.includes(q)
++    return products.filter((p) => {
++      for (const f of fields) {
++        const v = (p as any)[f]
++        if (v == null) continue
++        if (String(v).toLowerCase().includes(q)) return true
++      }
++      return false
      })
    }, [products, query, visibleCols])
  
-+  useEffect(() => {
-+    onStats?.({ total: products.length, filtered: filtered.length })
-+  }, [products.length, filtered.length, onStats])
-+
-   function hideCol(id: string) {
-     setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: false } : c))
-   }
-@@ -209,7 +237,7 @@ export default function ProductsPage() {
-       const r = resizingRef.current
-       if (!r) return
-       const dx = ev.clientX - r.startX
--      const w = Math.max(80, Math.round(r.startW + dx))
-+      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
-       setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
-     }
- 
-@@ -238,18 +266,81 @@ export default function ProductsPage() {
-     return { text: (v == null || v === '') ? '-' : String(v) }
-   }
- 
-+  function measureTextWidth(text: string): number {
-+    const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'))
-+    const ctx = canvas.getContext('2d')
-+    if (!ctx) return text.length * 7
-+
-+    const cs = window.getComputedStyle(document.body)
-+    const fontSize = cs.fontSize || '13px'
-+    const fontFamily = cs.fontFamily || 'system-ui'
-+    const fontWeight = cs.fontWeight || '400'
-+    ctx.font = `${fontWeight} ${fontSize} ${fontFamily}`
-+
-+    return ctx.measureText(text).width
-+  }
-+
-+  function getCellString(p: Product, colId: ColDef['id']): string {
-+    if (colId === 'archived') return ''
-+    if (colId === 'is_visible') return visibilityText(p)
-+    if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
-+    if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
-+    return toText((p as any)[colId])
-+  }
-+
-+  function autoSizeColumn(colId: string, rows: Product[]) {
-+    const col = cols.find(c => String(c.id) === colId)
-+    if (!col) return
-+
-+    const cap = AUTO_MAX_W[colId] ?? 320
-+
-+    let max = measureTextWidth(col.title)
-+    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
-+    for (const p of sample) {
-+      const s = getCellString(p, col.id)
-+      if (!s) continue
-+      const w = measureTextWidth(s)
-+      if (w > max) max = w
-+    }
-+
-+    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
-+    setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
-+  }
-+
-+  // Первичная авто-ширина (если пользователь ещё ничего не сохранял)
-+  useEffect(() => {
-+    if (didAutoInitRef.current) return
-+    if (hasStoredCols) return
-+    if (products.length === 0) return
-+
-+    didAutoInitRef.current = true
-+
-+    // авто-подгоняем только видимые дефолтные столбцы
-+    const next = cols.map((c) => {
-+      if (!c.visible) return c
-+      const cap = AUTO_MAX_W[String(c.id)] ?? 320
-+
-+      let max = measureTextWidth(c.title)
-+      const sample = products.length > 1600 ? products.slice(0, 1600) : products
-+      for (const p of sample) {
-+        const s = getCellString(p, c.id)
-+        if (!s) continue
-+        const w = measureTextWidth(s)
-+        if (w > max) max = w
-+      }
-+
-+      const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
-+      return { ...c, w: nextW }
-+    })
-+
-+    setCols(next)
-+    // eslint-disable-next-line react-hooks/exhaustive-deps
-+  }, [products.length])
-+
-+  const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
-+
-   return (
-     <div className="card productsCard">
--      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
--        <div className="badge">Всего: {products.length}</div>
--        <input
--          className="searchInput search"
--          value={query}
--          onChange={(e) => setQuery(e.target.value)}
--          placeholder="Поиск по таблице…"
--        />
--      </div>
+-  useEffect(() => {
+-    onStats?.({ total: products.length, filtered: filtered.length })
+-  }, [products.length, filtered.length, onStats])
 -
-       {hiddenCols.length > 0 && (
-         <div className="collapsedBar">
-           <span className="small">Скрытые столбцы:</span>
-@@ -263,67 +354,76 @@ export default function ProductsPage() {
-       )}
- 
-       <div className="productsTableArea">
--        <div className="tableWrap tableWrapY" style={{ marginTop: 12 }}>
--          <table className="table tableFixed" style={{ minWidth: Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)) }}>
--            <colgroup>
--              {visibleCols.map(c => (
--                <col key={String(c.id)} style={{ width: c.w }} />
--              ))}
--            </colgroup>
--            <thead>
--              <tr>
--                {visibleCols.map(c => {
--                  const id = String(c.id)
--                  const isDrop = dropHint && dropHint.id === id
--                  const dropCls = isDrop ? (dropHint!.side === 'left' ? 'thDropLeft' : 'thDropRight') : ''
--
--                  return (
--                    <th
--                      key={id}
--                      draggable
--                      onDragStart={(e) => onDragStart(e, id)}
--                      onDragOver={(e) => onDragOverHeader(e, id)}
--                      onDrop={(e) => onDrop(e, id)}
--                      onDragEnd={onDragEnd}
--                      className={`thDraggable ${draggingId === id ? 'thDragging' : ''} ${dropCls}`.trim()}
--                    >
--                      <div className="thInner">
--                        <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
--                        <span>{c.title}</span>
--                        <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
--                      </div>
--                      <div
--                        className="thResizer"
--                        title="Изменить ширину"
--                        onMouseDown={(e) => startResize(e, id)}
--                      />
--                    </th>
--                  )
--                })}
--              </tr>
--            </thead>
--            <tbody>
--              {filtered.map(p => (
--                <tr key={p.offer_id}>
--                  {visibleCols.map(c => {
--                    const id = String(c.id)
--                    const { text, title } = cellText(p, c.id)
--                    return (
--                      <td key={id}>
--                        <div className="cellText" title={title ?? text}>{text}</div>
--                      </td>
--                    )
--                  })}
--                </tr>
--              ))}
--
--              {filtered.length === 0 && (
--                <tr>
--                  <td colSpan={visibleCols.length} className="empty">Ничего не найдено.</td>
--                </tr>
--              )}
--            </tbody>
--          </table>
-+        <div className="tableWrap" style={{ marginTop: 12 }}>
-+          <div className="tableWrapX">
-+            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
-+              <table className="table tableFixed" style={{ minWidth: tableMinWidth }}>
-+                <colgroup>
-+                  {visibleCols.map(c => (
-+                    <col key={String(c.id)} style={{ width: c.w }} />
-+                  ))}
-+                </colgroup>
-+                <thead>
-+                  <tr>
-+                    {visibleCols.map(c => {
-+                      const id = String(c.id)
-+                      const isDrop = dropHint && dropHint.id === id
-+                      const dropCls = isDrop ? (dropHint!.side === 'left' ? 'thDropLeft' : 'thDropRight') : ''
-+
-+                      return (
-+                        <th
-+                          key={id}
-+                          draggable
-+                          onDragStart={(e) => onDragStart(e, id)}
-+                          onDragOver={(e) => onDragOverHeader(e, id)}
-+                          onDrop={(e) => onDrop(e, id)}
-+                          onDragEnd={onDragEnd}
-+                          className={`thDraggable ${draggingId === id ? 'thDragging' : ''} ${dropCls}`.trim()}
-+                        >
-+                          <div className="thInner">
-+                            <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
-+                            <span>{c.title}</span>
-+                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
-+                          </div>
-+                          <div
-+                            className="thResizer"
-+                            title="Изменить ширину (двойной клик — по содержимому)"
-+                            onMouseDown={(e) => startResize(e, id)}
-+                            onDoubleClick={(e) => {
-+                              e.preventDefault()
-+                              e.stopPropagation()
-+                              autoSizeColumn(id, filtered)
-+                            }}
-+                          />
-+                        </th>
-+                      )
-+                    })}
-+                  </tr>
-+                </thead>
-+                <tbody>
-+                  {filtered.map(p => (
-+                    <tr key={p.offer_id}>
-+                      {visibleCols.map(c => {
-+                        const id = String(c.id)
-+                        const { text, title } = cellText(p, c.id)
-+                        return (
-+                          <td key={id}>
-+                            <div className="cellText" title={title ?? text}>{text}</div>
-+                          </td>
-+                        )
-+                      })}
-+                    </tr>
-+                  ))}
-+
-+                  {filtered.length === 0 && (
-+                    <tr>
-+                      <td colSpan={visibleCols.length} className="empty">Ничего не найдено.</td>
-+                    </tr>
-+                  )}
-+                </tbody>
-+              </table>
-+            </div>
-+          </div>
-         </div>
-       </div>
-     </div>
-diff --git a/src/renderer/src/ui/pages/SettingsPage.tsx b/src/renderer/src/ui/pages/SettingsPage.tsx
-index c96af37..f6b45f5 100644
---- a/src/renderer/src/ui/pages/SettingsPage.tsx
-+++ b/src/renderer/src/ui/pages/SettingsPage.tsx
-@@ -25,31 +25,24 @@ export default function SettingsPage() {
-     load()
-   }, [])
- 
--  async function onSave() {
-+  async function onSaveAndTest() {
-     setStatus('')
-     setErr('')
- 
-     try {
-       await window.api.saveSecrets({ clientId, apiKey })
--      setStatus('Сохранено локально. Теперь нажмите «Проверить доступ» — название магазина подтянется автоматически.')
--      setStoreName('')
--    } catch (e: any) {
--      setErr(e?.message ?? String(e))
--    }
+-  function hideCol(id: string) {
+-    setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: false } : c))
 -  }
 -
--  async function onTest() {
--    setStatus('')
--    setErr('')
+-  function showCol(id: string) {
+-    setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: true } : c))
+-  }
 -
--    try {
-       const resp = await window.api.testAuth()
-+
-       if (resp.ok) {
-         if (resp.storeName) setStoreName(resp.storeName)
-         setStatus('Доступ подтверждён.')
+-  function onDragStart(e: React.DragEvent, id: string) {
+-    setDraggingId(id)
+-    e.dataTransfer.setData('text/plain', id)
+-    e.dataTransfer.effectAllowed = 'move'
+-  }
+-
+-  function onDragOverHeader(e: React.DragEvent, targetId: string) {
+-    e.preventDefault()
+-
+-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+-    const x = e.clientX - rect.left
+-    const side: 'left' | 'right' = x < rect.width / 2 ? 'left' : 'right'
+-    setDropHint({ id: targetId, side })
+-  }
+-
+-  function onDrop(e: React.DragEvent, targetId: string) {
+-    e.preventDefault()
+-
+-    const draggedId = e.dataTransfer.getData('text/plain')
+-    if (!draggedId) return
+-
+-    setCols(prev => {
+-      const fromIdx = prev.findIndex(c => String(c.id) === draggedId)
+-      const toIdxRaw = prev.findIndex(c => String(c.id) === targetId)
+-      if (fromIdx < 0 || toIdxRaw < 0 || fromIdx === toIdxRaw) return prev
+-
+-      const side = dropHint?.id === targetId ? dropHint.side : 'left'
+-      const insertBase = toIdxRaw + (side === 'right' ? 1 : 0)
+-
+-      const next = [...prev]
+-      const [moved] = next.splice(fromIdx, 1)
+-
+-      let insertIdx = insertBase
+-      // если элемент забрали слева, индексы сдвинулись
+-      if (fromIdx < insertIdx) insertIdx -= 1
+-      if (insertIdx < 0) insertIdx = 0
+-      if (insertIdx > next.length) insertIdx = next.length
+-
+-      next.splice(insertIdx, 0, moved)
+-      return next
+-    })
+-
+-    setDraggingId(null)
+-    setDropHint(null)
++  function cellText(p: Product, colId: keyof Product) {
++    const v = (p as any)[colId]
++    if (v == null || v === '') return '-'
++    if (colId === 'created_at') return fmtRuDateTime(v)
++    if (colId === 'archived') return v ? 'Да' : 'Нет'
++    return String(v)
+   }
  
-         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
-         load()
+-  function onDragEnd() {
+-    setDraggingId(null)
+-    setDropHint(null)
++  function toggleCol(id: keyof Product) {
++    setCols((prev) => prev.map((c) => (c.id === id ? { ...c, visible: !c.visible } : c)))
+   }
+ 
+-  function startResize(e: React.MouseEvent, colId: string) {
++  function startResize(e: React.MouseEvent, colId: keyof Product) {
+     e.preventDefault()
+     e.stopPropagation()
+ 
+-    const col = cols.find(c => String(c.id) === colId)
++    const startX = e.clientX
++    const col = cols.find((c) => c.id === colId)
+     if (!col) return
++    const startW = col.w
 +
-+        // обновим заголовок/лог
-+        window.dispatchEvent(new Event('ozon:store-updated'))
-+        window.dispatchEvent(new Event('ozon:logs-updated'))
-       } else {
-         setErr(resp.error ?? 'Ошибка проверки доступа')
-       }
-@@ -68,6 +61,7 @@ export default function SettingsPage() {
-       setApiKey('')
-       setStoreName('')
-       setStatus('Ключи удалены.')
-+      window.dispatchEvent(new Event('ozon:store-updated'))
-     } catch (e: any) {
-       setErr(e?.message ?? String(e))
++    const getWrapLeft = () => wrapRef.current?.getBoundingClientRect().left ?? 0
++    const setLine = (clientX: number) => setResizeLineX(Math.round(clientX - getWrapLeft()))
+ 
+-    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w }
++    setLine(e.clientX)
+ 
+     const onMove = (ev: MouseEvent) => {
+-      const r = resizingRef.current
+-      if (!r) return
+-      const dx = ev.clientX - r.startX
+-      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
+-      setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
++      const dx = ev.clientX - startX
++      const nextW = clamp(startW + dx, 80, 900)
++
++      if (resizeRafRef.current != null) cancelAnimationFrame(resizeRafRef.current)
++      resizeRafRef.current = requestAnimationFrame(() => {
++        setCols((prev) => prev.map((c) => (c.id === colId ? { ...c, w: nextW } : c)))
++        setLine(ev.clientX)
++      })
      }
-@@ -75,17 +69,14 @@ export default function SettingsPage() {
+ 
+     const onUp = () => {
+-      resizingRef.current = null
++      if (resizeRafRef.current != null) cancelAnimationFrame(resizeRafRef.current)
++      resizeRafRef.current = null
++      setResizeLineX(null)
+       window.removeEventListener('mousemove', onMove)
+       window.removeEventListener('mouseup', onUp)
+     }
+@@ -251,178 +189,208 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+     window.addEventListener('mouseup', onUp)
+   }
+ 
+-  function cellText(p: Product, colId: ColDef['id']): { text: string; title?: string } {
+-    if (colId === 'offer_id') return { text: p.offer_id }
+-    if (colId === 'name') return { text: (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия' }
+-    if (colId === 'brand') return { text: (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан' }
++  function autoSizeCol(colId: keyof Product) {
++    const sample = filtered.slice(0, 80)
++    const header = cols.find((c) => c.id === colId)?.label ?? String(colId)
++
++    const canvas = document.createElement('canvas')
++    const ctx = canvas.getContext('2d')
++    if (!ctx) return
++    ctx.font = '13px system-ui, -apple-system, Segoe UI, Roboto, sans-serif'
++
++    const pad = 44
++    let maxPx = ctx.measureText(header).width + pad
+ 
+-    if (colId === 'is_visible') {
+-      const txt = visibilityText(p)
+-      const title = (p.hidden_reasons && String(p.hidden_reasons).trim()) ? String(p.hidden_reasons) : undefined
+-      return { text: txt, title }
++    for (const p of sample) {
++      const t = cellText(p, colId)
++      const w = ctx.measureText(t).width + pad
++      if (w > maxPx) maxPx = w
+     }
+ 
+-    const v = (p as any)[colId]
+-    return { text: (v == null || v === '') ? '-' : String(v) }
++    const nextW = clamp(Math.ceil(maxPx), 90, 520)
++    setCols((prev) => prev.map((c) => (c.id === colId ? { ...c, w: nextW } : c)))
+   }
+ 
+-  function measureTextWidth(text: string): number {
+-    const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'))
+-    const ctx = canvas.getContext('2d')
+-    if (!ctx) return text.length * 7
+-
+-    const cs = window.getComputedStyle(document.body)
+-    const fontSize = cs.fontSize || '13px'
+-    const fontFamily = cs.fontFamily || 'system-ui'
+-    const fontWeight = cs.fontWeight || '400'
+-    ctx.font = `${fontWeight} ${fontSize} ${fontFamily}`
++  function onDragStartHeader(e: React.DragEvent, colId: keyof Product) {
++    draggingIdRef.current = String(colId)
++    e.dataTransfer.effectAllowed = 'move'
++    try { e.dataTransfer.setData('text/plain', String(colId)) } catch {}
++  }
+ 
+-    return ctx.measureText(text).width
++  function onDragEndHeader() {
++    draggingIdRef.current = null
++    setDropHint(null)
+   }
+ 
+-  function getCellString(p: Product, colId: ColDef['id']): string {
+-    if (colId === 'archived') return ''
+-    if (colId === 'is_visible') return visibilityText(p)
+-    if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
+-    if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+-    return toText((p as any)[colId])
++  function onDragOverHeader(e: React.DragEvent, targetId: keyof Product) {
++    e.preventDefault()
++
++    const dragging = draggingIdRef.current
++    if (!dragging || dragging === String(targetId)) {
++      setDropHint(null)
++      return
++    }
++
++    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
++    const x = e.clientX - rect.left
++    const mid = rect.width / 2
++    const threshold = 14
++
++    setDropHint((prev) => {
++      if (prev?.targetId !== String(targetId)) {
++        const side = x < mid ? 'left' : 'right'
++        return { targetId: String(targetId), side }
++      }
++
++      // гистерезис: в зоне ±threshold от середины не меняем сторону (убирает "прыжок" на миллиметр)
++      if (x < mid - threshold) return { targetId: String(targetId), side: 'left' }
++      if (x > mid + threshold) return { targetId: String(targetId), side: 'right' }
++      return prev
++    })
+   }
+ 
+-  function autoSizeColumn(colId: string, rows: Product[]) {
+-    const col = cols.find(c => String(c.id) === colId)
+-    if (!col) return
++  function onDropHeader(e: React.DragEvent, targetId: keyof Product) {
++    e.preventDefault()
+ 
+-    const cap = AUTO_MAX_W[colId] ?? 320
++    const dragging = draggingIdRef.current
++    if (!dragging || dragging === String(targetId)) {
++      setDropHint(null)
++      return
++    }
+ 
+-    let max = measureTextWidth(col.title)
+-    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
+-    for (const p of sample) {
+-      const s = getCellString(p, col.id)
+-      if (!s) continue
+-      const w = measureTextWidth(s)
+-      if (w > max) max = w
++    const fromIdx = cols.findIndex((c) => String(c.id) === dragging)
++    const targetIdx = cols.findIndex((c) => c.id === targetId)
++    if (fromIdx < 0 || targetIdx < 0) {
++      setDropHint(null)
++      return
+     }
+ 
+-    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
+-    setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
+-  }
++    const side = dropHint?.targetId === String(targetId) ? dropHint.side : 'right'
+ 
+-  // Первичная авто-ширина (если пользователь ещё ничего не сохранял)
+-  useEffect(() => {
+-    if (didAutoInitRef.current) return
+-    if (hasStoredCols) return
+-    if (products.length === 0) return
+-
+-    didAutoInitRef.current = true
+-
+-    // авто-подгоняем только видимые дефолтные столбцы
+-    const next = cols.map((c) => {
+-      if (!c.visible) return c
+-      const cap = AUTO_MAX_W[String(c.id)] ?? 320
+-
+-      let max = measureTextWidth(c.title)
+-      const sample = products.length > 1600 ? products.slice(0, 1600) : products
+-      for (const p of sample) {
+-        const s = getCellString(p, c.id)
+-        if (!s) continue
+-        const w = measureTextWidth(s)
+-        if (w > max) max = w
+-      }
++    setCols((prev) => {
++      const arr = [...prev]
++      const [moved] = arr.splice(fromIdx, 1)
++      let insertIdx = targetIdx
++
++      // если мы вытащили элемент из массива слева — targetIdx изменился
++      if (fromIdx < targetIdx) insertIdx = targetIdx - 1
+ 
+-      const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
+-      return { ...c, w: nextW }
++      if (side === 'right') insertIdx += 1
++      insertIdx = clamp(insertIdx, 0, arr.length)
++      arr.splice(insertIdx, 0, moved)
++      return arr
+     })
+ 
+-    setCols(next)
+-    // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [products.length])
++    setDropHint(null)
++  }
+ 
+-  const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
++  const totalLabel = useMemo(() => `Всего: ${products.length}`, [products.length])
  
    return (
-     <div className="card">
--      <div className="h1">Настройки магазина</div>
--      <div className="small" style={{ marginTop: 6 }}>
--        Ключи хранятся локально в зашифрованном виде (Electron safeStorage). Не отправляются в лог и не попадают в базу.
--      </div>
-+      <div className="h1">Настройки</div>
- 
-       <div className="row" style={{ marginTop: 16 }}>
-         <div className="col field">
-           <label>Название магазина</label>
-           <input
-             value={storeName}
--            placeholder="Подтянется с Ozon после проверки доступа"
-+            placeholder="Появится после проверки доступа"
-             readOnly
-           />
+     <div className="card productsCard">
+-      {hiddenCols.length > 0 && (
+-        <div className="collapsedBar">
+-          <span className="small">Скрытые столбцы:</span>
+-          {hiddenCols.map(c => (
+-            <span key={String(c.id)} className="chip">
+-              {c.title}{' '}
+-              <button className="colToggle" onClick={() => showCol(String(c.id))} title="Показать">+</button>
+-            </span>
+-          ))}
++      <div className="productsHeader">
++        <div>
++          <div className="h2">Товары</div>
++          <div className="muted">{totalLabel}</div>
          </div>
-@@ -103,18 +94,12 @@ export default function SettingsPage() {
-       </div>
+-      )}
++      </div>
  
-       <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
--        <button className="primary" onClick={onSave}>Сохранить локально</button>
--        <button onClick={onTest}>Проверить доступ</button>
-+        <button className="primary" onClick={onSaveAndTest}>Сохранить и проверить</button>
-         <button onClick={onDelete}>Стереть ключи</button>
-       </div>
- 
-       {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
-       {err && <div className="notice error" style={{ marginTop: 12 }}>{err}</div>}
+       <div className="productsTableArea">
+-        <div className="tableWrap" style={{ marginTop: 12 }}>
+-          <div className="tableWrapX">
+-            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
+-              <table className="table tableFixed" style={{ minWidth: tableMinWidth }}>
+-                <colgroup>
+-                  {visibleCols.map(c => (
+-                    <col key={String(c.id)} style={{ width: c.w }} />
+-                  ))}
+-                </colgroup>
+-                <thead>
+-                  <tr>
+-                    {visibleCols.map(c => {
+-                      const id = String(c.id)
+-                      const isDrop = dropHint && dropHint.id === id
+-                      const dropCls = isDrop ? (dropHint!.side === 'left' ? 'thDropLeft' : 'thDropRight') : ''
 -
--      <div className="notice" style={{ marginTop: 14 }}>
--        <b>Важно.</b> Если вы меняете ключи на другой магазин, список «Товары» будет показывать данные только по активному магазину.
--        Старые данные других магазинов остаются в базе, но не отображаются.
--      </div>
-     </div>
-   )
- }
+-                      return (
+-                        <th
+-                          key={id}
+-                          draggable
+-                          onDragStart={(e) => onDragStart(e, id)}
+-                          onDragOver={(e) => onDragOverHeader(e, id)}
+-                          onDrop={(e) => onDrop(e, id)}
+-                          onDragEnd={onDragEnd}
+-                          className={`thDraggable ${draggingId === id ? 'thDragging' : ''} ${dropCls}`.trim()}
+-                        >
+-                          <div className="thInner">
+-                            <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
+-                            <span>{c.title}</span>
+-                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
++        {hiddenCols.length > 0 && (
++          <div className="collapsedBar">
++            <div className="collapsedLeft">Скрытые столбцы:</div>
++            <div className="collapsedRight">
++              {hiddenCols.map((c) => (
++                <button key={String(c.id)} className="chip chipSmall" onClick={() => toggleCol(c.id)}>
++                  {c.label}
++                </button>
++              ))}
++            </div>
++          </div>
++        )}
++
++        <div className="tableWrap" ref={wrapRef}>
++          {resizeLineX != null && <div className="colResizeLine" style={{ left: resizeLineX }} />}
++
++          <div className="tableScroller">
++            <table className="table tableFixed" style={{ width: tableWidth, minWidth: tableWidth }}>
++              <colgroup>
++                {visibleCols.map((c) => (
++                  <col key={String(c.id)} style={{ width: c.w }} />
++                ))}
++              </colgroup>
++
++              <thead>
++                <tr>
++                  {visibleCols.map((c) => {
++                    const hint = dropHint?.targetId === String(c.id) ? dropHint.side : null
++                    const thClass = [
++                      hint ? (hint === 'left' ? 'thDropLeft' : 'thDropRight') : '',
++                    ].filter(Boolean).join(' ')
++
++                    return (
++                      <th
++                        key={String(c.id)}
++                        className={thClass}
++                        draggable
++                        onDragStart={(e) => onDragStartHeader(e, c.id)}
++                        onDragEnd={onDragEndHeader}
++                        onDragOver={(e) => onDragOverHeader(e, c.id)}
++                        onDrop={(e) => onDropHeader(e, c.id)}
++                        title="Перетащите, чтобы поменять порядок"
++                      >
++                        <div className="thInner">
++                          <span className="thLabel">{c.label}</span>
++                          <div className="thActions">
++                            <button className="colToggle" onClick={() => toggleCol(c.id)} title="Скрыть столбец">
++                              ⨯
++                            </button>
+                           </div>
+-                          <div
+-                            className="thResizer"
+-                            title="Изменить ширину (двойной клик — по содержимому)"
+-                            onMouseDown={(e) => startResize(e, id)}
+-                            onDoubleClick={(e) => {
+-                              e.preventDefault()
+-                              e.stopPropagation()
+-                              autoSizeColumn(id, filtered)
+-                            }}
+-                          />
+-                        </th>
+-                      )
+-                    })}
++                        </div>
++                        <div
++                          className="thResizer"
++                          onMouseDown={(e) => startResize(e, c.id)}
++                          onDoubleClick={() => autoSizeCol(c.id)}
++                          title="Тяните для изменения ширины. Двойной клик — автоширина"
++                        />
++                      </th>
++                    )
++                  })}
++                </tr>
++              </thead>
++
++              <tbody>
++                {loading && (
++                  <tr>
++                    <td colSpan={visibleCols.length} className="tdCenter">Загрузка...</td>
+                   </tr>
+-                </thead>
+-                <tbody>
+-                  {filtered.map(p => (
+-                    <tr key={p.offer_id}>
+-                      {visibleCols.map(c => {
+-                        const id = String(c.id)
+-                        const { text, title } = cellText(p, c.id)
+-                        return (
+-                          <td key={id}>
+-                            <div className="cellText" title={title ?? text}>{text}</div>
+-                          </td>
+-                        )
+-                      })}
+-                    </tr>
+-                  ))}
+-
+-                  {filtered.length === 0 && (
+-                    <tr>
+-                      <td colSpan={visibleCols.length} className="empty">Ничего не найдено.</td>
+-                    </tr>
+-                  )}
+-                </tbody>
+-              </table>
+-            </div>
++                )}
++
++                {!loading && error && (
++                  <tr>
++                    <td colSpan={visibleCols.length} className="tdCenter">{error}</td>
++                  </tr>
++                )}
++
++                {!loading && !error && filtered.length === 0 && (
++                  <tr>
++                    <td colSpan={visibleCols.length} className="tdCenter">Нет данных</td>
++                  </tr>
++                )}
++
++                {!loading && !error && filtered.map((p) => (
++                  <tr key={p.product_id}>
++                    {visibleCols.map((c) => (
++                      <td key={String(c.id)}>
++                        <div className="cellText" title={cellText(p, c.id)}>
++                          {cellText(p, c.id)}
++                        </div>
++                      </td>
++                    ))}
++                  </tr>
++                ))}
++              </tbody>
++            </table>
+           </div>
+         </div>
+       </div>
 diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
-index 942182c..87a475d 100644
+index 87a475d..b81f105 100644
 --- a/src/renderer/src/ui/styles.css
 +++ b/src/renderer/src/ui/styles.css
-@@ -41,17 +41,28 @@ body{
- 
- a{ color: inherit; text-decoration: none; }
- 
--.appShell{ min-height: 100%; }
-+.appShell{ min-height: 100%; display: flex; flex-direction: column; }
-+
-+.pageArea{ flex: 1; min-height: 0; overflow: hidden; }
- 
- .container{
--  max-width: 1220px;
--  margin: 0 auto;
-+  max-width: none;
-+  margin: 0;
-   padding: 18px 18px 26px;
-+  height: 100%;
-+  overflow: auto;
- }
- 
-+/* прячем системный вертикальный скролл страницы — скроллим только контент */
-+.container::-webkit-scrollbar { height: 10px; width: 10px; }
-+.container::-webkit-scrollbar-thumb { background: rgba(0,0,0,.20); border-radius: 999px; border: 2px solid rgba(255,255,255,.75); }
-+.container::-webkit-scrollbar-track { background: rgba(0,0,0,.04); border-radius: 999px; }
-+
-+
- /* Full-width content area (used for Products page table) */
- .containerWide{
-   max-width: none;
-+  overflow: hidden;
- }
- 
- /* Topbar */
-@@ -66,7 +77,7 @@ a{ color: inherit; text-decoration: none; }
- }
- 
- .topbarInner{
--  max-width: 1220px;
-+  max-width: none;
-   margin: 0 auto;
-   padding: 12px 18px;
-   display: flex;
-@@ -74,6 +85,43 @@ a{ color: inherit; text-decoration: none; }
-   gap: 14px;
- }
- 
-+.appTitle{
-+  display: inline-flex;
-+  align-items: baseline;
-+  gap: 10px;
-+  padding: 6px 10px;
-+  border-radius: 12px;
-+}
-+
-+.appName{
-+  font-size: 20px;
-+  font-weight: 820;
-+  letter-spacing: -0.02em;
-+}
-+
-+.appStoreName{
-+  font-size: 13px;
-+  font-weight: 650;
-+  color: rgba(60,60,67,.78);
-+  letter-spacing: 0;
-+}
-+
-+.segCount{
-+  margin-left: 8px;
-+  padding: 2px 8px;
-+  border-radius: 999px;
-+  border: 1px solid rgba(60,60,67,.14);
-+  background: rgba(255,255,255,.72);
-+  color: rgba(60,60,67,.78);
-+  font-size: 12px;
-+  font-weight: 650;
-+}
-+
-+.topbarSearch{
-+  display: inline-flex;
-+  align-items: center;
-+}
-+
- .appNameLink{
-   font-size: 20px;
-   font-weight: 820;
-@@ -324,7 +372,8 @@ button:disabled{
- .productsCard{
-   display: flex;
-   flex-direction: column;
--  height: calc(100vh - 118px); /* topbar + padding */
-+  height: 100%;
-+  min-height: 0;
- }
- .productsTableArea{ display:flex; flex-direction:column; flex:1; min-height:0; }
- .search{ min-width: 310px; }
-@@ -377,6 +426,8 @@ button:disabled{
- /* Tables */
- .tableWrap{
-   margin-top: 14px;
-+  display: flex;
-+  flex-direction: column;
-   border: 1px solid var(--hairline2);
-   border-radius: var(--radius);
-   overflow: hidden;
-@@ -384,11 +435,24 @@ button:disabled{
+@@ -435,6 +435,30 @@ button:disabled{
    box-shadow: 0 1px 0 rgba(255,255,255,.55) inset;
  }
  
--.tableWrapY{ overflow: auto; flex: 1; min-height: 0; }
-+.tableWrapX{
-+  overflow-x: auto;
-+  overflow-y: hidden;
-+  flex: 1;
-+  min-height: 0;
-+}
 +
-+.tableWrapY{
-+  overflow-y: auto;
-+  overflow-x: hidden;
++.tableScroller {
 +  height: 100%;
++  width: 100%;
++  overflow: auto;
++  scrollbar-gutter: stable both-edges;
++  contain: content;
++  transform: translateZ(0);
 +}
 +
-+/* Scrollbars */
-+.tableWrapX::-webkit-scrollbar, .tableWrapY::-webkit-scrollbar { height: 10px; width: 10px; }
-+.tableWrapX::-webkit-scrollbar-thumb, .tableWrapY::-webkit-scrollbar-thumb { background: rgba(0,0,0,.20); border-radius: 999px; border: 2px solid rgba(255,255,255,.75); }
-+.tableWrapX::-webkit-scrollbar-track, .tableWrapY::-webkit-scrollbar-track { background: rgba(0,0,0,.04); border-radius: 999px; }
- 
--.tableWrapY::-webkit-scrollbar { height: 10px; width: 10px; }
--.tableWrapY::-webkit-scrollbar-thumb { background: rgba(0,0,0,.20); border-radius: 999px; border: 2px solid rgba(255,255,255,.75); }
--.tableWrapY::-webkit-scrollbar-track { background: rgba(0,0,0,.04); border-radius: 999px; }
- 
- .table{
-   width: 100%;
++.tableScroller::-webkit-scrollbar { height: 10px; width: 10px; }
++.tableScroller::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.18); border-radius: 999px; }
++.tableScroller::-webkit-scrollbar-track { background: rgba(0,0,0,0.06); border-radius: 999px; }
++
++.colResizeLine {
++  position: absolute;
++  top: 0;
++  bottom: 0;
++  width: 2px;
++  background: rgba(10,132,255,0.65);
++  box-shadow: 0 0 0 1px rgba(255,255,255,0.65);
++  pointer-events: none;
++  z-index: 5;
++}
+ .tableWrapX{
+   overflow-x: auto;
+   overflow-y: hidden;
+@@ -620,3 +644,27 @@ button:disabled{
+   border-radius: 999px;
+   background: white;
+ }
++
++
++.chipSmall {
++  padding: 6px 10px;
++  font-size: 12px;
++  border-radius: 999px;
++}
++
++.collapsedBar {
++  padding: 8px 10px;
++  border-radius: 12px;
++  margin-bottom: 10px;
++}
++
++.collapsedLeft {
++  font-size: 12px;
++  color: var(--muted);
++}
++
++.collapsedRight {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++}
