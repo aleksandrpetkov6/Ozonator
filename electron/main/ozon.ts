@@ -96,19 +96,81 @@ async function ozonGetCategoryTypeMaps(secrets: Secrets): Promise<DescriptionMap
 function pickTextBrand(item: any): string | null {
   const b = item?.brand
   if (typeof b === 'string' && b.trim()) return b.trim()
+  if (b && typeof b === 'object') {
+    const maybe = (b as any).name ?? (b as any).brand_name ?? (b as any).title ?? (b as any).value
+    if (typeof maybe === 'string' && maybe.trim()) return maybe.trim()
+  }
 
   // иногда бренд лежит в attributes
   const attrs: any[] = Array.isArray(item?.attributes) ? item.attributes : []
   for (const a of attrs) {
+    const attrId = toIntMaybe(a?.id ?? a?.attribute_id)
     const name = String(a?.name ?? '').toLowerCase()
-    if (name === 'бренд' || name === 'brand') {
-      const vals = Array.isArray(a?.values) ? a.values : []
-      const v = vals[0]?.value ?? vals[0]
+
+    // Seller API: "Бренд" — attribute_id 85 (универсально). На некоторых ответах name отсутствует.
+    if (attrId !== 85 && name !== 'бренд' && name !== 'brand') continue
+
+    const vals = Array.isArray(a?.values) ? a.values : []
+    for (const vv of vals) {
+      const v = vv?.value ?? vv
       if (typeof v === 'string' && v.trim() && !/^\d+$/.test(v.trim())) return v.trim()
     }
   }
 
   return null
+}
+
+function toIntMaybe(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v)
+  if (typeof v === 'string') {
+    const s = v.trim()
+    if (!s) return null
+    if (/^\d+$/.test(s)) {
+      const n = Number(s)
+      return Number.isFinite(n) ? Math.trunc(n) : null
+    }
+  }
+  return null
+}
+
+function isNonNumericText(v: unknown): v is string {
+  return typeof v === 'string' && v.trim() !== '' && !/^\d+$/.test(v.trim())
+}
+
+async function ozonGetBrandCategoryByAttributes(
+  secrets: Secrets,
+  productIds: number[],
+): Promise<Map<number, { brand: string | null; categoryId: number | null }>> {
+  const map = new Map<number, { brand: string | null; categoryId: number | null }>()
+  if (!productIds.length) return map
+
+  // /v3/products/info/attributes — возвращает attributes (в т.ч. бренд=85) + category_id.
+  let lastId = ''
+  for (;;) {
+    const res = await ozonPost<any>(secrets, '/v3/products/info/attributes', {
+      filter: { product_id: productIds, visibility: 'ALL' },
+      limit: 100,
+      last_id: lastId,
+      sort_dir: 'ASC',
+    })
+
+    const items: any[] = Array.isArray(res?.result) ? res.result : Array.isArray(res?.result?.items) ? res.result.items : []
+    for (const it of items) {
+      const pid = toIntMaybe(it?.id ?? it?.product_id)
+      if (pid == null) continue
+
+      const categoryId = toIntMaybe(it?.description_category_id ?? it?.category_id ?? it?.categoryId)
+      const brand = pickTextBrand(it)
+
+      map.set(pid, { brand: brand ?? null, categoryId: categoryId ?? null })
+    }
+
+    const nextLastId = String(res?.last_id ?? res?.result?.last_id ?? '')
+    if (!nextLastId || items.length === 0 || nextLastId === lastId) break
+    lastId = nextLastId
+  }
+
+  return map
 }
 
 export type OzonProductRow = {
@@ -152,25 +214,35 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
   if (!productIds.length) return []
   const maps = await ozonGetCategoryTypeMaps(secrets)
 
+  // Достаем бренд и (на всякий случай) category_id из attributes.
+  const extraByPid = await ozonGetBrandCategoryByAttributes(secrets, productIds)
+
   const res = await ozonPost<any>(secrets, '/v3/product/info/list', { product_id: productIds })
   const items: any[] = res?.result?.items ?? res?.items ?? []
 
   return items
     .filter((it) => typeof it?.offer_id === 'string' && typeof it?.product_id === 'number')
     .map((it) => {
-      const categoryId = it?.description_category_id ?? it?.category_id ?? null
-      const typeId = it?.type_id ?? null
+      const extra = extraByPid.get(it.product_id)
 
-      const categoryName =
-        (typeof it?.category_name === 'string' && it.category_name.trim()) ||
-        (typeof it?.description_category_name === 'string' && it.description_category_name.trim()) ||
-        (typeof categoryId === 'number' ? maps.catNameById.get(categoryId) : null) ||
+      const categoryId =
+        toIntMaybe(it?.description_category_id) ??
+        toIntMaybe(it?.category_id) ??
+        toIntMaybe(extra?.categoryId) ??
         null
 
+      const typeId = toIntMaybe(it?.type_id) ?? null
+
+      const categoryName =
+        (isNonNumericText(it?.category_name) && it.category_name.trim()) ||
+        (isNonNumericText(it?.description_category_name) && it.description_category_name.trim()) ||
+        (categoryId != null ? maps.catNameById.get(categoryId) : null) ||
+        (categoryId != null ? `Категория ${categoryId}` : null)
+
       const typeName =
-        (typeof it?.type_name === 'string' && it.type_name.trim()) ||
-        (typeof it?.product_type === 'string' && it.product_type.trim()) ||
-        (typeof typeId === 'number' ? maps.typeNameById.get(typeId) : null) ||
+        (isNonNumericText(it?.type_name) && it.type_name.trim()) ||
+        (typeId != null ? maps.typeNameById.get(typeId) : null) ||
+        (isNonNumericText(it?.product_type) ? it.product_type.trim() : null) ||
         null
 
       const hiddenReasonsArr: string[] = Array.isArray(it?.hidden_reasons) ? it.hidden_reasons.map(String) : []
@@ -182,7 +254,7 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
         sku: typeof it?.sku === 'string' || typeof it?.sku === 'number' ? String(it.sku) : null,
         barcode: typeof it?.barcode === 'string' ? it.barcode : null,
         name: typeof it?.name === 'string' ? it.name : null,
-        brand: pickTextBrand(it),
+        brand: pickTextBrand(it) ?? extra?.brand ?? null,
         category: categoryName || null,
         type: typeName || null,
         is_visible: typeof it?.is_visible === 'boolean' ? it.is_visible : it?.visible === undefined ? null : !!it?.visible,
