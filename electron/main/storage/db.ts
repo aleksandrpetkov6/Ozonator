@@ -6,6 +6,64 @@ import type { ProductRow, SyncLogRow, SyncLogStatus, SyncLogType } from '../type
 
 let _db: Database.Database | null = null
 
+type ColumnDef = { name: string; ddl: string }
+
+function tableColumns(db: Database.Database, table: string): Set<string> {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as any[]
+    return new Set(rows.map((r) => String(r.name)))
+  } catch {
+    return new Set()
+  }
+}
+
+function ensureColumns(db: Database.Database, table: string, cols: ColumnDef[]): void {
+  const existing = tableColumns(db, table)
+  for (const c of cols) {
+    if (existing.has(c.name)) continue
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${c.name} ${c.ddl}`)
+      existing.add(c.name)
+    } catch {
+      // ignore: either already exists, or sqlite can't alter due to legacy schema
+    }
+  }
+}
+
+function migrateSchema(db: Database.Database): void {
+  // products: older installs might miss columns — CREATE TABLE IF NOT EXISTS won't add them.
+  ensureColumns(db, 'products', [
+    { name: 'product_id', ddl: 'INTEGER' },
+    { name: 'sku', ddl: 'TEXT' },
+    { name: 'barcode', ddl: 'TEXT' },
+    { name: 'brand', ddl: 'TEXT' },
+    { name: 'category', ddl: 'TEXT' },
+    { name: 'type', ddl: 'TEXT' },
+    { name: 'name', ddl: 'TEXT' },
+    { name: 'is_visible', ddl: 'INTEGER' },
+    { name: 'hidden_reasons', ddl: 'TEXT' },
+    { name: 'created_at', ddl: 'TEXT' },
+    { name: 'archived', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'store_client_id', ddl: 'TEXT' },
+  ])
+
+  ensureColumns(db, 'sync_log', [
+    { name: 'message', ddl: 'TEXT' },
+    { name: 'details', ddl: 'TEXT' },
+    { name: 'created_at', ddl: 'TEXT NOT NULL' },
+    { name: 'version', ddl: 'TEXT' },
+    { name: 'store_client_id', ddl: 'TEXT' },
+  ])
+
+  // Indices (safe if already exist)
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_client_id)')
+  } catch {}
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sync_log_store ON sync_log(store_client_id)')
+  } catch {}
+}
+
 function getDb(): Database.Database {
   if (_db) return _db
 
@@ -17,6 +75,7 @@ function getDb(): Database.Database {
   const dbPath = join(dir, 'app.db')
   _db = new Database(dbPath)
   _db.pragma('journal_mode = WAL')
+
   _db.exec(`
     CREATE TABLE IF NOT EXISTS products (
       offer_id TEXT PRIMARY KEY,
@@ -52,6 +111,8 @@ function getDb(): Database.Database {
       value TEXT
     );
   `)
+
+  migrateSchema(_db)
 
   return _db
 }
@@ -153,7 +214,6 @@ export function dbLogStart(type: SyncLogType, storeClientId: string | null): num
   const info = getDb()
     .prepare('INSERT INTO sync_log(type,status,message,details,created_at,version,store_client_id) VALUES(?,?,?,?,?,?,?)')
     .run(type, 'started', null, null, now, version, storeClientId)
-
   return Number(info.lastInsertRowid)
 }
 
