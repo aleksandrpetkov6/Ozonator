@@ -1,146 +1,102 @@
-import { app } from 'electron'
-import { join } from 'path'
-import { existsSync, mkdirSync, copyFileSync } from 'fs'
 import Database from 'better-sqlite3'
-import type { ProductRow } from '../types'
+import { app } from 'electron'
+import { mkdirSync } from 'fs'
+import { join } from 'path'
+import type { ProductRow, SyncLogRow, SyncLogStatus, SyncLogType } from '../types'
 
-let db: Database.Database | null = null
+let _db: Database.Database | null = null
 
-function persistentDir() {
-  // userData на Windows может удаляться деинсталлятором.
-  // Для истории логов и базы используем отдельную папку, которую деинсталлятор обычно не трогает.
-  return join(app.getPath('appData'), 'OzonatorPersistent')
-}
+function getDb(): Database.Database {
+  if (_db) return _db
 
-function ensurePersistentDir() {
-  const dir = persistentDir()
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  return dir
-}
+  const dir = app.getPath('userData')
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch {}
 
-export function persistentVersionPath() {
-  return join(ensurePersistentDir(), 'version.json')
-}
-
-function dbPath() {
-  const dir = ensurePersistentDir()
-  const newPath = join(dir, 'app.db')
-
-  // Миграция с прежнего расположения (userData/app.db)
-  const oldPath = join(app.getPath('userData'), 'app.db')
-  if (!existsSync(newPath) && existsSync(oldPath)) {
-    try { copyFileSync(oldPath, newPath) } catch {}
-  }
-
-  return newPath
-}
-
-
-/**
- * Инициализация БД + миграции.
- * Важно: эту функцию вызывает electron/main/index.ts при старте приложения.
- */
-export function ensureDb() {
-  if (db) return
-
-  db = new Database(dbPath())
-  db.pragma('journal_mode = WAL')
-
-  // Базовая схема
-  db.exec(`
+  const dbPath = join(dir, 'app.db')
+  _db = new Database(dbPath)
+  _db.pragma('journal_mode = WAL')
+  _db.exec(`
     CREATE TABLE IF NOT EXISTS products (
       offer_id TEXT PRIMARY KEY,
-      product_id INTEGER NULL,
-      sku TEXT NULL,
-      archived INTEGER NULL,
-      updated_at TEXT NOT NULL
+      product_id INTEGER,
+      sku TEXT,
+      barcode TEXT,
+      brand TEXT,
+      category TEXT,
+      type TEXT,
+      name TEXT,
+      is_visible INTEGER,
+      hidden_reasons TEXT,
+      created_at TEXT,
+      archived INTEGER NOT NULL DEFAULT 0,
+      store_client_id TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_client_id);
 
     CREATE TABLE IF NOT EXISTS sync_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       type TEXT NOT NULL,
       status TEXT NOT NULL,
-      started_at TEXT NOT NULL,
-      finished_at TEXT NULL,
-      items_count INTEGER NULL,
-      error_message TEXT NULL,
-      error_details TEXT NULL,
-      meta TEXT NULL,
-      store_client_id TEXT NULL
+      message TEXT,
+      details TEXT,
+      created_at TEXT NOT NULL,
+      version TEXT,
+      store_client_id TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_sync_log_store ON sync_log(store_client_id);
 
-    CREATE INDEX IF NOT EXISTS idx_sync_log_started_at ON sync_log(started_at);
+    CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
   `)
 
-  // Миграции: добавляем недостающие колонки в products (для расширенного экрана «Товары»)
-  const cols = new Set(
-    (db.prepare('PRAGMA table_info(products)').all() as any[]).map((r) => String(r.name))
-  )
-
-  const add = (name: string, decl: string) => {
-    if (cols.has(name)) return
-    db!.exec(`ALTER TABLE products ADD COLUMN ${name} ${decl};`)
-    cols.add(name)
-  }
-
-  add('barcode', 'TEXT NULL')
-  add('brand', 'TEXT NULL')
-  add('category', 'TEXT NULL')
-  add('type', 'TEXT NULL')
-  add('name', 'TEXT NULL')
-  add('is_visible', 'INTEGER NULL')
-  add('hidden_reasons', 'TEXT NULL')
-  add('created_at', 'TEXT NULL')
-
-  // Чтобы не смешивать товары разных магазинов при смене ключей
-  add('store_client_id', 'TEXT NULL')
-
-  // Логи: фильтрация по магазину
-  const logCols = new Set(
-    (db.prepare('PRAGMA table_info(sync_log)').all() as any[]).map((r) => String(r.name))
-  )
-  if (!logCols.has('store_client_id')) {
-    db.exec(`ALTER TABLE sync_log ADD COLUMN store_client_id TEXT NULL;`)
-    logCols.add('store_client_id')
-  }
-
+  return _db
 }
 
-function mustDb(): Database.Database {
-  if (!db) throw new Error('DB not initialized (call ensureDb() first)')
-  return db
+export function dbGetMeta(key: string): string | null {
+  const row = getDb().prepare('SELECT value FROM meta WHERE key=?').get(key) as any
+  return row?.value ?? null
 }
 
-export function dbUpsertProducts(items: Array<{
-  offer_id: string
-  product_id?: number
-  sku?: string | null
-  barcode?: string | null
-  brand?: string | null
-  category?: string | null
-  type?: string | null
-  name?: string | null
-  is_visible?: number | boolean | null
-  hidden_reasons?: string | null
-  created_at?: string | null
-  archived?: boolean
-  store_client_id?: string | null
-}>) {
-  const now = new Date().toISOString()
+export function dbSetMeta(key: string, value: string): void {
+  getDb()
+    .prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+    .run(key, value)
+}
 
-  const stmt = mustDb().prepare(`
-    INSERT INTO products (
-      offer_id, product_id, sku,
-      barcode, brand, category, type, name, is_visible, hidden_reasons, created_at,
-      store_client_id,
-      archived, updated_at
-    )
-    VALUES (
-      @offer_id, @product_id, @sku,
-      @barcode, @brand, @category, @type, @name, @is_visible, @hidden_reasons, @created_at,
-      @store_client_id,
-      @archived, @updated_at
-    )
+export function dbGetProducts(storeClientId: string | null): ProductRow[] {
+  const stmt = storeClientId
+    ? getDb().prepare('SELECT * FROM products WHERE store_client_id=? ORDER BY offer_id')
+    : getDb().prepare('SELECT * FROM products ORDER BY offer_id')
+
+  const rows = (storeClientId ? stmt.all(storeClientId) : stmt.all()) as any[]
+  return rows.map((r) => ({
+    offer_id: r.offer_id,
+    product_id: r.product_id ?? null,
+    sku: r.sku ?? null,
+    barcode: r.barcode ?? null,
+    brand: r.brand ?? null,
+    category: r.category ?? null,
+    type: r.type ?? null,
+    name: r.name ?? null,
+    is_visible: r.is_visible === null || r.is_visible === undefined ? null : !!r.is_visible,
+    hidden_reasons: r.hidden_reasons ?? null,
+    created_at: r.created_at ?? null,
+    archived: !!r.archived,
+    store_client_id: r.store_client_id,
+  }))
+}
+
+export function dbUpsertProducts(items: ProductRow[]): void {
+  if (!items.length) return
+  const stmt = getDb().prepare(`
+    INSERT INTO products
+    (offer_id, product_id, sku, barcode, brand, category, type, name, is_visible, hidden_reasons, created_at, archived, store_client_id)
+    VALUES
+    (@offer_id, @product_id, @sku, @barcode, @brand, @category, @type, @name, @is_visible, @hidden_reasons, @created_at, @archived, @store_client_id)
     ON CONFLICT(offer_id) DO UPDATE SET
       product_id=excluded.product_id,
       sku=excluded.sku,
@@ -152,139 +108,69 @@ export function dbUpsertProducts(items: Array<{
       is_visible=excluded.is_visible,
       hidden_reasons=excluded.hidden_reasons,
       created_at=excluded.created_at,
-      store_client_id=excluded.store_client_id,
       archived=excluded.archived,
-      updated_at=excluded.updated_at
+      store_client_id=excluded.store_client_id
   `)
 
-  const tx = mustDb().transaction((rows: any[]) => {
+  const tx = getDb().transaction((rows: ProductRow[]) => {
     for (const r of rows) {
-      const vis =
-        r.is_visible === true ? 1 :
-        r.is_visible === false ? 0 :
-        (typeof r.is_visible === 'number' ? r.is_visible : null)
-
       stmt.run({
-        offer_id: r.offer_id,
-        product_id: r.product_id ?? null,
-        sku: r.sku ?? null,
-        barcode: r.barcode ?? null,
-        brand: r.brand ?? null,
-        category: r.category ?? null,
-        type: r.type ?? null,
-        name: r.name ?? null,
-        is_visible: vis,
-        hidden_reasons: r.hidden_reasons ?? null,
-        created_at: r.created_at ?? null,
-        store_client_id: (r.store_client_id ?? null),
-        archived: typeof r.archived === 'boolean' ? (r.archived ? 1 : 0) : null,
-        updated_at: now,
+        ...r,
+        is_visible: r.is_visible === null ? null : r.is_visible ? 1 : 0,
+        archived: r.archived ? 1 : 0,
       })
     }
   })
-
-  tx(items as any[])
+  tx(items)
 }
 
-export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
-  if (storeClientId) {
-    return mustDb().prepare(`
-      SELECT
-        offer_id,
-        product_id,
-        sku,
-        barcode,
-        brand,
-        category,
-        type,
-        name,
-        is_visible,
-        hidden_reasons,
-        created_at,
-        store_client_id,
-        archived,
-        updated_at
-      FROM products
-      WHERE store_client_id = ?
-      ORDER BY offer_id COLLATE NOCASE ASC
-    `).all(storeClientId) as any
-  }
+export function dbGetSyncLog(storeClientId: string | null): SyncLogRow[] {
+  const stmt = storeClientId
+    ? getDb().prepare('SELECT * FROM sync_log WHERE store_client_id=? ORDER BY id DESC')
+    : getDb().prepare('SELECT * FROM sync_log ORDER BY id DESC')
 
-  return mustDb().prepare(`
-    SELECT
-      offer_id,
-      product_id,
-      sku,
-      barcode,
-      brand,
-      category,
-      type,
-      name,
-      is_visible,
-      hidden_reasons,
-      created_at,
-      store_client_id,
-      archived,
-      updated_at
-    FROM products
-    ORDER BY offer_id COLLATE NOCASE ASC
-  `).all() as any
+  const rows = (storeClientId ? stmt.all(storeClientId) : stmt.all()) as any[]
+  return rows.map((r) => ({
+    id: Number(r.id),
+    type: r.type,
+    status: r.status,
+    message: r.message ?? null,
+    details: r.details ? safeJsonParse(r.details) : null,
+    created_at: r.created_at,
+    version: r.version ?? null,
+    store_client_id: r.store_client_id ?? null,
+  }))
 }
 
-export function dbLogStart(type: 'check_auth' | 'sync_products', storeClientId?: string | null): number {
-  const startedAt = new Date().toISOString()
-  const info = mustDb().prepare(`
-    INSERT INTO sync_log (type, status, started_at, store_client_id)
-    VALUES (?, 'pending', ?, ?)
-  `).run(type, startedAt, storeClientId ?? null)
+export function dbClearLogs(storeClientId?: string | null): void {
+  if (storeClientId) getDb().prepare('DELETE FROM sync_log WHERE store_client_id=?').run(storeClientId)
+  else getDb().prepare('DELETE FROM sync_log').run()
+}
+
+export function dbLogStart(type: SyncLogType, storeClientId: string | null): number {
+  const now = new Date().toISOString()
+  const version = typeof app.getVersion === 'function' ? app.getVersion() : null
+  const info = getDb()
+    .prepare('INSERT INTO sync_log(type,status,message,details,created_at,version,store_client_id) VALUES(?,?,?,?,?,?,?)')
+    .run(type, 'started', null, null, now, version, storeClientId)
 
   return Number(info.lastInsertRowid)
 }
 
-export function dbLogFinish(id: number, args: {
-  status: 'success' | 'error'
-  itemsCount?: number
-  errorMessage?: string
-  errorDetails?: any
-  meta?: any
-  storeClientId?: string | null
-}) {
-  const finishedAt = new Date().toISOString()
-  mustDb().prepare(`
-    UPDATE sync_log
-    SET status=?, finished_at=?, items_count=?, error_message=?, error_details=?, meta=?, store_client_id=COALESCE(?, store_client_id)
-    WHERE id=?
-  `).run(
-    args.status,
-    finishedAt,
-    args.itemsCount ?? null,
-    args.errorMessage ?? null,
-    args.errorDetails ? JSON.stringify(args.errorDetails).slice(0, 20000) : null,
-    args.meta ? JSON.stringify(args.meta).slice(0, 20000) : null,
-    args.storeClientId ?? null,
-    id
-  )
+export function dbLogFinish(
+  id: number,
+  params: { status: SyncLogStatus; message?: string | null; details?: unknown; storeClientId: string | null }
+): void {
+  const detailsStr = params.details === undefined ? null : JSON.stringify(params.details)
+  getDb()
+    .prepare('UPDATE sync_log SET status=?, message=?, details=?, store_client_id=? WHERE id=?')
+    .run(params.status, params.message ?? null, detailsStr, params.storeClientId, id)
 }
 
-export function dbGetSyncLog(storeClientId?: string | null) {
-  if (storeClientId) {
-    return mustDb().prepare(`
-      SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
-      FROM sync_log
-      WHERE store_client_id = ?
-      ORDER BY id DESC
-      LIMIT 500
-    `).all(storeClientId)
+function safeJsonParse(s: string): unknown {
+  try {
+    return JSON.parse(s)
+  } catch {
+    return s
   }
-
-  return mustDb().prepare(`
-    SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
-    FROM sync_log
-    ORDER BY id DESC
-    LIMIT 500
-  `).all()
-}
-
-export function dbClearLogs() {
-  mustDb().prepare('DELETE FROM sync_log').run()
 }
