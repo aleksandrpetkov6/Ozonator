@@ -114,6 +114,18 @@ type ProductAttributesV3 = {
 function chunk<T>(arr: T[], size: number) {
   const out: T[][] = []
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+
+  // Преобразуем id категории/типа в названия (для UI — только слова, без цифр)
+  try {
+    const { catNameById, typeNameById } = await ozonGetCategoryTypeMaps(secrets)
+    for (const p of out) {
+      if (p.category && catNameById[p.category]) p.category = catNameById[p.category]
+      if (p.type && typeNameById[p.type]) p.type = typeNameById[p.type]
+    }
+  } catch {
+    // не критично — если дерево категорий недоступно, оставим как есть
+  }
+
   return out
 }
 
@@ -219,9 +231,9 @@ async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
           const a = attrs.find(a => Number(a.id) === id)
           const v = a?.values?.[0]
           if (!v) continue
-          const val = (v.value ?? '').toString().trim()
+          const val = (v.value ?? (v as any).name ?? (v as any).title ?? (v as any).text ?? '').toString().trim()
           if (val) { brand = val; break }
-          if (v.dictionary_value_id != null) { brand = String(v.dictionary_value_id); break }
+          // dictionary_value_id без значения не показываем — это будет просто число.
         }
 
         const barcode = x.barcode ? String(x.barcode) : null
@@ -382,9 +394,19 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
         offer_id: String(x.offer_id ?? ''),
         sku: x.sku != null ? String(x.sku) : null,
         barcode,
-        brand: (brandRaw != null && String(brandRaw).trim().length) ? String(brandRaw).trim() : null,
+        brand: (() => {
+          if (brandRaw == null) return null
+          if (typeof brandRaw === 'string' && brandRaw.trim()) return brandRaw.trim()
+          if (typeof brandRaw === 'number' || typeof brandRaw === 'boolean') return String(brandRaw)
+          if (typeof brandRaw === 'object') {
+            const n = pickFirstString((brandRaw as any).name, (brandRaw as any).title, (brandRaw as any).value)
+            if (n) return n
+          }
+          const s = String(brandRaw).trim()
+          return s ? s : null
+        })(),
         category: categoryId != null ? String(categoryId) : null,
-        type: x.description_category_id != null ? String(x.description_category_id) : null,
+        type: typeId != null ? String(typeId) : null,
         name,
         is_visible: isVisible,
         hidden_reasons: buildHiddenReasons(x),
@@ -405,6 +427,18 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
     }
   } catch {
     // атрибуты не критичны — если упали, оставляем базовые поля
+  }
+
+
+  // Преобразуем id категории/типа в названия (для UI — только слова, без цифр)
+  try {
+    const { catNameById, typeNameById } = await ozonGetCategoryTypeMaps(secrets)
+    for (const p of out) {
+      if (p.category && catNameById[p.category]) p.category = catNameById[p.category]
+      if (p.type && typeNameById[p.type]) p.type = typeNameById[p.type]
+    }
+  } catch {
+    // не критично — если дерево категорий недоступно, оставим как есть
   }
 
   return out

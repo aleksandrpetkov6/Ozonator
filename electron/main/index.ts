@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net } from 'electron'
 import { join } from 'path'
-import { ensureDb, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts } from './storage/db'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { ensureDb, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, persistentVersionPath } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonProductInfoList, ozonProductList, ozonTestAuth } from './ozon'
 
@@ -55,12 +56,51 @@ function createWindow() {
   nativeTheme.themeSource = 'light'
 }
 
+
+function logAppUpdateIfNeeded() {
+  try {
+    const current = app.getVersion()
+    const vp = persistentVersionPath()
+
+    let prev: string | null = null
+    if (existsSync(vp)) {
+      try {
+        const j = JSON.parse(readFileSync(vp, 'utf-8'))
+        prev = (j?.version && String(j.version)) ? String(j.version) : null
+      } catch {
+        prev = null
+      }
+    }
+
+    // Сохраняем текущую версию на диске всегда
+    try {
+      writeFileSync(vp, JSON.stringify({ version: current, updatedAt: new Date().toISOString() }, null, 2), 'utf-8')
+    } catch {}
+
+    if (!prev || prev === current) return
+
+    // Логируем обновление (если БД уже инициализирована)
+    let storeClientId: string | null = null
+    try { storeClientId = loadSecrets().clientId } catch {}
+
+    const logId = dbLogStart('app_update', storeClientId)
+    dbLogFinish(logId, {
+      status: 'success',
+      storeClientId,
+      meta: { from: prev, to: current },
+    })
+  } catch {
+    // ignore
+  }
+}
+
 app.whenReady().then(() => {
   if (!safeStorage.isEncryptionAvailable()) {
     console.warn('safeStorage encryption is not available on this machine.')
   }
 
   ensureDb()
+  logAppUpdateIfNeeded()
   createWindow()
 
   app.on('activate', () => {

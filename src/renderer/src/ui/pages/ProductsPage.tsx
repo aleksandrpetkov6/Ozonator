@@ -1,248 +1,186 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 
-type Product = {
-  offer_id: string
-  sku?: string | null
-  barcode?: string | null
-  brand?: string | null
-  category?: string | null
-  type?: string | null
-  name?: string | null
-  is_visible?: number | boolean | null
-  hidden_reasons?: string | null
-  created_at?: string | null
-  updated_at?: string | null
+// note: types from backend
+export type Product = {
+  product_id: number
+  offer_id: string | null
+  name: string | null
+  brand: string | null
+  category: string | null
+  type: string | null
+  created_at: string | null
+  archived: number
 }
 
-type ColDef = {
-  id: keyof Product | 'archived'
-  title: string
+type Col = {
+  id: keyof Product
+  label: string
   w: number
   visible: boolean
 }
 
-type Props = {
-  query?: string
-  onStats?: (s: { total: number; filtered: number }) => void
-}
+const STORAGE_KEY = 'ozonator.columns.v4'
 
-const DEFAULT_COLS: ColDef[] = [
-  { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
-  { id: 'name', title: 'Наименование', w: 320, visible: true },
-  { id: 'category', title: 'Категория', w: 280, visible: true },
-  { id: 'brand', title: 'Бренд', w: 180, visible: true },
-  { id: 'sku', title: 'SKU', w: 140, visible: true },
-  { id: 'barcode', title: 'Штрихкод', w: 170, visible: true },
-  { id: 'type', title: 'Тип', w: 220, visible: true },
-  { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
-  { id: 'created_at', title: 'Создан', w: 180, visible: true },
-  { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
+const DEFAULT_COLS: Col[] = [
+  { id: 'offer_id', label: 'Артикул', w: 160, visible: true },
+  { id: 'product_id', label: 'ID товара', w: 110, visible: true },
+  { id: 'name', label: 'Название', w: 320, visible: true },
+  { id: 'brand', label: 'Бренд', w: 180, visible: true },
+  { id: 'category', label: 'Категория', w: 220, visible: true },
+  { id: 'type', label: 'Тип', w: 180, visible: true },
+  { id: 'created_at', label: 'Дата создан', w: 150, visible: true },
 ]
 
-const AUTO_MIN_W = 80
-const AUTO_PAD = 34
-const AUTO_MAX_W: Record<string, number> = {
-  offer_id: 240,
-  sku: 220,
-  barcode: 260,
-  brand: 220,
-  is_visible: 180,
-  created_at: 240,
-  updated_at: 240,
-  type: 320,
-  category: 380,
-  name: 460,
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n))
 }
 
-function readCols(): ColDef[] {
-  try {
-    const raw = localStorage.getItem('ozonator_cols')
-    if (!raw) return DEFAULT_COLS
-
-    const parsed = JSON.parse(raw) as Partial<ColDef>[]
-    const map = new Map<string, Partial<ColDef>>()
-    for (const x of parsed) {
-      if (x?.id) map.set(String(x.id), x)
-    }
-
-    // Мержим с дефолтом, чтобы новые колонки появлялись автоматически
-    const merged: ColDef[] = []
-    for (const d of DEFAULT_COLS) {
-      const p = map.get(String(d.id))
-      merged.push({
-        id: d.id,
-        title: d.title,
-        w: (typeof p?.w === 'number' && p.w > 60) ? p.w : d.w,
-        visible: (typeof p?.visible === 'boolean') ? p.visible : d.visible,
-      })
-      map.delete(String(d.id))
-    }
-
-    // Если в localStorage были старые/лишние колонки — игнорируем
-    return merged
-  } catch {
-    return DEFAULT_COLS
-  }
+function fmtRuDateTime(iso: any) {
+  const s = String(iso ?? '').trim()
+  if (!s) return '-'
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return s
+  const pad = (x: number) => String(x).padStart(2, '0')
+  const yy = String(d.getFullYear()).slice(-2)
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${yy} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-function saveCols(cols: ColDef[]) {
-  localStorage.setItem('ozonator_cols', JSON.stringify(cols))
-}
-
-function toText(v: any): string {
-  if (v == null) return ''
-  if (typeof v === 'string') return v
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-  try { return JSON.stringify(v) } catch { return String(v) }
-}
-
-function visibilityText(p: Product): string {
-  const v = p.is_visible
-  if (v === true || v === 1) return 'Виден'
-  if (v === false || v === 0) return 'Скрыт'
-  if (p.hidden_reasons && String(p.hidden_reasons).trim()) return 'Скрыт'
-  return 'Неизвестно'
-}
-
-export default function ProductsPage({ query = '', onStats }: Props) {
+export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([])
-  const [cols, setCols] = useState<ColDef[]>(readCols)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right' } | null>(null)
+  const [cols, setCols] = useState<Col[]>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return DEFAULT_COLS
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return DEFAULT_COLS
 
-  const resizingRef = useRef<{ id: string; startX: number; startW: number } | null>(null)
-  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
-  const didAutoInitRef = useRef(false)
+      const safe: Col[] = []
+      const byId = new Map(DEFAULT_COLS.map((c) => [c.id, c]))
 
-  const hasStoredCols = useMemo(() => {
-    try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
-  }, [])
+      for (const item of parsed) {
+        if (!item || typeof item !== 'object') continue
+        const id = (item as any).id
+        if (!byId.has(id)) continue
+        const base = byId.get(id)!
+        safe.push({
+          id,
+          label: base.label,
+          w: Number.isFinite((item as any).w) ? clamp(Number((item as any).w), 80, 900) : base.w,
+          visible: typeof (item as any).visible === 'boolean' ? (item as any).visible : base.visible,
+        })
+      }
 
-  async function load() {
-    const resp = await window.api.getProducts()
-    if (resp.ok) setProducts(resp.products as any)
-  }
+      // add any missing
+      for (const c of DEFAULT_COLS) {
+        if (!safe.find((x) => x.id === c.id)) safe.push(c)
+      }
 
+      return safe
+    } catch {
+      return DEFAULT_COLS
+    }
+  })
+
+  const [query, setQuery] = useState('')
+
+  const draggingIdRef = useRef<string | null>(null)
+  const [dropHint, setDropHint] = useState<{ targetId: string; side: 'left' | 'right' } | null>(null)
+
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const [resizeLineX, setResizeLineX] = useState<number | null>(null)
+  const resizeRafRef = useRef<number | null>(null)
+
+  // persist columns
   useEffect(() => {
-    load()
-  }, [])
-
-  useEffect(() => {
-    const onUpdated = () => load()
-    window.addEventListener('ozon:products-updated', onUpdated)
-    return () => window.removeEventListener('ozon:products-updated', onUpdated)
-  }, [])
-
-  useEffect(() => {
-    saveCols(cols)
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cols)) } catch {}
   }, [cols])
 
-  const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
-  const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
+  // load products
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        setLoading(true)
+        setError(null)
+        const res = await window.api.getProducts()
+        if (!cancelled) setProducts((res as any)?.products ?? [])
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? 'Ошибка загрузки')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  const visibleCols = useMemo(() => cols.filter((c) => c.visible), [cols])
+  const hiddenCols = useMemo(() => cols.filter((c) => !c.visible), [cols])
+
+  const tableWidth = useMemo(() => {
+    const sum = visibleCols.reduce((acc, c) => acc + c.w, 0)
+    return Math.max(860, sum)
+  }, [visibleCols])
 
   const filtered = useMemo(() => {
-    const q = String(query ?? '').trim().toLowerCase()
+    const q = query.trim().toLowerCase()
     if (!q) return products
 
-    return products.filter((p) => {
-      const hay = visibleCols
-        .map((c) => {
-          if (c.id === 'archived') return ''
-          if (c.id === 'is_visible') return visibilityText(p)
-          if (c.id === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
-          if (c.id === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
-          return toText((p as any)[c.id])
-        })
-        .join(' ')
-        .toLowerCase()
+    const fields: (keyof Product)[] = visibleCols.map((c) => c.id)
 
-      return hay.includes(q)
+    return products.filter((p) => {
+      for (const f of fields) {
+        const v = (p as any)[f]
+        if (v == null) continue
+        if (String(v).toLowerCase().includes(q)) return true
+      }
+      return false
     })
   }, [products, query, visibleCols])
 
-  useEffect(() => {
-    onStats?.({ total: products.length, filtered: filtered.length })
-  }, [products.length, filtered.length, onStats])
-
-  function hideCol(id: string) {
-    setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: false } : c))
+  function cellText(p: Product, colId: keyof Product) {
+    const v = (p as any)[colId]
+    if (v == null || v === '') return '-'
+    if (colId === 'created_at') return fmtRuDateTime(v)
+    if (colId === 'archived') return v ? 'Да' : 'Нет'
+    return String(v)
   }
 
-  function showCol(id: string) {
-    setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: true } : c))
+  function toggleCol(id: keyof Product) {
+    setCols((prev) => prev.map((c) => (c.id === id ? { ...c, visible: !c.visible } : c)))
   }
 
-  function onDragStart(e: React.DragEvent, id: string) {
-    setDraggingId(id)
-    e.dataTransfer.setData('text/plain', id)
-    e.dataTransfer.effectAllowed = 'move'
-  }
-
-  function onDragOverHeader(e: React.DragEvent, targetId: string) {
-    e.preventDefault()
-
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const side: 'left' | 'right' = x < rect.width / 2 ? 'left' : 'right'
-    setDropHint({ id: targetId, side })
-  }
-
-  function onDrop(e: React.DragEvent, targetId: string) {
-    e.preventDefault()
-
-    const draggedId = e.dataTransfer.getData('text/plain')
-    if (!draggedId) return
-
-    setCols(prev => {
-      const fromIdx = prev.findIndex(c => String(c.id) === draggedId)
-      const toIdxRaw = prev.findIndex(c => String(c.id) === targetId)
-      if (fromIdx < 0 || toIdxRaw < 0 || fromIdx === toIdxRaw) return prev
-
-      const side = dropHint?.id === targetId ? dropHint.side : 'left'
-      const insertBase = toIdxRaw + (side === 'right' ? 1 : 0)
-
-      const next = [...prev]
-      const [moved] = next.splice(fromIdx, 1)
-
-      let insertIdx = insertBase
-      // если элемент забрали слева, индексы сдвинулись
-      if (fromIdx < insertIdx) insertIdx -= 1
-      if (insertIdx < 0) insertIdx = 0
-      if (insertIdx > next.length) insertIdx = next.length
-
-      next.splice(insertIdx, 0, moved)
-      return next
-    })
-
-    setDraggingId(null)
-    setDropHint(null)
-  }
-
-  function onDragEnd() {
-    setDraggingId(null)
-    setDropHint(null)
-  }
-
-  function startResize(e: React.MouseEvent, colId: string) {
+  function startResize(e: React.MouseEvent, colId: keyof Product) {
     e.preventDefault()
     e.stopPropagation()
 
-    const col = cols.find(c => String(c.id) === colId)
+    const startX = e.clientX
+    const col = cols.find((c) => c.id === colId)
     if (!col) return
+    const startW = col.w
 
-    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w }
+    const getWrapLeft = () => wrapRef.current?.getBoundingClientRect().left ?? 0
+    const setLine = (clientX: number) => setResizeLineX(Math.round(clientX - getWrapLeft()))
+
+    setLine(e.clientX)
 
     const onMove = (ev: MouseEvent) => {
-      const r = resizingRef.current
-      if (!r) return
-      const dx = ev.clientX - r.startX
-      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
-      setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
+      const dx = ev.clientX - startX
+      const nextW = clamp(startW + dx, 80, 900)
+
+      if (resizeRafRef.current != null) cancelAnimationFrame(resizeRafRef.current)
+      resizeRafRef.current = requestAnimationFrame(() => {
+        setCols((prev) => prev.map((c) => (c.id === colId ? { ...c, w: nextW } : c)))
+        setLine(ev.clientX)
+      })
     }
 
     const onUp = () => {
-      resizingRef.current = null
+      if (resizeRafRef.current != null) cancelAnimationFrame(resizeRafRef.current)
+      resizeRafRef.current = null
+      setResizeLineX(null)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
@@ -251,178 +189,208 @@ export default function ProductsPage({ query = '', onStats }: Props) {
     window.addEventListener('mouseup', onUp)
   }
 
-  function cellText(p: Product, colId: ColDef['id']): { text: string; title?: string } {
-    if (colId === 'offer_id') return { text: p.offer_id }
-    if (colId === 'name') return { text: (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия' }
-    if (colId === 'brand') return { text: (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан' }
+  function autoSizeCol(colId: keyof Product) {
+    const sample = filtered.slice(0, 80)
+    const header = cols.find((c) => c.id === colId)?.label ?? String(colId)
 
-    if (colId === 'is_visible') {
-      const txt = visibilityText(p)
-      const title = (p.hidden_reasons && String(p.hidden_reasons).trim()) ? String(p.hidden_reasons) : undefined
-      return { text: txt, title }
-    }
-
-    const v = (p as any)[colId]
-    return { text: (v == null || v === '') ? '-' : String(v) }
-  }
-
-  function measureTextWidth(text: string): number {
-    const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'))
+    const canvas = document.createElement('canvas')
     const ctx = canvas.getContext('2d')
-    if (!ctx) return text.length * 7
+    if (!ctx) return
+    ctx.font = '13px system-ui, -apple-system, Segoe UI, Roboto, sans-serif'
 
-    const cs = window.getComputedStyle(document.body)
-    const fontSize = cs.fontSize || '13px'
-    const fontFamily = cs.fontFamily || 'system-ui'
-    const fontWeight = cs.fontWeight || '400'
-    ctx.font = `${fontWeight} ${fontSize} ${fontFamily}`
+    const pad = 44
+    let maxPx = ctx.measureText(header).width + pad
 
-    return ctx.measureText(text).width
-  }
-
-  function getCellString(p: Product, colId: ColDef['id']): string {
-    if (colId === 'archived') return ''
-    if (colId === 'is_visible') return visibilityText(p)
-    if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
-    if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
-    return toText((p as any)[colId])
-  }
-
-  function autoSizeColumn(colId: string, rows: Product[]) {
-    const col = cols.find(c => String(c.id) === colId)
-    if (!col) return
-
-    const cap = AUTO_MAX_W[colId] ?? 320
-
-    let max = measureTextWidth(col.title)
-    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
     for (const p of sample) {
-      const s = getCellString(p, col.id)
-      if (!s) continue
-      const w = measureTextWidth(s)
-      if (w > max) max = w
+      const t = cellText(p, colId)
+      const w = ctx.measureText(t).width + pad
+      if (w > maxPx) maxPx = w
     }
 
-    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
-    setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
+    const nextW = clamp(Math.ceil(maxPx), 90, 520)
+    setCols((prev) => prev.map((c) => (c.id === colId ? { ...c, w: nextW } : c)))
   }
 
-  // Первичная авто-ширина (если пользователь ещё ничего не сохранял)
-  useEffect(() => {
-    if (didAutoInitRef.current) return
-    if (hasStoredCols) return
-    if (products.length === 0) return
+  function onDragStartHeader(e: React.DragEvent, colId: keyof Product) {
+    draggingIdRef.current = String(colId)
+    e.dataTransfer.effectAllowed = 'move'
+    try { e.dataTransfer.setData('text/plain', String(colId)) } catch {}
+  }
 
-    didAutoInitRef.current = true
+  function onDragEndHeader() {
+    draggingIdRef.current = null
+    setDropHint(null)
+  }
 
-    // авто-подгоняем только видимые дефолтные столбцы
-    const next = cols.map((c) => {
-      if (!c.visible) return c
-      const cap = AUTO_MAX_W[String(c.id)] ?? 320
+  function onDragOverHeader(e: React.DragEvent, targetId: keyof Product) {
+    e.preventDefault()
 
-      let max = measureTextWidth(c.title)
-      const sample = products.length > 1600 ? products.slice(0, 1600) : products
-      for (const p of sample) {
-        const s = getCellString(p, c.id)
-        if (!s) continue
-        const w = measureTextWidth(s)
-        if (w > max) max = w
+    const dragging = draggingIdRef.current
+    if (!dragging || dragging === String(targetId)) {
+      setDropHint(null)
+      return
+    }
+
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const mid = rect.width / 2
+    const threshold = 14
+
+    setDropHint((prev) => {
+      if (prev?.targetId !== String(targetId)) {
+        const side = x < mid ? 'left' : 'right'
+        return { targetId: String(targetId), side }
       }
 
-      const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
-      return { ...c, w: nextW }
+      // гистерезис: в зоне ±threshold от середины не меняем сторону (убирает "прыжок" на миллиметр)
+      if (x < mid - threshold) return { targetId: String(targetId), side: 'left' }
+      if (x > mid + threshold) return { targetId: String(targetId), side: 'right' }
+      return prev
+    })
+  }
+
+  function onDropHeader(e: React.DragEvent, targetId: keyof Product) {
+    e.preventDefault()
+
+    const dragging = draggingIdRef.current
+    if (!dragging || dragging === String(targetId)) {
+      setDropHint(null)
+      return
+    }
+
+    const fromIdx = cols.findIndex((c) => String(c.id) === dragging)
+    const targetIdx = cols.findIndex((c) => c.id === targetId)
+    if (fromIdx < 0 || targetIdx < 0) {
+      setDropHint(null)
+      return
+    }
+
+    const side = dropHint?.targetId === String(targetId) ? dropHint.side : 'right'
+
+    setCols((prev) => {
+      const arr = [...prev]
+      const [moved] = arr.splice(fromIdx, 1)
+      let insertIdx = targetIdx
+
+      // если мы вытащили элемент из массива слева — targetIdx изменился
+      if (fromIdx < targetIdx) insertIdx = targetIdx - 1
+
+      if (side === 'right') insertIdx += 1
+      insertIdx = clamp(insertIdx, 0, arr.length)
+      arr.splice(insertIdx, 0, moved)
+      return arr
     })
 
-    setCols(next)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [products.length])
+    setDropHint(null)
+  }
 
-  const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
+  const totalLabel = useMemo(() => `Всего: ${products.length}`, [products.length])
 
   return (
     <div className="card productsCard">
-      {hiddenCols.length > 0 && (
-        <div className="collapsedBar">
-          <span className="small">Скрытые столбцы:</span>
-          {hiddenCols.map(c => (
-            <span key={String(c.id)} className="chip">
-              {c.title}{' '}
-              <button className="colToggle" onClick={() => showCol(String(c.id))} title="Показать">+</button>
-            </span>
-          ))}
+      <div className="productsHeader">
+        <div>
+          <div className="h2">Товары</div>
+          <div className="muted">{totalLabel}</div>
         </div>
-      )}
+      </div>
 
       <div className="productsTableArea">
-        <div className="tableWrap" style={{ marginTop: 12 }}>
-          <div className="tableWrapX">
-            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
-              <table className="table tableFixed" style={{ minWidth: tableMinWidth }}>
-                <colgroup>
-                  {visibleCols.map(c => (
-                    <col key={String(c.id)} style={{ width: c.w }} />
-                  ))}
-                </colgroup>
-                <thead>
-                  <tr>
-                    {visibleCols.map(c => {
-                      const id = String(c.id)
-                      const isDrop = dropHint && dropHint.id === id
-                      const dropCls = isDrop ? (dropHint!.side === 'left' ? 'thDropLeft' : 'thDropRight') : ''
-
-                      return (
-                        <th
-                          key={id}
-                          draggable
-                          onDragStart={(e) => onDragStart(e, id)}
-                          onDragOver={(e) => onDragOverHeader(e, id)}
-                          onDrop={(e) => onDrop(e, id)}
-                          onDragEnd={onDragEnd}
-                          className={`thDraggable ${draggingId === id ? 'thDragging' : ''} ${dropCls}`.trim()}
-                        >
-                          <div className="thInner">
-                            <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
-                            <span>{c.title}</span>
-                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
-                          </div>
-                          <div
-                            className="thResizer"
-                            title="Изменить ширину (двойной клик — по содержимому)"
-                            onMouseDown={(e) => startResize(e, id)}
-                            onDoubleClick={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              autoSizeColumn(id, filtered)
-                            }}
-                          />
-                        </th>
-                      )
-                    })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map(p => (
-                    <tr key={p.offer_id}>
-                      {visibleCols.map(c => {
-                        const id = String(c.id)
-                        const { text, title } = cellText(p, c.id)
-                        return (
-                          <td key={id}>
-                            <div className="cellText" title={title ?? text}>{text}</div>
-                          </td>
-                        )
-                      })}
-                    </tr>
-                  ))}
-
-                  {filtered.length === 0 && (
-                    <tr>
-                      <td colSpan={visibleCols.length} className="empty">Ничего не найдено.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+        {hiddenCols.length > 0 && (
+          <div className="collapsedBar">
+            <div className="collapsedLeft">Скрытые столбцы:</div>
+            <div className="collapsedRight">
+              {hiddenCols.map((c) => (
+                <button key={String(c.id)} className="chip chipSmall" onClick={() => toggleCol(c.id)}>
+                  {c.label}
+                </button>
+              ))}
             </div>
+          </div>
+        )}
+
+        <div className="tableWrap" ref={wrapRef}>
+          {resizeLineX != null && <div className="colResizeLine" style={{ left: resizeLineX }} />}
+
+          <div className="tableScroller">
+            <table className="table tableFixed" style={{ width: tableWidth, minWidth: tableWidth }}>
+              <colgroup>
+                {visibleCols.map((c) => (
+                  <col key={String(c.id)} style={{ width: c.w }} />
+                ))}
+              </colgroup>
+
+              <thead>
+                <tr>
+                  {visibleCols.map((c) => {
+                    const hint = dropHint?.targetId === String(c.id) ? dropHint.side : null
+                    const thClass = [
+                      hint ? (hint === 'left' ? 'thDropLeft' : 'thDropRight') : '',
+                    ].filter(Boolean).join(' ')
+
+                    return (
+                      <th
+                        key={String(c.id)}
+                        className={thClass}
+                        draggable
+                        onDragStart={(e) => onDragStartHeader(e, c.id)}
+                        onDragEnd={onDragEndHeader}
+                        onDragOver={(e) => onDragOverHeader(e, c.id)}
+                        onDrop={(e) => onDropHeader(e, c.id)}
+                        title="Перетащите, чтобы поменять порядок"
+                      >
+                        <div className="thInner">
+                          <span className="thLabel">{c.label}</span>
+                          <div className="thActions">
+                            <button className="colToggle" onClick={() => toggleCol(c.id)} title="Скрыть столбец">
+                              ⨯
+                            </button>
+                          </div>
+                        </div>
+                        <div
+                          className="thResizer"
+                          onMouseDown={(e) => startResize(e, c.id)}
+                          onDoubleClick={() => autoSizeCol(c.id)}
+                          title="Тяните для изменения ширины. Двойной клик — автоширина"
+                        />
+                      </th>
+                    )
+                  })}
+                </tr>
+              </thead>
+
+              <tbody>
+                {loading && (
+                  <tr>
+                    <td colSpan={visibleCols.length} className="tdCenter">Загрузка...</td>
+                  </tr>
+                )}
+
+                {!loading && error && (
+                  <tr>
+                    <td colSpan={visibleCols.length} className="tdCenter">{error}</td>
+                  </tr>
+                )}
+
+                {!loading && !error && filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={visibleCols.length} className="tdCenter">Нет данных</td>
+                  </tr>
+                )}
+
+                {!loading && !error && filtered.map((p) => (
+                  <tr key={p.product_id}>
+                    {visibleCols.map((c) => (
+                      <td key={String(c.id)}>
+                        <div className="cellText" title={cellText(p, c.id)}>
+                          {cellText(p, c.id)}
+                        </div>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
