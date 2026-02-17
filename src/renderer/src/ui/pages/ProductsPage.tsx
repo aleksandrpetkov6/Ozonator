@@ -27,6 +27,9 @@ const DEFAULT_COLS: Col[] = [
   { id: 'archived', title: 'Архив', w: 90, visible: false },
 ]
 
+const COL_ID_SET = new Set<ColId>(DEFAULT_COLS.map((c) => c.id))
+const isColId = (v: any): v is ColId => typeof v === 'string' && COL_ID_SET.has(v as ColId)
+
 function fmt(dtIso: string | null): string {
   if (!dtIso) return ''
   const d = new Date(dtIso)
@@ -46,7 +49,41 @@ export default function ProductsPage() {
   const [cols, setCols] = useState<Col[]>(() => {
     try {
       const saved = localStorage.getItem('ozonator-cols-v2')
-      if (saved) return JSON.parse(saved)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed)) {
+          const byId = new Map<ColId, any>()
+          const order: ColId[] = []
+          for (const raw of parsed) {
+            const id = raw?.id
+            if (!isColId(id)) continue
+            byId.set(id, raw)
+            if (!order.includes(id)) order.push(id)
+          }
+
+          const out: Col[] = []
+          const used = new Set<ColId>()
+
+          for (const id of order) {
+            const def = DEFAULT_COLS.find((c) => c.id === id)
+            if (!def) continue
+            const raw = byId.get(id)
+
+            const w =
+              typeof raw?.w === 'number' && Number.isFinite(raw.w) ? Math.max(60, Math.round(raw.w)) : def.w
+            const visible = typeof raw?.visible === 'boolean' ? raw.visible : def.visible
+
+            out.push({ ...def, w, visible })
+            used.add(id)
+          }
+
+          for (const def of DEFAULT_COLS) {
+            if (!used.has(def.id)) out.push(def)
+          }
+
+          return out
+        }
+      }
     } catch {}
     return DEFAULT_COLS
   })
