@@ -1,390 +1,143 @@
-diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
-index 3c91d8d..bc0f492 100644
 --- a/electron/main/ozon.ts
 +++ b/electron/main/ozon.ts
-@@ -114,18 +114,6 @@ type ProductAttributesV3 = {
- function chunk<T>(arr: T[], size: number) {
-   const out: T[][] = []
-   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
--
--  // Преобразуем id категории/типа в названия (для UI — только слова, без цифр)
--  try {
--    const { catNameById, typeNameById } = await ozonGetCategoryTypeMaps(secrets)
--    for (const p of out) {
--      if (p.category && catNameById[p.category]) p.category = catNameById[p.category]
--      if (p.type && typeNameById[p.type]) p.type = typeNameById[p.type]
--    }
--  } catch {
--    // не критично — если дерево категорий недоступно, оставим как есть
--  }
--
-   return out
- }
+@@ -96,14 +96,23 @@
+ function pickTextBrand(item: any): string | null {
+   const b = item?.brand
+   if (typeof b === 'string' && b.trim()) return b.trim()
++  if (b && typeof b === 'object') {
++    const maybe = (b as any).name ?? (b as any).brand_name ?? (b as any).title ?? (b as any).value
++    if (typeof maybe === 'string' && maybe.trim()) return maybe.trim()
++  }
  
-@@ -266,6 +254,50 @@ function pickFirstString(...vals: any[]): string | null {
+   // иногда бренд лежит в attributes
+   const attrs: any[] = Array.isArray(item?.attributes) ? item.attributes : []
+   for (const a of attrs) {
++    const attrId = toIntMaybe(a?.id ?? a?.attribute_id)
+     const name = String(a?.name ?? '').toLowerCase()
+-    if (name === 'бренд' || name === 'brand') {
+-      const vals = Array.isArray(a?.values) ? a.values : []
+-      const v = vals[0]?.value ?? vals[0]
++
++    // Seller API: "Бренд" — attribute_id 85 (универсально). На некоторых ответах name отсутствует.
++    if (attrId !== 85 && name !== 'бренд' && name !== 'brand') continue
++
++    const vals = Array.isArray(a?.values) ? a.values : []
++    for (const vv of vals) {
++      const v = vv?.value ?? vv
+       if (typeof v === 'string' && v.trim() && !/^\d+$/.test(v.trim())) return v.trim()
+     }
+   }
+@@ -111,6 +120,59 @@
    return null
  }
  
-+// ---------------- Category/Type maps ----------------
-+
-+let _catTypeCache: { at: number; catNameById: Record<string, string>; typeNameById: Record<string, string> } | null = null
-+
-+async function ozonGetCategoryTypeMaps(secrets: Secrets): Promise<{ catNameById: Record<string, string>; typeNameById: Record<string, string> }> {
-+  const now = Date.now()
-+  // кэш на 12 часов (дерево большое, меняется редко)
-+  if (_catTypeCache && (now - _catTypeCache.at) < 12 * 60 * 60 * 1000) {
-+    return { catNameById: _catTypeCache.catNameById, typeNameById: _catTypeCache.typeNameById }
-+  }
-+
-+  const json: any = await ozonPost(secrets, '/v1/description-category/tree', { language: 'DEFAULT' })
-+  const root: any = json?.result ?? json?.data ?? json
-+
-+  const catNameById: Record<string, string> = {}
-+  const typeNameById: Record<string, string> = {}
-+
-+  const walk = (nodes: any) => {
-+    if (!nodes) return
-+    const arr = Array.isArray(nodes) ? nodes : [nodes]
-+    for (const n of arr) {
-+      if (!n || typeof n !== 'object') continue
-+
-+      const cid = (n as any).description_category_id ?? (n as any).category_id ?? (n as any).id
-+      const cname = (n as any).category_name ?? (n as any).name ?? (n as any).title
-+      if (cid != null && typeof cname === 'string' && cname.trim()) {
-+        catNameById[String(cid)] = cname.trim()
-+      }
-+
-+      const tid = (n as any).type_id ?? (n as any).typeId
-+      const tname = (n as any).type_name ?? (n as any).typeName ?? (n as any).type?.name ?? (n as any).type?.title
-+      if (tid != null && typeof tname === 'string' && tname.trim()) {
-+        typeNameById[String(tid)] = tname.trim()
-+      }
-+
-+      walk((n as any).children)
++function toIntMaybe(v: unknown): number | null {
++  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v)
++  if (typeof v === 'string') {
++    const s = v.trim()
++    if (!s) return null
++    if (/^\d+$/.test(s)) {
++      const n = Number(s)
++      return Number.isFinite(n) ? Math.trunc(n) : null
 +    }
 +  }
-+
-+  walk(root)
-+  _catTypeCache = { at: now, catNameById, typeNameById }
-+  return { catNameById, typeNameById }
++  return null
 +}
 +
- // ---------------- Public API ----------------
- 
- export async function ozonTestAuth(secrets: Secrets) {
-@@ -382,8 +414,9 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
- 
-       const barcode = (x.barcode && String(x.barcode)) || (Array.isArray(x.barcodes) && x.barcodes[0]) || null
- 
--      const categoryId = (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
-+      const categoryId = (x as any).description_category_id ?? (x as any).descriptionCategoryId ?? (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
-       const brandRaw = (x as any).brand ?? (x as any).brand_name ?? (x as any).brandName ?? null
-+      const typeId = (x as any).type_id ?? (x as any).typeId ?? (x as any).type?.id ?? null
-       const visibleRaw = (x as any).visible ?? (x as any).is_visible ?? (x as any).isVisible ?? (x as any).visibility?.visible ?? null
-       const isVisible = (typeof visibleRaw === 'boolean') ? visibleRaw : ((visibleRaw == null) ? null : Boolean(visibleRaw))
- 
-@@ -396,14 +429,16 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
-         barcode,
-         brand: (() => {
-           if (brandRaw == null) return null
--          if (typeof brandRaw === 'string' && brandRaw.trim()) return brandRaw.trim()
--          if (typeof brandRaw === 'number' || typeof brandRaw === 'boolean') return String(brandRaw)
-+          if (typeof brandRaw === 'string') {
-+            const s = brandRaw.trim()
-+            return s ? s : null
-+          }
-           if (typeof brandRaw === 'object') {
-             const n = pickFirstString((brandRaw as any).name, (brandRaw as any).title, (brandRaw as any).value)
--            if (n) return n
-+            return n ? n : null
-           }
--          const s = String(brandRaw).trim()
--          return s ? s : null
-+          // число/булево не показываем как бренд (бренд должен быть текстом)
-+          return null
-         })(),
-         category: categoryId != null ? String(categoryId) : null,
-         type: typeId != null ? String(typeId) : null,
-diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
-index dc5a068..16c82b2 100644
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
-@@ -231,7 +231,7 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
-   `).all() as any
- }
- 
--export function dbLogStart(type: 'check_auth' | 'sync_products', storeClientId?: string | null): number {
-+export function dbLogStart(type: 'check_auth' | 'sync_products' | 'app_update', storeClientId?: string | null): number {
-   const startedAt = new Date().toISOString()
-   const info = mustDb().prepare(`
-     INSERT INTO sync_log (type, status, started_at, store_client_id)
-diff --git a/electron/main/types.ts b/electron/main/types.ts
-new file mode 100644
-index 0000000..e0b333f
---- /dev/null
-+++ b/electron/main/types.ts
-@@ -0,0 +1,35 @@
-+export type Secrets = {
-+  clientId: string
-+  apiKey: string
-+  storeName: string | null
++function isNonNumericText(v: unknown): v is string {
++  return typeof v === 'string' && v.trim() !== '' && !/^\d+$/.test(v.trim())
 +}
 +
-+export type ProductRow = {
-+  offer_id: string
-+  product_id: number | null
-+  sku: string | null
-+  barcode: string | null
-+  brand: string | null
-+  category: string | null
-+  type: string | null
-+  name: string | null
-+  is_visible: number | null
-+  hidden_reasons: string | null
-+  created_at: string | null
-+  store_client_id: string | null
-+  archived: number | null
-+  updated_at: string
-+}
++async function ozonGetBrandCategoryByAttributes(
++  secrets: Secrets,
++  productIds: number[],
++): Promise<Map<number, { brand: string | null; categoryId: number | null }>> {
++  const map = new Map<number, { brand: string | null; categoryId: number | null }>()
++  if (!productIds.length) return map
 +
-+export type SyncLogRow = {
-+  id: number
-+  type: 'check_auth' | 'sync_products' | 'app_update'
-+  status: 'pending' | 'success' | 'error'
-+  started_at: string
-+  finished_at: string | null
-+  items_count: number | null
-+  error_message: string | null
-+  error_details: any | null
-+  meta: any | null
-+  store_client_id: string | null
-+}
-diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index a5c611b..008fca9 100644
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -45,7 +45,7 @@ function fmtRuDateTime(iso: any) {
-   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${yy} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
- }
- 
--export default function ProductsPage() {
-+export default function ProductsPage(props: { query?: string; onStats?: (s: { total: number; filtered: number }) => void }) {
-   const [products, setProducts] = useState<Product[]>([])
-   const [loading, setLoading] = useState(true)
-   const [error, setError] = useState<string | null>(null)
-@@ -84,12 +84,15 @@ export default function ProductsPage() {
-     }
-   })
- 
--  const [query, setQuery] = useState('')
--
-   const draggingIdRef = useRef<string | null>(null)
-   const [dropHint, setDropHint] = useState<{ targetId: string; side: 'left' | 'right' } | null>(null)
- 
-   const wrapRef = useRef<HTMLDivElement | null>(null)
-+  const scrollerRef = useRef<HTMLDivElement | null>(null)
-+  const [scrollTop, setScrollTop] = useState(0)
-+  const [viewportH, setViewportH] = useState(0)
-+  const query = String(props.query ?? '').trim()
-+
-   const [resizeLineX, setResizeLineX] = useState<number | null>(null)
-   const resizeRafRef = useRef<number | null>(null)
- 
-@@ -116,12 +119,46 @@ export default function ProductsPage() {
-     return () => { cancelled = true }
-   }, [])
- 
-+  // viewport height for virtualization
-+  useEffect(() => {
-+    const el = scrollerRef.current
-+    if (!el) return
-+
-+    const update = () => setViewportH(el.clientHeight || 0)
-+    update()
-+
-+    let ro: ResizeObserver | null = null
-+    try {
-+      ro = new ResizeObserver(() => update())
-+      ro.observe(el)
-+    } catch {
-+      // ignore
-+    }
-+
-+    window.addEventListener('resize', update)
-+    return () => {
-+      window.removeEventListener('resize', update)
-+      try { ro?.disconnect() } catch {}
-+    }
-+  }, [])
-+
-+  const scrollRafRef = useRef<number | null>(null)
-+  function onScrollTable() {
-+    const el = scrollerRef.current
-+    if (!el) return
-+    const st = el.scrollTop
-+    if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current)
-+    scrollRafRef.current = requestAnimationFrame(() => {
-+      setScrollTop(st)
++  // /v3/products/info/attributes — возвращает attributes (в т.ч. бренд=85) + category_id.
++  let lastId = ''
++  for (;;) {
++    const res = await ozonPost<any>(secrets, '/v3/products/info/attributes', {
++      filter: { product_id: productIds, visibility: 'ALL' },
++      limit: 100,
++      last_id: lastId,
++      sort_dir: 'ASC',
 +    })
++
++    const items: any[] = Array.isArray(res?.result) ? res.result : Array.isArray(res?.result?.items) ? res.result.items : []
++    for (const it of items) {
++      const pid = toIntMaybe(it?.id ?? it?.product_id)
++      if (pid == null) continue
++
++      const categoryId = toIntMaybe(it?.description_category_id ?? it?.category_id ?? it?.categoryId)
++      const brand = pickTextBrand(it)
++
++      map.set(pid, { brand: brand ?? null, categoryId: categoryId ?? null })
++    }
++
++    const nextLastId = String(res?.last_id ?? res?.result?.last_id ?? '')
++    if (!nextLastId || items.length === 0 || nextLastId === lastId) break
++    lastId = nextLastId
 +  }
 +
-   const visibleCols = useMemo(() => cols.filter((c) => c.visible), [cols])
-   const hiddenCols = useMemo(() => cols.filter((c) => !c.visible), [cols])
- 
-   const tableWidth = useMemo(() => {
-     const sum = visibleCols.reduce((acc, c) => acc + c.w, 0)
--    return Math.max(860, sum)
-+    return Math.max(1, sum)
-   }, [visibleCols])
- 
-   const filtered = useMemo(() => {
-@@ -283,6 +320,9 @@ export default function ProductsPage() {
- 
-     setDropHint(null)
-   }
-+  useEffect(() => {
-+    try { props.onStats?.({ total: products.length, filtered: filtered.length }) } catch {}
-+  }, [products.length, filtered.length])
- 
-   const totalLabel = useMemo(() => `Всего: ${products.length}`, [products.length])
- 
-@@ -312,7 +352,7 @@ export default function ProductsPage() {
-         <div className="tableWrap" ref={wrapRef}>
-           {resizeLineX != null && <div className="colResizeLine" style={{ left: resizeLineX }} />}
- 
--          <div className="tableScroller">
-+          <div className="tableScroller" ref={scrollerRef} onScroll={onScrollTable}>
-             <table className="table tableFixed" style={{ width: tableWidth, minWidth: tableWidth }}>
-               <colgroup>
-                 {visibleCols.map((c) => (
-@@ -378,17 +418,47 @@ export default function ProductsPage() {
-                   </tr>
-                 )}
- 
--                {!loading && !error && filtered.map((p) => (
--                  <tr key={p.product_id}>
--                    {visibleCols.map((c) => (
--                      <td key={String(c.id)}>
--                        <div className="cellText" title={cellText(p, c.id)}>
--                          {cellText(p, c.id)}
--                        </div>
--                      </td>
--                    ))}
--                  </tr>
--                ))}
-+                {!loading && !error && filtered.length > 0 && (() => {
-+                  const ROW_H = 40
-+                  const OVERSCAN = 12
-+                  const total = filtered.length
-+                  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
-+                  const end = Math.min(total, Math.ceil((scrollTop + viewportH) / ROW_H) + OVERSCAN)
-+                  const topPad = start * ROW_H
-+                  const bottomPad = Math.max(0, (total - end) * ROW_H)
-+                  const slice = filtered.slice(start, end)
-+
-+                  return (
-+                    <>
-+                      {topPad > 0 && (
-+                        <tr className="spacerRow">
-+                          <td colSpan={visibleCols.length} style={{ height: topPad }} />
-+                        </tr>
-+                      )}
-+
-+                      {slice.map((p) => (
-+                        <tr key={p.product_id}>
-+                          {visibleCols.map((c) => {
-+                            const t = cellText(p, c.id)
-+                            return (
-+                              <td key={String(c.id)}>
-+                                <div className="cellText" title={t}>
-+                                  {t}
-+                                </div>
-+                              </td>
-+                            )
-+                          })}
-+                        </tr>
-+                      ))}
-+
-+                      {bottomPad > 0 && (
-+                        <tr className="spacerRow">
-+                          <td colSpan={visibleCols.length} style={{ height: bottomPad }} />
-+                        </tr>
-+                      )}
-+                    </>
-+                  )
-+                })()}
-               </tbody>
-             </table>
-           </div>
-diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
-index b81f105..1b80760 100644
---- a/src/renderer/src/ui/styles.css
-+++ b/src/renderer/src/ui/styles.css
-@@ -177,8 +177,8 @@ a{ color: inherit; text-decoration: none; }
-   justify-content: center;
-   border-radius: 12px;
-   border: 1px solid var(--hairline);
--  background: rgba(255,255,255,.78);
--  color: rgba(28,28,30,.78);
-+  background: rgba(255,255,255,.92);
-+  color: rgba(28,28,30,.82);
- }
- 
- .iconLink{ text-decoration:none; }
-@@ -428,6 +428,9 @@ button:disabled{
-   margin-top: 14px;
-   display: flex;
-   flex-direction: column;
-+  flex: 1;
-+  min-height: 0;
-+  position: relative;
-   border: 1px solid var(--hairline2);
-   border-radius: var(--radius);
-   overflow: hidden;
-@@ -437,7 +440,8 @@ button:disabled{
- 
- 
- .tableScroller {
--  height: 100%;
-+  flex: 1;
-+  min-height: 0;
-   width: 100%;
-   overflow: auto;
-   scrollbar-gutter: stable both-edges;
-@@ -647,17 +651,22 @@ button:disabled{
- 
- 
- .chipSmall {
--  padding: 6px 10px;
-+  padding: 4px 8px;
-   font-size: 12px;
-   border-radius: 999px;
-+  height: 24px;
-+  display: inline-flex;
-+  align-items: center;
- }
- 
-+
- .collapsedBar {
--  padding: 8px 10px;
-+  padding: 6px 10px;
-   border-radius: 12px;
--  margin-bottom: 10px;
-+  margin-bottom: 6px;
- }
- 
-+
- .collapsedLeft {
-   font-size: 12px;
-   color: var(--muted);
-@@ -668,3 +677,10 @@ button:disabled{
-   flex-wrap: wrap;
-   gap: 8px;
- }
-+
-+
-+.spacerRow td{
-+  padding: 0 !important;
-+  border-top: none !important;
-+  background: transparent !important;
++  return map
 +}
++
+ export type OzonProductRow = {
+   offer_id: string
+   product_id: number
+@@ -152,25 +214,35 @@
+   if (!productIds.length) return []
+   const maps = await ozonGetCategoryTypeMaps(secrets)
+ 
++  // Достаем бренд и (на всякий случай) category_id из attributes.
++  const extraByPid = await ozonGetBrandCategoryByAttributes(secrets, productIds)
++
+   const res = await ozonPost<any>(secrets, '/v3/product/info/list', { product_id: productIds })
+   const items: any[] = res?.result?.items ?? res?.items ?? []
+ 
+   return items
+     .filter((it) => typeof it?.offer_id === 'string' && typeof it?.product_id === 'number')
+     .map((it) => {
+-      const categoryId = it?.description_category_id ?? it?.category_id ?? null
+-      const typeId = it?.type_id ?? null
++      const extra = extraByPid.get(it.product_id)
+ 
+-      const categoryName =
+-        (typeof it?.category_name === 'string' && it.category_name.trim()) ||
+-        (typeof it?.description_category_name === 'string' && it.description_category_name.trim()) ||
+-        (typeof categoryId === 'number' ? maps.catNameById.get(categoryId) : null) ||
++      const categoryId =
++        toIntMaybe(it?.description_category_id) ??
++        toIntMaybe(it?.category_id) ??
++        toIntMaybe(extra?.categoryId) ??
+         null
+ 
++      const typeId = toIntMaybe(it?.type_id) ?? null
++
++      const categoryName =
++        (isNonNumericText(it?.category_name) && it.category_name.trim()) ||
++        (isNonNumericText(it?.description_category_name) && it.description_category_name.trim()) ||
++        (categoryId != null ? maps.catNameById.get(categoryId) : null) ||
++        (categoryId != null ? `Категория ${categoryId}` : null)
++
+       const typeName =
+-        (typeof it?.type_name === 'string' && it.type_name.trim()) ||
+-        (typeof it?.product_type === 'string' && it.product_type.trim()) ||
+-        (typeof typeId === 'number' ? maps.typeNameById.get(typeId) : null) ||
++        (isNonNumericText(it?.type_name) && it.type_name.trim()) ||
++        (typeId != null ? maps.typeNameById.get(typeId) : null) ||
++        (isNonNumericText(it?.product_type) ? it.product_type.trim() : null) ||
+         null
+ 
+       const hiddenReasonsArr: string[] = Array.isArray(it?.hidden_reasons) ? it.hidden_reasons.map(String) : []
+@@ -182,7 +254,7 @@
+         sku: typeof it?.sku === 'string' || typeof it?.sku === 'number' ? String(it.sku) : null,
+         barcode: typeof it?.barcode === 'string' ? it.barcode : null,
+         name: typeof it?.name === 'string' ? it.name : null,
+-        brand: pickTextBrand(it),
++        brand: pickTextBrand(it) ?? extra?.brand ?? null,
+         category: categoryName || null,
+         type: typeName || null,
+         is_visible: typeof it?.is_visible === 'boolean' ? it.is_visible : it?.visible === undefined ? null : !!it?.visible,
