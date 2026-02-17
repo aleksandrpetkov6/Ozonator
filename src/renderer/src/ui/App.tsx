@@ -33,8 +33,36 @@ export default function App() {
   const runningRef = useRef(false)
   useEffect(() => { runningRef.current = running }, [running])
 
-  const [lastOkAt, setLastOkAt] = useState<string | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
+
+  const [storeName, setStoreName] = useState<string | null>(null)
+  const [productsQuery, setProductsQuery] = useState('')
+  const [productsTotal, setProductsTotal] = useState(0)
+  const [productsFiltered, setProductsFiltered] = useState(0)
+
+  const pathname = location.pathname || '/'
+  const isProducts = pathname === '/' || pathname.startsWith('/products')
+
+  async function refreshStoreName() {
+    try {
+      const resp = await window.api.loadSecrets()
+      if (resp?.ok) {
+        const name = (resp.secrets as any)?.storeName
+        const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
+        setStoreName(cleaned)
+        document.title = cleaned ? `Озонатор — ${cleaned}` : 'Озонатор'
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    refreshStoreName()
+    const onStore = () => refreshStoreName()
+    window.addEventListener('ozon:store-updated', onStore)
+    return () => window.removeEventListener('ozon:store-updated', onStore)
+  }, [])
 
   const dotState = useMemo(() => {
     if (!online) return 'offline'
@@ -57,7 +85,7 @@ export default function App() {
     // ключи должны быть сохранены
     const st = await window.api.secretsStatus()
     if (!st.hasSecrets) {
-      if (reason === 'manual') setLastError('Ключи не сохранены. Откройте Настройки → Магазин.')
+      if (reason === 'manual') setLastError('Ключи не сохранены. Откройте Настройки.')
       return
     }
 
@@ -68,12 +96,12 @@ export default function App() {
       if (!resp.ok) {
         setLastError(resp.error ?? 'Ошибка синхронизации')
       } else {
-        setLastOkAt(new Date().toISOString())
         setLastError(null)
 
-        // Обновляем список товаров + лог
+        // Обновляем список товаров + лог + имя магазина (если подтянулось)
         window.dispatchEvent(new Event('ozon:products-updated'))
         window.dispatchEvent(new Event('ozon:logs-updated'))
+        window.dispatchEvent(new Event('ozon:store-updated'))
       }
     } finally {
       setRunning(false)
@@ -110,16 +138,36 @@ export default function App() {
     <div className="appShell">
       <div className="topbar">
         <div className="topbarInner">
-          <NavLink className="appNameLink" to="/">Озонатор</NavLink>
+          <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
+            <div className="appName">Озонатор</div>
+            {storeName && <div className="appStoreName">{storeName}</div>}
+          </div>
 
           <div className="topbarSlot">
-            <div className="segmented">
-              <NavLink to="/products">Товары</NavLink>
-              <NavLink to="/logs">Лог</NavLink>
+            <div className="segmented" aria-label="Навигация">
+              <NavLink to="/products">
+                <span>Товары</span>
+                <span className="segCount">Всего: {productsTotal}</span>
+              </NavLink>
             </div>
+
+            {isProducts && (
+              <div className="topbarSearch">
+                <input
+                  className="searchInput search"
+                  value={productsQuery}
+                  onChange={(e) => setProductsQuery(e.target.value)}
+                  placeholder="Поиск по таблице…"
+                />
+              </div>
+            )}
           </div>
 
           <div className="topbarRight">
+            <NavLink className="iconLink" to="/logs" title="Лог">
+              🗒️
+            </NavLink>
+
             <NavLink className="iconLink" to="/settings" title="Настройки">
               ⚙️
             </NavLink>
@@ -138,24 +186,42 @@ export default function App() {
         </div>
       </div>
 
-      <div className={(() => {
-        const p = location.pathname || '/'
-        const isProducts = p === '/' || p.startsWith('/products')
-        return isProducts ? 'container containerWide' : 'container'
-      })()}>
-        {lastError && <div className="notice error">{lastError}</div>}
-        {!lastError && lastOkAt && (
-          <div className="notice">
-            Синхронизировано: {new Date(lastOkAt).toLocaleString()}
-          </div>
-        )}
+      <div className="pageArea">
+        <div className={isProducts ? "container containerWide" : "container"}>
+          {lastError && <div className="notice error">{lastError}</div>}
 
-        <Routes>
-          <Route path="/" element={<ProductsPage />} />
-          <Route path="/products" element={<ProductsPage />} />
-          <Route path="/logs" element={<LogsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <ProductsPage
+                  query={productsQuery}
+                  onStats={(s) => {
+                    setProductsTotal(s.total)
+                    setProductsFiltered(s.filtered)
+                  }}
+                />
+              }
+            />
+            <Route
+              path="/products"
+              element={
+                <ProductsPage
+                  query={productsQuery}
+                  onStats={(s) => {
+                    setProductsTotal(s.total)
+                    setProductsFiltered(s.filtered)
+                  }}
+                />
+              }
+            />
+            <Route path="/logs" element={<LogsPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+
+          {/* пока не показываем filtered рядом, но оставили стейт под быстрые итерации */}
+          {productsFiltered /* noop */ && false}
+        </div>
       </div>
     </div>
   )

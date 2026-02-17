@@ -18,9 +18,10 @@ const TYPE_RU: Record<string, string> = {
 }
 
 const STATUS_RU: Record<string, string> = {
+  pending: 'Ожидает',
+  running: 'В процессе',
   success: 'Успешно',
   error: 'Ошибка',
-  running: 'В процессе',
 }
 
 function typeRu(v?: string | null) {
@@ -45,6 +46,29 @@ function fmtDt(iso?: string | null) {
   const mi = pad(d.getMinutes())
   const ss = pad(d.getSeconds())
   return `${dd}.${mm}.${yy} ${hh}:${mi}:${ss}`
+}
+
+function detailsRu(meta?: string | null): string {
+  if (!meta) return '-'
+  try {
+    const m = JSON.parse(meta)
+
+    // Новый формат: показываем только обновлено + новых
+    if (typeof m?.updated === 'number' || typeof m?.added === 'number') {
+      const upd = (typeof m?.updated === 'number') ? m.updated : 0
+      const add = (typeof m?.added === 'number') ? m.added : 0
+      return `обновлено: ${upd}, новых: ${add}`
+    }
+
+    // Старый формат — fallback
+    const parts: string[] = []
+    if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
+    if (typeof m?.infoBatches === 'number') parts.push(`батчей: ${m.infoBatches}`)
+    if (typeof m?.infoFetched === 'number') parts.push(`расширено: ${m.infoFetched}`)
+    return parts.length ? parts.join(', ') : meta
+  } catch {
+    return meta
+  }
 }
 
 export default function LogsPage() {
@@ -76,7 +100,6 @@ export default function LogsPage() {
             <th>Статус</th>
             <th>Старт</th>
             <th>Финиш</th>
-            <th>Кол-во</th>
             <th>Детали</th>
             <th>Ошибка</th>
           </tr>
@@ -91,26 +114,11 @@ export default function LogsPage() {
               </td>
               <td className="small">{fmtDt(l.started_at)}</td>
               <td className="small">{fmtDt(l.finished_at)}</td>
-              <td>{l.items_count ?? '-'}</td>
-              <td className="small">
-                {(() => {
-                  if (!l.meta) return '-'
-                  try {
-                    const m = JSON.parse(l.meta)
-                    const parts: string[] = []
-                    if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
-                    if (typeof m?.infoBatches === 'number') parts.push(`батчей: ${m.infoBatches}`)
-                    if (typeof m?.infoFetched === 'number') parts.push(`расширено: ${m.infoFetched}`)
-                    return parts.length ? parts.join(', ') : l.meta
-                  } catch {
-                    return l.meta
-                  }
-                })()}
-              </td>
+              <td className="small">{detailsRu(l.meta)}</td>
               <td className="small">{l.error_message ?? '-'}</td>
             </tr>
           ))}
-          {logs.length === 0 && <tr><td colSpan={8} className="small">Пока нет записей.</td></tr>}
+          {logs.length === 0 && <tr><td colSpan={7} className="small">Пока нет записей.</td></tr>}
         </tbody>
       </table>
     </div>
