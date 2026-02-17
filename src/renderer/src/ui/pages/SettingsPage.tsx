@@ -25,31 +25,24 @@ export default function SettingsPage() {
     load()
   }, [])
 
-  async function onSave() {
+  async function onSaveAndTest() {
     setStatus('')
     setErr('')
 
     try {
       await window.api.saveSecrets({ clientId, apiKey })
-      setStatus('Сохранено локально. Теперь нажмите «Проверить доступ» — название магазина подтянется автоматически.')
-      setStoreName('')
-    } catch (e: any) {
-      setErr(e?.message ?? String(e))
-    }
-  }
-
-  async function onTest() {
-    setStatus('')
-    setErr('')
-
-    try {
       const resp = await window.api.testAuth()
+
       if (resp.ok) {
         if (resp.storeName) setStoreName(resp.storeName)
         setStatus('Доступ подтверждён.')
 
         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
         load()
+
+        // обновим заголовок/лог
+        window.dispatchEvent(new Event('ozon:store-updated'))
+        window.dispatchEvent(new Event('ozon:logs-updated'))
       } else {
         setErr(resp.error ?? 'Ошибка проверки доступа')
       }
@@ -68,6 +61,7 @@ export default function SettingsPage() {
       setApiKey('')
       setStoreName('')
       setStatus('Ключи удалены.')
+      window.dispatchEvent(new Event('ozon:store-updated'))
     } catch (e: any) {
       setErr(e?.message ?? String(e))
     }
@@ -75,17 +69,14 @@ export default function SettingsPage() {
 
   return (
     <div className="card">
-      <div className="h1">Настройки магазина</div>
-      <div className="small" style={{ marginTop: 6 }}>
-        Ключи хранятся локально в зашифрованном виде (Electron safeStorage). Не отправляются в лог и не попадают в базу.
-      </div>
+      <div className="h1">Настройки</div>
 
       <div className="row" style={{ marginTop: 16 }}>
         <div className="col field">
           <label>Название магазина</label>
           <input
             value={storeName}
-            placeholder="Подтянется с Ozon после проверки доступа"
+            placeholder="Появится после проверки доступа"
             readOnly
           />
         </div>
@@ -103,18 +94,12 @@ export default function SettingsPage() {
       </div>
 
       <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
-        <button className="primary" onClick={onSave}>Сохранить локально</button>
-        <button onClick={onTest}>Проверить доступ</button>
+        <button className="primary" onClick={onSaveAndTest}>Сохранить и проверить</button>
         <button onClick={onDelete}>Стереть ключи</button>
       </div>
 
       {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
       {err && <div className="notice error" style={{ marginTop: 12 }}>{err}</div>}
-
-      <div className="notice" style={{ marginTop: 14 }}>
-        <b>Важно.</b> Если вы меняете ключи на другой магазин, список «Товары» будет показывать данные только по активному магазину.
-        Старые данные других магазинов остаются в базе, но не отображаются.
-      </div>
     </div>
   )
 }

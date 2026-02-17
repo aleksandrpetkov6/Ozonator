@@ -38,7 +38,8 @@ export function ensureDb() {
       items_count INTEGER NULL,
       error_message TEXT NULL,
       error_details TEXT NULL,
-      meta TEXT NULL
+      meta TEXT NULL,
+      store_client_id TEXT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_sync_log_started_at ON sync_log(started_at);
@@ -66,6 +67,16 @@ export function ensureDb() {
 
   // Чтобы не смешивать товары разных магазинов при смене ключей
   add('store_client_id', 'TEXT NULL')
+
+  // Логи: фильтрация по магазину
+  const logCols = new Set(
+    (db.prepare('PRAGMA table_info(sync_log)').all() as any[]).map((r) => String(r.name))
+  )
+  if (!logCols.has('store_client_id')) {
+    db.exec(`ALTER TABLE sync_log ADD COLUMN store_client_id TEXT NULL;`)
+    logCols.add('store_client_id')
+  }
+
 }
 
 function mustDb(): Database.Database {
@@ -193,12 +204,12 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
   `).all() as any
 }
 
-export function dbLogStart(type: 'check_auth' | 'sync_products'): number {
+export function dbLogStart(type: 'check_auth' | 'sync_products', storeClientId?: string | null): number {
   const startedAt = new Date().toISOString()
   const info = mustDb().prepare(`
-    INSERT INTO sync_log (type, status, started_at)
-    VALUES (?, 'pending', ?)
-  `).run(type, startedAt)
+    INSERT INTO sync_log (type, status, started_at, store_client_id)
+    VALUES (?, 'pending', ?, ?)
+  `).run(type, startedAt, storeClientId ?? null)
 
   return Number(info.lastInsertRowid)
 }
@@ -209,11 +220,12 @@ export function dbLogFinish(id: number, args: {
   errorMessage?: string
   errorDetails?: any
   meta?: any
+  storeClientId?: string | null
 }) {
   const finishedAt = new Date().toISOString()
   mustDb().prepare(`
     UPDATE sync_log
-    SET status=?, finished_at=?, items_count=?, error_message=?, error_details=?, meta=?
+    SET status=?, finished_at=?, items_count=?, error_message=?, error_details=?, meta=?, store_client_id=COALESCE(?, store_client_id)
     WHERE id=?
   `).run(
     args.status,
@@ -222,11 +234,22 @@ export function dbLogFinish(id: number, args: {
     args.errorMessage ?? null,
     args.errorDetails ? JSON.stringify(args.errorDetails).slice(0, 20000) : null,
     args.meta ? JSON.stringify(args.meta).slice(0, 20000) : null,
+    args.storeClientId ?? null,
     id
   )
 }
 
-export function dbGetSyncLog() {
+export function dbGetSyncLog(storeClientId?: string | null) {
+  if (storeClientId) {
+    return mustDb().prepare(`
+      SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
+      FROM sync_log
+      WHERE store_client_id = ?
+      ORDER BY id DESC
+      LIMIT 500
+    `).all(storeClientId)
+  }
+
   return mustDb().prepare(`
     SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
     FROM sync_log
