@@ -1,269 +1,167 @@
 --- a/electron/main/ozon.ts
 +++ b/electron/main/ozon.ts
-@@ -160,21 +160,124 @@
-   return Array.from(new Set(parts)).slice(0, 12).join('; ')
+@@ -254,6 +254,131 @@
+   return null
  }
  
-+function toIntMaybe(x: any): number | null {
-+  if (x == null) return null
-+  if (typeof x === 'number') return Number.isFinite(x) ? x : null
-+  if (typeof x === 'string') {
-+    const s = x.trim()
-+    if (!s) return null
-+    const n = Number(s)
-+    return Number.isFinite(n) ? n : null
-+  }
-+  return null
-+}
 +
-+function isNonNumericText(x: any): x is string {
-+  if (typeof x !== 'string') return false
-+  const s = x.trim()
-+  if (!s) return false
-+  return !/^[0-9]+$/.test(s)
-+}
 +
-+function pickTextBrand(item: any): string | null {
-+  const b = item?.brand ?? item?.brand_name ?? item?.brandName
-+  if (typeof b === 'string' && b.trim()) return b.trim()
-+  if (typeof b === 'number' && Number.isFinite(b)) return null
-+  if (b && typeof b === 'object') {
-+    const n =
-+      (typeof b.name === 'string' && b.name.trim() && b.name) ||
-+      (typeof b.title === 'string' && b.title.trim() && b.title) ||
-+      (typeof b.value === 'string' && b.value.trim() && b.value) ||
-+      null
-+    if (n) return String(n).trim()
-+  }
-+  return null
-+}
-+
-+type DescriptionMaps = {
-+  catNameById: Map<number, string>
++type DescCategoryIndex = {
++  categoryPathByTypeId: Map<number, string>
 +  typeNameById: Map<number, string>
-+  typeNameByCatId: Map<number, string>
 +}
 +
-+let _descMaps: DescriptionMaps | null = null
-+let _descMapsClientId: string | null = null
++let descCategoryIndexCache: { ts: number; index: DescCategoryIndex } | null = null
++const DESC_CATEGORY_INDEX_TTL_MS = 24 * 60 * 60 * 1000
 +
-+async function ozonGetCategoryTypeMaps(secrets: Secrets): Promise<DescriptionMaps> {
-+  if (_descMaps && _descMapsClientId === secrets.clientId) return _descMaps
++async function getDescCategoryIndex(secrets: Secrets): Promise<DescCategoryIndex> {
++  if (descCategoryIndexCache && (Date.now() - descCategoryIndexCache.ts) < DESC_CATEGORY_INDEX_TTL_MS) {
++    return descCategoryIndexCache.index
++  }
 +
-+  const candidates: Array<() => Promise<any>> = [
-+    () => ozonPost(secrets, '/v1/description-category/tree', {}),
-+    () => ozonGet(secrets, '/v1/description-category/tree'),
++  const bodies: any[] = [
++    { language: 'DEFAULT' },
++    { language: 'RU' },
++    {},
 +  ]
 +
 +  let json: any = null
-+  for (const fn of candidates) {
++  let lastErr: any = null
++  for (const body of bodies) {
 +    try {
-+      json = await fn()
++      json = await ozonPost(secrets, '/v1/description-category/tree', body)
 +      break
 +    } catch (e: any) {
-+      if (e?.details?.status && e.details.status !== 404) throw e
++      lastErr = e
++      // если эндпойнта нет — это не recoverable
++      if (e?.details?.status === 404) throw e
 +    }
 +  }
 +
-+  const root = json?.result ?? json?.data ?? json ?? []
-+  const list: any[] = Array.isArray(root)
-+    ? root
-+    : Array.isArray(root?.items)
-+      ? root.items
-+      : Array.isArray(root?.children)
-+        ? root.children
-+        : []
++  if (!json) throw lastErr ?? new Error('Failed to load description-category tree')
 +
-+  const catNameById = new Map<number, string>()
++  const data = json?.result ?? json?.data ?? json ?? {}
++  const roots: any[] = Array.isArray(data)
++    ? data
++    : Array.isArray((data as any)?.items)
++      ? (data as any).items
++      : Array.isArray((data as any)?.result)
++        ? (data as any).result
++        : Array.isArray((data as any)?.result?.items)
++          ? (data as any).result.items
++          : []
++
 +  const typeNameById = new Map<number, string>()
-+  const typeNameByCatId = new Map<number, string>()
++  const categoryPathByTypeId = new Map<number, string>()
 +
-+  const stack: any[] = [...list]
++  const stack: Array<{ node: any; path: string[] }> = []
++  for (const r of roots) stack.push({ node: r, path: [] })
++  const seen = new Set<any>()
++
 +  while (stack.length) {
-+    const node = stack.pop()
++    const { node, path } = stack.pop()!
 +    if (!node || typeof node !== 'object') continue
++    if (seen.has(node)) continue
++    seen.add(node)
 +
-+    const catId = toIntMaybe(node.description_category_id ?? node.category_id ?? node.id)
-+    const catName = pickFirstString(node.description_category_name, node.category_name, node.name)
-+    if (catId != null && catName) catNameById.set(catId, catName)
++    const categoryId = (node as any).category_id ?? (node as any).categoryId ?? null
++    const categoryName = pickFirstString(
++      (node as any).category_name,
++      (node as any).categoryName,
++      (node as any).title,
++      (node as any).name,
++    )
 +
-+    const typeId = toIntMaybe(node.type_id ?? node.typeId)
-+    const typeName = pickFirstString(node.type_name, node.typeName)
-+    if (typeId != null && typeName) typeNameById.set(typeId, typeName)
-+    if (catId != null && typeName) typeNameByCatId.set(catId, typeName)
++    const typeIdRaw =
++      (node as any).type_id ??
++      (node as any).typeId ??
++      (node as any).description_category_id ??
++      (node as any).descriptionCategoryId ??
++      null
++    const typeIdNum = (typeIdRaw != null) ? Number(typeIdRaw) : NaN
 +
-+    const children: any[] = Array.isArray(node.children) ? node.children : Array.isArray(node.items) ? node.items : []
-+    for (const ch of children) stack.push(ch)
++    const typeName = pickFirstString(
++      (node as any).type_name,
++      (node as any).typeName,
++      (node as any).name,
++      (node as any).title,
++    )
++
++    let nextPath = path
++    if (categoryId != null && categoryName) {
++      nextPath = [...path, categoryName]
++    }
++
++    if (Number.isFinite(typeIdNum)) {
++      if (typeName && !typeNameById.has(typeIdNum)) typeNameById.set(typeIdNum, typeName)
++      const catPath = nextPath.join(' / ')
++      if (catPath && !categoryPathByTypeId.has(typeIdNum)) categoryPathByTypeId.set(typeIdNum, catPath)
++    }
++
++    const children: any[] = []
++    for (const key of ['children', 'items', 'types', 'categories', 'subcategories', 'nodes'] as const) {
++      const v = (node as any)[key]
++      if (Array.isArray(v)) children.push(...v)
++    }
++
++    // эвристика: некоторые ответы прячут вложенность под произвольными ключами
++    if (!children.length) {
++      for (const v of Object.values(node as any)) {
++        if (!Array.isArray(v) || !v.length) continue
++        const hasHints = v.some((o: any) =>
++          o && typeof o === 'object' && (
++            'category_id' in o ||
++            'categoryId' in o ||
++            'type_id' in o ||
++            'typeId' in o ||
++            'description_category_id' in o
++          )
++        )
++        if (hasHints) children.push(...v)
++      }
++    }
++
++    for (const c of children) stack.push({ node: c, path: nextPath })
 +  }
 +
-+  _descMaps = { catNameById, typeNameById, typeNameByCatId }
-+  _descMapsClientId = secrets.clientId
-+  return _descMaps
++  const index: DescCategoryIndex = { categoryPathByTypeId, typeNameById }
++  descCategoryIndexCache = { ts: Date.now(), index }
++  return index
 +}
 +
- async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
--  const map = new Map<number, { brand?: string | null; barcode?: string | null; category?: string | null }>()
-+  const map = new Map<number, {
-+    brand?: string | null
-+    barcode?: string | null
-+    description_category_id?: number | null
-+    type_id?: number | null
-+    type_name?: string | null
-+  }>()
+ // ---------------- Public API ----------------
  
-   // Частые id атрибута "бренд" в разных категориях/кабинетах.
--  // (85 — самый распространённый, остальные — редкие вариации.)
--  const BRAND_ATTR_IDS = [85, 8229, 31, 10096]
-+  // 85 — самый распространённый. Также часто встречается 31 ("Бренд в одежде и обуви").
-+  const BRAND_ATTR_IDS = [85, 31, 8229, 10096]
- 
--  // Встречаются /v3/products/info/attributes и /v4/products/info/attributes.
-+  // Встречаются /v3/products/info/attributes и /v4/product/info/attributes.
-   // Делаем основной запрос в /v3, а /v4 используем как fallback.
-   async function callWithFallback(body: any) {
-     try {
-       return await ozonPost(secrets, '/v3/products/info/attributes', body)
-     } catch (e: any) {
-       if (e?.details?.status !== 404) throw e
--      return await ozonPost(secrets, '/v4/products/info/attributes', body)
-+      return await ozonPost(secrets, '/v4/product/info/attributes', body)
-     }
-   }
- 
-@@ -188,7 +291,6 @@
-       }
- 
-       const json: any = await callWithFallback(body)
--
-       const data = json?.data ?? json?.result ?? json ?? {}
- 
-       // Встречались варианты ответа:
-@@ -213,7 +315,7 @@
- 
-         const attrs = Array.isArray(x.attributes) ? x.attributes : []
- 
--        // Бренд: сначала по известным id, если value пустой — используем dictionary_value_id.
-+        // Бренд: только текст (dictionary_value_id не показываем, т.к. это число).
-         let brand: string | null = null
-         for (const id of BRAND_ATTR_IDS) {
-           const a = attrs.find(a => Number(a.id) === id)
-@@ -221,17 +323,20 @@
-           if (!v) continue
-           const val = (v.value ?? '').toString().trim()
-           if (val) { brand = val; break }
--          if (v.dictionary_value_id != null) { brand = String(v.dictionary_value_id); break }
-         }
- 
-         const barcode = x.barcode ? String(x.barcode) : null
--        const category = (x.category_id != null) ? String(x.category_id) : null
-+        const description_category_id = toIntMaybe((x as any).description_category_id ?? (x as any).category_id ?? (x as any).categoryId)
-+        const type_id = toIntMaybe((x as any).type_id ?? (x as any).typeId)
-+        const type_name = isNonNumericText((x as any).type_name) ? String((x as any).type_name).trim() : null
- 
-         const prev = map.get(pid) ?? {}
-         map.set(pid, {
-           brand: prev.brand ?? brand,
-           barcode: prev.barcode ?? barcode,
--          category: prev.category ?? category,
-+          description_category_id: prev.description_category_id ?? description_category_id,
-+          type_id: prev.type_id ?? type_id,
-+          type_name: prev.type_name ?? type_name,
-         })
-       }
- 
-@@ -247,6 +352,7 @@
-   return map
- }
- 
-+
- function pickFirstString(...vals: any[]): string | null {
-   for (const v of vals) {
-     if (typeof v === 'string' && v.trim()) return v.trim()
-@@ -337,6 +443,9 @@
- 
-   const out: OzonProductInfo[] = []
- 
-+  // Карта категорий/типов нужна, чтобы в UI были названия, а не числа.
-+  const maps = await ozonGetCategoryTypeMaps(secrets).catch(() => null)
-+
-   function extractItems(json: any): ProductInfoV2[] {
-     const r = json?.result
-     if (Array.isArray(r)) return r as any
-@@ -370,8 +479,23 @@
- 
-       const barcode = (x.barcode && String(x.barcode)) || (Array.isArray(x.barcodes) && x.barcodes[0]) || null
- 
--      const categoryId = (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
--      const brandRaw = (x as any).brand ?? (x as any).brand_name ?? (x as any).brandName ?? null
-+      // Категория: берём description_category_id (если есть), иначе fallback на category_id.
-+      const categoryId = toIntMaybe((x as any).description_category_id ?? (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null)
-+      const categoryName =
-+        categoryId != null
-+          ? (maps?.catNameById.get(categoryId) ?? `Категория ${categoryId}`)
-+          : null
-+
-+      // Тип: только словами.
-+      const typeId = toIntMaybe((x as any).type_id ?? (x as any).typeId ?? null)
-+      const typeName =
-+        (isNonNumericText((x as any).type_name) && String((x as any).type_name).trim()) ||
-+        (typeId != null ? (maps?.typeNameById.get(typeId) ?? `Тип ${typeId}`) : null) ||
-+        (categoryId != null ? (maps?.typeNameByCatId.get(categoryId) ?? null) : null) ||
-+        null
-+
-+      const brand = pickTextBrand(x)
-+
-       const visibleRaw = (x as any).visible ?? (x as any).is_visible ?? (x as any).isVisible ?? (x as any).visibility?.visible ?? null
-       const isVisible = (typeof visibleRaw === 'boolean') ? visibleRaw : ((visibleRaw == null) ? null : Boolean(visibleRaw))
- 
-@@ -382,9 +506,9 @@
-         offer_id: String(x.offer_id ?? ''),
-         sku: x.sku != null ? String(x.sku) : null,
-         barcode,
--        brand: (brandRaw != null && String(brandRaw).trim().length) ? String(brandRaw).trim() : null,
--        category: categoryId != null ? String(categoryId) : null,
--        type: x.description_category_id != null ? String(x.description_category_id) : null,
-+        brand,
-+        category: categoryName,
-+        type: typeName,
-         name,
-         is_visible: isVisible,
-         hidden_reasons: buildHiddenReasons(x),
-@@ -393,15 +517,30 @@
-     }
-   }
- 
--  // Атрибуты: бренд (и иногда barcode/category)
-+  // Атрибуты: бренд (и иногда barcode/category/type)
-   try {
-     const attrMap = await fetchAttributesMap(secrets, productIds)
-     for (const p of out) {
-       const a = attrMap.get(p.product_id)
-       if (!a) continue
--      if (!p.brand && a.brand) p.brand = a.brand
-+
-+      if (!p.brand && isNonNumericText(a.brand)) p.brand = a.brand.trim()
-       if (!p.barcode && a.barcode) p.barcode = a.barcode
--      if (!p.category && a.category) p.category = a.category
-+
-+      const catId = toIntMaybe(a.description_category_id)
-+      if (!p.category && catId != null) {
-+        p.category = (maps?.catNameById.get(catId) ?? `Категория ${catId}`)
-+      }
-+
-+      if (!p.type) {
-+        const tName = (isNonNumericText(a.type_name) && a.type_name.trim()) || null
-+        const tId = toIntMaybe(a.type_id)
-+        p.type =
-+          tName ||
-+          (tId != null ? (maps?.typeNameById.get(tId) ?? `Тип ${tId}`) : null) ||
-+          (catId != null ? (maps?.typeNameByCatId.get(catId) ?? null) : null) ||
-+          null
-+      }
-     }
-   } catch {
+ export async function ozonTestAuth(secrets: Secrets) {
+@@ -407,5 +532,32 @@
      // атрибуты не критичны — если упали, оставляем базовые поля
-@@ -409,3 +548,4 @@
+   }
  
++  // Категории/типы: маппим description_category_id (type) в понятные названия.
++  // Это закрывает "Категория пустая" даже если Ozon перестал отдавать category_id.
++  try {
++    const idx = await getDescCategoryIndex(secrets)
++    for (const p of out) {
++      const typeId = (p.type != null) ? Number(p.type) : NaN
++      if (!Number.isFinite(typeId)) {
++        // если type не число — оставляем как есть
++        continue
++      }
++
++      const typeName = idx.typeNameById.get(typeId) ?? null
++      const categoryPath = idx.categoryPathByTypeId.get(typeId) ?? null
++
++      if (typeName) p.type = typeName
++      // categoryPath = путь по дереву категорий до типа (без самого типа)
++      if (categoryPath) p.category = categoryPath
++
++      // страховка: если категория всё ещё пустая — хотя бы подставим то, что есть
++      if (!p.category && typeName) p.category = typeName
++      if (!p.category && p.type) p.category = p.type
++    }
++  } catch {
++    // не критично: если дерево категорий не подтянулось — оставляем ID/пустые значения как есть
++  }
++
++
    return out
  }
-+
