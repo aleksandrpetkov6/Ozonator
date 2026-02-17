@@ -1,536 +1,269 @@
-diff --git a/electron/main/index.ts b/electron/main/index.ts
-index 30f70a5..bd7a562 100644
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -56,7 +56,6 @@ function createWindow() {
-   nativeTheme.themeSource = 'light'
- }
- 
--
- function logAppUpdateIfNeeded() {
-   try {
-     const current = app.getVersion()
-@@ -84,6 +83,7 @@ function logAppUpdateIfNeeded() {
-     try { storeClientId = loadSecrets().clientId } catch {}
- 
-     const logId = dbLogStart('app_update', storeClientId)
-+
-     dbLogFinish(logId, {
-       status: 'success',
-       storeClientId,
-diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
-index 3c91d8d..4c0cbcc 100644
 --- a/electron/main/ozon.ts
 +++ b/electron/main/ozon.ts
-@@ -114,18 +114,6 @@ type ProductAttributesV3 = {
- function chunk<T>(arr: T[], size: number) {
-   const out: T[][] = []
-   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
--
--  // Преобразуем id категории/типа в названия (для UI — только слова, без цифр)
--  try {
--    const { catNameById, typeNameById } = await ozonGetCategoryTypeMaps(secrets)
--    for (const p of out) {
--      if (p.category && catNameById[p.category]) p.category = catNameById[p.category]
--      if (p.type && typeNameById[p.type]) p.type = typeNameById[p.type]
--    }
--  } catch {
--    // не критично — если дерево категорий недоступно, оставим как есть
--  }
--
-   return out
+@@ -160,21 +160,124 @@
+   return Array.from(new Set(parts)).slice(0, 12).join('; ')
  }
  
-@@ -266,6 +254,62 @@ function pickFirstString(...vals: any[]): string | null {
-   return null
- }
- 
-+// ---------------- Category/Type maps ----------------
-+
-+let _catTypeCache: { at: number; catNameById: Record<string, string>; typeNameById: Record<string, string> } | null = null
-+
-+async function ozonGetCategoryTypeMaps(secrets: Secrets): Promise<{ catNameById: Record<string, string>; typeNameById: Record<string, string> }> {
-+  const now = Date.now()
-+  // кэш на 12 часов (дерево большое, меняется редко)
-+  if (_catTypeCache && (now - _catTypeCache.at) < 12 * 60 * 60 * 1000) {
-+    return { catNameById: _catTypeCache.catNameById, typeNameById: _catTypeCache.typeNameById }
++function toIntMaybe(x: any): number | null {
++  if (x == null) return null
++  if (typeof x === 'number') return Number.isFinite(x) ? x : null
++  if (typeof x === 'string') {
++    const s = x.trim()
++    if (!s) return null
++    const n = Number(s)
++    return Number.isFinite(n) ? n : null
 +  }
++  return null
++}
 +
-+  const json: any = await ozonPost(secrets, '/v1/description-category/tree', { language: 'DEFAULT' })
-+  const root: any = json?.result ?? json?.data ?? json
++function isNonNumericText(x: any): x is string {
++  if (typeof x !== 'string') return false
++  const s = x.trim()
++  if (!s) return false
++  return !/^[0-9]+$/.test(s)
++}
 +
-+  const catNameById: Record<string, string> = {}
-+  const typeNameById: Record<string, string> = {}
++function pickTextBrand(item: any): string | null {
++  const b = item?.brand ?? item?.brand_name ?? item?.brandName
++  if (typeof b === 'string' && b.trim()) return b.trim()
++  if (typeof b === 'number' && Number.isFinite(b)) return null
++  if (b && typeof b === 'object') {
++    const n =
++      (typeof b.name === 'string' && b.name.trim() && b.name) ||
++      (typeof b.title === 'string' && b.title.trim() && b.title) ||
++      (typeof b.value === 'string' && b.value.trim() && b.value) ||
++      null
++    if (n) return String(n).trim()
++  }
++  return null
++}
 +
-+  const walk = (nodes: any) => {
-+    if (!nodes) return
-+    const arr = Array.isArray(nodes) ? nodes : [nodes]
-+    for (const n of arr) {
-+      if (!n || typeof n !== 'object') continue
++type DescriptionMaps = {
++  catNameById: Map<number, string>
++  typeNameById: Map<number, string>
++  typeNameByCatId: Map<number, string>
++}
 +
-+      const cid = (n as any).description_category_id ?? (n as any).category_id ?? (n as any).id
-+      const cname = (n as any).category_name ?? (n as any).name ?? (n as any).title
-+      if (cid != null && typeof cname === 'string' && cname.trim()) {
-+        catNameById[String(cid)] = cname.trim()
-+      }
++let _descMaps: DescriptionMaps | null = null
++let _descMapsClientId: string | null = null
 +
-+      // type can be directly on node OR inside types[]
-+      const tid = (n as any).type_id ?? (n as any).typeId ?? (n as any).type?.id
-+      const tname = (n as any).type_name ?? (n as any).typeName ?? (n as any).type?.name ?? (n as any).type?.title
-+      if (tid != null && typeof tname === 'string' && tname.trim()) {
-+        typeNameById[String(tid)] = tname.trim()
-+      }
++async function ozonGetCategoryTypeMaps(secrets: Secrets): Promise<DescriptionMaps> {
++  if (_descMaps && _descMapsClientId === secrets.clientId) return _descMaps
 +
-+      const typesArr = (n as any).types
-+      if (Array.isArray(typesArr)) {
-+        for (const t of typesArr) {
-+          const id = (t as any)?.type_id ?? (t as any)?.id ?? (t as any)?.typeId
-+          const nm = (t as any)?.type_name ?? (t as any)?.name ?? (t as any)?.title ?? (t as any)?.typeName
-+          if (id != null && typeof nm === 'string' && nm.trim()) {
-+            typeNameById[String(id)] = nm.trim()
-+          }
-+        }
-+      }
++  const candidates: Array<() => Promise<any>> = [
++    () => ozonPost(secrets, '/v1/description-category/tree', {}),
++    () => ozonGet(secrets, '/v1/description-category/tree'),
++  ]
 +
-+      walk((n as any).children)
++  let json: any = null
++  for (const fn of candidates) {
++    try {
++      json = await fn()
++      break
++    } catch (e: any) {
++      if (e?.details?.status && e.details.status !== 404) throw e
 +    }
 +  }
 +
-+  walk(root)
-+  _catTypeCache = { at: now, catNameById, typeNameById }
-+  return { catNameById, typeNameById }
++  const root = json?.result ?? json?.data ?? json ?? []
++  const list: any[] = Array.isArray(root)
++    ? root
++    : Array.isArray(root?.items)
++      ? root.items
++      : Array.isArray(root?.children)
++        ? root.children
++        : []
++
++  const catNameById = new Map<number, string>()
++  const typeNameById = new Map<number, string>()
++  const typeNameByCatId = new Map<number, string>()
++
++  const stack: any[] = [...list]
++  while (stack.length) {
++    const node = stack.pop()
++    if (!node || typeof node !== 'object') continue
++
++    const catId = toIntMaybe(node.description_category_id ?? node.category_id ?? node.id)
++    const catName = pickFirstString(node.description_category_name, node.category_name, node.name)
++    if (catId != null && catName) catNameById.set(catId, catName)
++
++    const typeId = toIntMaybe(node.type_id ?? node.typeId)
++    const typeName = pickFirstString(node.type_name, node.typeName)
++    if (typeId != null && typeName) typeNameById.set(typeId, typeName)
++    if (catId != null && typeName) typeNameByCatId.set(catId, typeName)
++
++    const children: any[] = Array.isArray(node.children) ? node.children : Array.isArray(node.items) ? node.items : []
++    for (const ch of children) stack.push(ch)
++  }
++
++  _descMaps = { catNameById, typeNameById, typeNameByCatId }
++  _descMapsClientId = secrets.clientId
++  return _descMaps
 +}
 +
- // ---------------- Public API ----------------
+ async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
+-  const map = new Map<number, { brand?: string | null; barcode?: string | null; category?: string | null }>()
++  const map = new Map<number, {
++    brand?: string | null
++    barcode?: string | null
++    description_category_id?: number | null
++    type_id?: number | null
++    type_name?: string | null
++  }>()
  
- export async function ozonTestAuth(secrets: Secrets) {
-@@ -382,8 +426,13 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
+   // Частые id атрибута "бренд" в разных категориях/кабинетах.
+-  // (85 — самый распространённый, остальные — редкие вариации.)
+-  const BRAND_ATTR_IDS = [85, 8229, 31, 10096]
++  // 85 — самый распространённый. Также часто встречается 31 ("Бренд в одежде и обуви").
++  const BRAND_ATTR_IDS = [85, 31, 8229, 10096]
+ 
+-  // Встречаются /v3/products/info/attributes и /v4/products/info/attributes.
++  // Встречаются /v3/products/info/attributes и /v4/product/info/attributes.
+   // Делаем основной запрос в /v3, а /v4 используем как fallback.
+   async function callWithFallback(body: any) {
+     try {
+       return await ozonPost(secrets, '/v3/products/info/attributes', body)
+     } catch (e: any) {
+       if (e?.details?.status !== 404) throw e
+-      return await ozonPost(secrets, '/v4/products/info/attributes', body)
++      return await ozonPost(secrets, '/v4/product/info/attributes', body)
+     }
+   }
+ 
+@@ -188,7 +291,6 @@
+       }
+ 
+       const json: any = await callWithFallback(body)
+-
+       const data = json?.data ?? json?.result ?? json ?? {}
+ 
+       // Встречались варианты ответа:
+@@ -213,7 +315,7 @@
+ 
+         const attrs = Array.isArray(x.attributes) ? x.attributes : []
+ 
+-        // Бренд: сначала по известным id, если value пустой — используем dictionary_value_id.
++        // Бренд: только текст (dictionary_value_id не показываем, т.к. это число).
+         let brand: string | null = null
+         for (const id of BRAND_ATTR_IDS) {
+           const a = attrs.find(a => Number(a.id) === id)
+@@ -221,17 +323,20 @@
+           if (!v) continue
+           const val = (v.value ?? '').toString().trim()
+           if (val) { brand = val; break }
+-          if (v.dictionary_value_id != null) { brand = String(v.dictionary_value_id); break }
+         }
+ 
+         const barcode = x.barcode ? String(x.barcode) : null
+-        const category = (x.category_id != null) ? String(x.category_id) : null
++        const description_category_id = toIntMaybe((x as any).description_category_id ?? (x as any).category_id ?? (x as any).categoryId)
++        const type_id = toIntMaybe((x as any).type_id ?? (x as any).typeId)
++        const type_name = isNonNumericText((x as any).type_name) ? String((x as any).type_name).trim() : null
+ 
+         const prev = map.get(pid) ?? {}
+         map.set(pid, {
+           brand: prev.brand ?? brand,
+           barcode: prev.barcode ?? barcode,
+-          category: prev.category ?? category,
++          description_category_id: prev.description_category_id ?? description_category_id,
++          type_id: prev.type_id ?? type_id,
++          type_name: prev.type_name ?? type_name,
+         })
+       }
+ 
+@@ -247,6 +352,7 @@
+   return map
+ }
+ 
++
+ function pickFirstString(...vals: any[]): string | null {
+   for (const v of vals) {
+     if (typeof v === 'string' && v.trim()) return v.trim()
+@@ -337,6 +443,9 @@
+ 
+   const out: OzonProductInfo[] = []
+ 
++  // Карта категорий/типов нужна, чтобы в UI были названия, а не числа.
++  const maps = await ozonGetCategoryTypeMaps(secrets).catch(() => null)
++
+   function extractItems(json: any): ProductInfoV2[] {
+     const r = json?.result
+     if (Array.isArray(r)) return r as any
+@@ -370,8 +479,23 @@
  
        const barcode = (x.barcode && String(x.barcode)) || (Array.isArray(x.barcodes) && x.barcodes[0]) || null
-+
-+      // ensure category/type maps are loaded (cached); we must show names (words), not ids
-+      if (!_catTypeCache) {
-+        try { await ozonGetCategoryTypeMaps(secrets) } catch {}
-+      }
-+      const catNameById = _catTypeCache?.catNameById ?? {}
-+      const typeNameById = _catTypeCache?.typeNameById ?? {}
-+
  
 -      const categoryId = (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
-+      const categoryId = (x as any).description_category_id ?? (x as any).descriptionCategoryId ?? (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
-+      const categoryNameRaw = (x as any).category_name ?? (x as any).categoryName ?? (x as any).category?.name ?? (x as any).category?.title ?? null
+-      const brandRaw = (x as any).brand ?? (x as any).brand_name ?? (x as any).brandName ?? null
++      // Категория: берём description_category_id (если есть), иначе fallback на category_id.
++      const categoryId = toIntMaybe((x as any).description_category_id ?? (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null)
++      const categoryName =
++        categoryId != null
++          ? (maps?.catNameById.get(categoryId) ?? `Категория ${categoryId}`)
++          : null
 +
-       const brandRaw = (x as any).brand ?? (x as any).brand_name ?? (x as any).brandName ?? null
++      // Тип: только словами.
++      const typeId = toIntMaybe((x as any).type_id ?? (x as any).typeId ?? null)
++      const typeName =
++        (isNonNumericText((x as any).type_name) && String((x as any).type_name).trim()) ||
++        (typeId != null ? (maps?.typeNameById.get(typeId) ?? `Тип ${typeId}`) : null) ||
++        (categoryId != null ? (maps?.typeNameByCatId.get(categoryId) ?? null) : null) ||
++        null
 +
-+      const typeId = (x as any).type_id ?? (x as any).typeId ?? (x as any).type?.id ?? null
-+      const typeNameRaw = (x as any).type_name ?? (x as any).typeName ?? (x as any).type?.name ?? (x as any).type?.title ?? null
++      const brand = pickTextBrand(x)
++
        const visibleRaw = (x as any).visible ?? (x as any).is_visible ?? (x as any).isVisible ?? (x as any).visibility?.visible ?? null
        const isVisible = (typeof visibleRaw === 'boolean') ? visibleRaw : ((visibleRaw == null) ? null : Boolean(visibleRaw))
  
-@@ -396,17 +445,39 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
+@@ -382,9 +506,9 @@
+         offer_id: String(x.offer_id ?? ''),
+         sku: x.sku != null ? String(x.sku) : null,
          barcode,
-         brand: (() => {
-           if (brandRaw == null) return null
--          if (typeof brandRaw === 'string' && brandRaw.trim()) return brandRaw.trim()
--          if (typeof brandRaw === 'number' || typeof brandRaw === 'boolean') return String(brandRaw)
-+          if (typeof brandRaw === 'string') {
-+            const s = brandRaw.trim()
-+            return s ? s : null
-+          }
-           if (typeof brandRaw === 'object') {
-             const n = pickFirstString((brandRaw as any).name, (brandRaw as any).title, (brandRaw as any).value)
-+            return n ? n : null
-+          }
-+          // число/булево не показываем как бренд (бренд должен быть текстом)
-+          return null
-+        })(),
-+        category: (() => {
-+          if (typeof categoryNameRaw === 'string') {
-+            const s = categoryNameRaw.trim()
-+            if (s) return s
-+          }
-+          if (categoryNameRaw && typeof categoryNameRaw === 'object') {
-+            const n = pickFirstString((categoryNameRaw as any).name, (categoryNameRaw as any).title, (categoryNameRaw as any).value)
-+            if (n) return n
-+          }
-+          if (categoryId != null) {
-+            const n = catNameById[String(categoryId)]
-+            if (n) return n
-+          }
-+          return null
-+        })(),
-+        type: (() => {
-+          if (typeof typeNameRaw === 'string') {
-+            const s = typeNameRaw.trim()
-+            if (s) return s
-+          }
-+          if (typeNameRaw && typeof typeNameRaw === 'object') {
-+            const n = pickFirstString((typeNameRaw as any).name, (typeNameRaw as any).title, (typeNameRaw as any).value)
-             if (n) return n
-           }
--          const s = String(brandRaw).trim()
--          return s ? s : null
-+          if (typeId != null) {
-+            const n = typeNameById[String(typeId)]
-+            if (n) return n
-+          }
-+          return null
-         })(),
+-        brand: (brandRaw != null && String(brandRaw).trim().length) ? String(brandRaw).trim() : null,
 -        category: categoryId != null ? String(categoryId) : null,
--        type: typeId != null ? String(typeId) : null,
+-        type: x.description_category_id != null ? String(x.description_category_id) : null,
++        brand,
++        category: categoryName,
++        type: typeName,
          name,
          is_visible: isVisible,
          hidden_reasons: buildHiddenReasons(x),
-diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
-index dc5a068..16c82b2 100644
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
-@@ -231,7 +231,7 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
-   `).all() as any
- }
- 
--export function dbLogStart(type: 'check_auth' | 'sync_products', storeClientId?: string | null): number {
-+export function dbLogStart(type: 'check_auth' | 'sync_products' | 'app_update', storeClientId?: string | null): number {
-   const startedAt = new Date().toISOString()
-   const info = mustDb().prepare(`
-     INSERT INTO sync_log (type, status, started_at, store_client_id)
-diff --git a/electron/main/types.ts b/electron/main/types.ts
-new file mode 100644
-index 0000000..e0b333f
---- /dev/null
-+++ b/electron/main/types.ts
-@@ -0,0 +1,35 @@
-+export type Secrets = {
-+  clientId: string
-+  apiKey: string
-+  storeName: string | null
-+}
-+
-+export type ProductRow = {
-+  offer_id: string
-+  product_id: number | null
-+  sku: string | null
-+  barcode: string | null
-+  brand: string | null
-+  category: string | null
-+  type: string | null
-+  name: string | null
-+  is_visible: number | null
-+  hidden_reasons: string | null
-+  created_at: string | null
-+  store_client_id: string | null
-+  archived: number | null
-+  updated_at: string
-+}
-+
-+export type SyncLogRow = {
-+  id: number
-+  type: 'check_auth' | 'sync_products' | 'app_update'
-+  status: 'pending' | 'success' | 'error'
-+  started_at: string
-+  finished_at: string | null
-+  items_count: number | null
-+  error_message: string | null
-+  error_details: any | null
-+  meta: any | null
-+  store_client_id: string | null
-+}
-diff --git a/src/renderer/src/ui/pages/LogsPage.tsx b/src/renderer/src/ui/pages/LogsPage.tsx
-index 9a62d9a..ec81ba1 100644
---- a/src/renderer/src/ui/pages/LogsPage.tsx
-+++ b/src/renderer/src/ui/pages/LogsPage.tsx
-@@ -15,6 +15,7 @@ type LogRow = {
- const TYPE_RU: Record<string, string> = {
-   sync_products: 'Синхронизация товаров',
-   check_auth: 'Проверка доступа',
-+  app_update: 'Обновление приложения',
- }
- 
- const STATUS_RU: Record<string, string> = {
-diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index a5c611b..3c482fc 100644
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -45,7 +45,7 @@ function fmtRuDateTime(iso: any) {
-   return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${yy} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
- }
- 
--export default function ProductsPage() {
-+export default function ProductsPage() {
-   const [products, setProducts] = useState<Product[]>([])
-   const [loading, setLoading] = useState(true)
-   const [error, setError] = useState<string | null>(null)
-@@ -84,18 +84,36 @@ export default function ProductsPage() {
+@@ -393,15 +517,30 @@
      }
-   })
- 
-   const [query, setQuery] = useState('')
-
-   const draggingIdRef = useRef<string | null>(null)
-   const [dropHint, setDropHint] = useState<{ targetId: string; side: 'left' | 'right' } | null>(null)
- 
-   const wrapRef = useRef<HTMLDivElement | null>(null)
-+  const scrollerRef = useRef<HTMLDivElement | null>(null)
-+  const [scrollTop, setScrollTop] = useState(0)
-+  const [viewportH, setViewportH] = useState(0)
-+
-   const [resizeLineX, setResizeLineX] = useState<number | null>(null)
-   const resizeRafRef = useRef<number | null>(null)
- 
--  // persist columns
-+  // persist columns (debounced — to avoid lags while resizing)
-+  const persistTimerRef = useRef<number | null>(null)
-   useEffect(() => {
--    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cols)) } catch {}
-+    if (persistTimerRef.current != null) {
-+      try { window.clearTimeout(persistTimerRef.current) } catch {}
-+      persistTimerRef.current = null
-+    }
-+
-+    persistTimerRef.current = window.setTimeout(() => {
-+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cols)) } catch {}
-+    }, 220)
-+
-+    return () => {
-+      if (persistTimerRef.current != null) {
-+        try { window.clearTimeout(persistTimerRef.current) } catch {}
-+        persistTimerRef.current = null
-+      }
-+    }
-   }, [cols])
- 
-   // load products
-@@ -116,19 +134,63 @@ export default function ProductsPage() {
-     return () => { cancelled = true }
-   }, [])
- 
-+  // viewport height for virtualization
-+  useEffect(() => {
-+    const el = scrollerRef.current
-+    if (!el) return
-+
-+    const update = () => setViewportH(el.clientHeight || 0)
-+    update()
-+
-+    let ro: ResizeObserver | null = null
-+    try {
-+      ro = new ResizeObserver(() => update())
-+      ro.observe(el)
-+    } catch {
-+      // ignore
-+    }
-+
-+    window.addEventListener('resize', update)
-+    return () => {
-+      window.removeEventListener('resize', update)
-+      try { ro?.disconnect() } catch {}
-+    }
-+  }, [])
-+
-+  const scrollRafRef = useRef<number | null>(null)
-+  function onScrollTable() {
-+    const el = scrollerRef.current
-+    if (!el) return
-+    const st = el.scrollTop
-+    if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current)
-+    scrollRafRef.current = requestAnimationFrame(() => {
-+      setScrollTop(st)
-+    })
-+  }
-+
-   const visibleCols = useMemo(() => cols.filter((c) => c.visible), [cols])
-   const hiddenCols = useMemo(() => cols.filter((c) => !c.visible), [cols])
- 
-   const tableWidth = useMemo(() => {
-     const sum = visibleCols.reduce((acc, c) => acc + c.w, 0)
--    return Math.max(860, sum)
-+    return Math.max(1, sum)
-   }, [visibleCols])
- 
-+
-+  const searchFieldsKey = useMemo(() => {
-+    // key depends only on order + visibility (NOT on width), so resize won't re-filter big lists
-+    return cols.map((c) => `${String(c.id)}:${c.visible ? '1' : '0'}`).join('|')
-+  }, [cols])
-+
-+  const searchFields = useMemo(() => {
-+    return cols.filter((c) => c.visible).map((c) => c.id)
-+  }, [searchFieldsKey])
-+
-   const filtered = useMemo(() => {
-     const q = query.trim().toLowerCase()
-     if (!q) return products
- 
--    const fields: (keyof Product)[] = visibleCols.map((c) => c.id)
-+    const fields = searchFields
- 
-     return products.filter((p) => {
-       for (const f of fields) {
-@@ -138,7 +200,7 @@ export default function ProductsPage() {
-       }
-       return false
-     })
--  }, [products, query, visibleCols])
-+  }, [products, query, searchFieldsKey])
- 
-   function cellText(p: Product, colId: keyof Product) {
-     const v = (p as any)[colId]
-@@ -283,6 +345,9 @@ export default function ProductsPage() {
- 
-     setDropHint(null)
    }
  
-   const totalLabel = useMemo(() => `Всего: ${products.length}`, [products.length])
- 
-@@ -312,7 +377,7 @@ export default function ProductsPage() {
-         <div className="tableWrap" ref={wrapRef}>
-           {resizeLineX != null && <div className="colResizeLine" style={{ left: resizeLineX }} />}
- 
--          <div className="tableScroller">
-+          <div className="tableScroller" ref={scrollerRef} onScroll={onScrollTable}>
-             <table className="table tableFixed" style={{ width: tableWidth, minWidth: tableWidth }}>
-               <colgroup>
-                 {visibleCols.map((c) => (
-@@ -378,17 +443,47 @@ export default function ProductsPage() {
-                   </tr>
-                 )}
- 
--                {!loading && !error && filtered.map((p) => (
--                  <tr key={p.product_id}>
--                    {visibleCols.map((c) => (
--                      <td key={String(c.id)}>
--                        <div className="cellText" title={cellText(p, c.id)}>
--                          {cellText(p, c.id)}
--                        </div>
--                      </td>
--                    ))}
--                  </tr>
--                ))}
-+                {!loading && !error && filtered.length > 0 && (() => {
-+                  const ROW_H = 40
-+                  const OVERSCAN = 12
-+                  const total = filtered.length
-+                  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
-+                  const end = Math.min(total, Math.ceil((scrollTop + viewportH) / ROW_H) + OVERSCAN)
-+                  const topPad = start * ROW_H
-+                  const bottomPad = Math.max(0, (total - end) * ROW_H)
-+                  const slice = filtered.slice(start, end)
+-  // Атрибуты: бренд (и иногда barcode/category)
++  // Атрибуты: бренд (и иногда barcode/category/type)
+   try {
+     const attrMap = await fetchAttributesMap(secrets, productIds)
+     for (const p of out) {
+       const a = attrMap.get(p.product_id)
+       if (!a) continue
+-      if (!p.brand && a.brand) p.brand = a.brand
 +
-+                  return (
-+                    <>
-+                      {topPad > 0 && (
-+                        <tr className="spacerRow">
-+                          <td colSpan={visibleCols.length} style={{ height: topPad }} />
-+                        </tr>
-+                      )}
++      if (!p.brand && isNonNumericText(a.brand)) p.brand = a.brand.trim()
+       if (!p.barcode && a.barcode) p.barcode = a.barcode
+-      if (!p.category && a.category) p.category = a.category
 +
-+                      {slice.map((p) => (
-+                        <tr key={p.product_id}>
-+                          {visibleCols.map((c) => {
-+                            const t = cellText(p, c.id)
-+                            return (
-+                              <td key={String(c.id)}>
-+                                <div className="cellText" title={t}>
-+                                  {t}
-+                                </div>
-+                              </td>
-+                            )
-+                          })}
-+                        </tr>
-+                      ))}
++      const catId = toIntMaybe(a.description_category_id)
++      if (!p.category && catId != null) {
++        p.category = (maps?.catNameById.get(catId) ?? `Категория ${catId}`)
++      }
 +
-+                      {bottomPad > 0 && (
-+                        <tr className="spacerRow">
-+                          <td colSpan={visibleCols.length} style={{ height: bottomPad }} />
-+                        </tr>
-+                      )}
-+                    </>
-+                  )
-+                })()}
-               </tbody>
-             </table>
-           </div>
-diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
-index b81f105..559bf5d 100644
---- a/src/renderer/src/ui/styles.css
-+++ b/src/renderer/src/ui/styles.css
-@@ -177,8 +177,8 @@ a{ color: inherit; text-decoration: none; }
-   justify-content: center;
-   border-radius: 12px;
-   border: 1px solid var(--hairline);
--  background: rgba(255,255,255,.78);
--  color: rgba(28,28,30,.78);
-+  background: rgba(255,255,255,.92);
-+  color: rgba(28,28,30,.82);
- }
++      if (!p.type) {
++        const tName = (isNonNumericText(a.type_name) && a.type_name.trim()) || null
++        const tId = toIntMaybe(a.type_id)
++        p.type =
++          tName ||
++          (tId != null ? (maps?.typeNameById.get(tId) ?? `Тип ${tId}`) : null) ||
++          (catId != null ? (maps?.typeNameByCatId.get(catId) ?? null) : null) ||
++          null
++      }
+     }
+   } catch {
+     // атрибуты не критичны — если упали, оставляем базовые поля
+@@ -409,3 +548,4 @@
  
- .iconLink{ text-decoration:none; }
-@@ -428,6 +428,9 @@ button:disabled{
-   margin-top: 14px;
-   display: flex;
-   flex-direction: column;
-+  flex: 1;
-+  min-height: 0;
-+  position: relative;
-   border: 1px solid var(--hairline2);
-   border-radius: var(--radius);
-   overflow: hidden;
-@@ -437,7 +440,8 @@ button:disabled{
- 
- 
- .tableScroller {
--  height: 100%;
-+  flex: 1;
-+  min-height: 0;
-   width: 100%;
-   overflow: auto;
-   scrollbar-gutter: stable both-edges;
-@@ -568,6 +572,11 @@ button:disabled{
- 
- .tableFixed{ table-layout: fixed; }
- 
-+/* fixed row height for virtualization (keeps scroll math stable) */
-+.tableFixed tbody tr:not(.spacerRow){
-+  height: 40px;
-+}
-+
- .cellText{
-   overflow: hidden;
-   text-overflow: ellipsis;
-@@ -647,17 +656,22 @@ button:disabled{
- 
- 
- .chipSmall {
--  padding: 6px 10px;
-+  padding: 4px 8px;
-   font-size: 12px;
-   border-radius: 999px;
-+  height: 24px;
-+  display: inline-flex;
-+  align-items: center;
- }
- 
-+
- .collapsedBar {
--  padding: 8px 10px;
-+  padding: 6px 10px;
-   border-radius: 12px;
--  margin-bottom: 10px;
-+  margin-bottom: 6px;
- }
- 
-+
- .collapsedLeft {
-   font-size: 12px;
-   color: var(--muted);
-@@ -668,3 +682,10 @@ button:disabled{
-   flex-wrap: wrap;
-   gap: 8px;
+   return out
  }
 +
-+
-+.spacerRow td{
-+  padding: 0 !important;
-+  border-top: none !important;
-+  background: transparent !important;
-+}
