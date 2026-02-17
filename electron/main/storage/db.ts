@@ -1,13 +1,40 @@
 import { app } from 'electron'
 import { join } from 'path'
+import { existsSync, mkdirSync, copyFileSync } from 'fs'
 import Database from 'better-sqlite3'
 import type { ProductRow } from '../types'
 
 let db: Database.Database | null = null
 
-function dbPath() {
-  return join(app.getPath('userData'), 'app.db')
+function persistentDir() {
+  // userData на Windows может удаляться деинсталлятором.
+  // Для истории логов и базы используем отдельную папку, которую деинсталлятор обычно не трогает.
+  return join(app.getPath('appData'), 'OzonatorPersistent')
 }
+
+function ensurePersistentDir() {
+  const dir = persistentDir()
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+export function persistentVersionPath() {
+  return join(ensurePersistentDir(), 'version.json')
+}
+
+function dbPath() {
+  const dir = ensurePersistentDir()
+  const newPath = join(dir, 'app.db')
+
+  // Миграция с прежнего расположения (userData/app.db)
+  const oldPath = join(app.getPath('userData'), 'app.db')
+  if (!existsSync(newPath) && existsSync(oldPath)) {
+    try { copyFileSync(oldPath, newPath) } catch {}
+  }
+
+  return newPath
+}
+
 
 /**
  * Инициализация БД + миграции.
