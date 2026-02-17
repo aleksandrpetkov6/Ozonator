@@ -1,93 +1,55 @@
-diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
-@@ -6,6 +6,64 @@
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -27,6 +27,9 @@
+   { id: 'archived', title: 'Архив', w: 90, visible: false },
+ ]
  
- let _db: Database.Database | null = null
- 
-+type ColumnDef = { name: string; ddl: string }
++const COL_ID_SET = new Set<ColId>(DEFAULT_COLS.map((c) => c.id))
++const isColId = (v: any): v is ColId => typeof v === 'string' && COL_ID_SET.has(v as ColId)
 +
-+function tableColumns(db: Database.Database, table: string): Set<string> {
-+  try {
-+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as any[]
-+    return new Set(rows.map((r) => String(r.name)))
-+  } catch {
-+    return new Set()
-+  }
-+}
+ function fmt(dtIso: string | null): string {
+   if (!dtIso) return ''
+   const d = new Date(dtIso)
+@@ -46,7 +49,41 @@
+   const [cols, setCols] = useState<Col[]>(() => {
+     try {
+       const saved = localStorage.getItem('ozonator-cols-v2')
+-      if (saved) return JSON.parse(saved)
++      if (saved) {
++        const parsed = JSON.parse(saved)
++        if (Array.isArray(parsed)) {
++          const byId = new Map<ColId, any>()
++          const order: ColId[] = []
++          for (const raw of parsed) {
++            const id = raw?.id
++            if (!isColId(id)) continue
++            byId.set(id, raw)
++            if (!order.includes(id)) order.push(id)
++          }
 +
-+function ensureColumns(db: Database.Database, table: string, cols: ColumnDef[]): void {
-+  const existing = tableColumns(db, table)
-+  for (const c of cols) {
-+    if (existing.has(c.name)) continue
-+    try {
-+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${c.name} ${c.ddl}`)
-+      existing.add(c.name)
-+    } catch {
-+      // ignore: either already exists, or sqlite can't alter due to legacy schema
-+    }
-+  }
-+}
++          const out: Col[] = []
++          const used = new Set<ColId>()
 +
-+function migrateSchema(db: Database.Database): void {
-+  // products: older installs might miss columns — CREATE TABLE IF NOT EXISTS won't add them.
-+  ensureColumns(db, 'products', [
-+    { name: 'product_id', ddl: 'INTEGER' },
-+    { name: 'sku', ddl: 'TEXT' },
-+    { name: 'barcode', ddl: 'TEXT' },
-+    { name: 'brand', ddl: 'TEXT' },
-+    { name: 'category', ddl: 'TEXT' },
-+    { name: 'type', ddl: 'TEXT' },
-+    { name: 'name', ddl: 'TEXT' },
-+    { name: 'is_visible', ddl: 'INTEGER' },
-+    { name: 'hidden_reasons', ddl: 'TEXT' },
-+    { name: 'created_at', ddl: 'TEXT' },
-+    { name: 'archived', ddl: 'INTEGER NOT NULL DEFAULT 0' },
-+    { name: 'store_client_id', ddl: 'TEXT' },
-+  ])
++          for (const id of order) {
++            const def = DEFAULT_COLS.find((c) => c.id === id)
++            if (!def) continue
++            const raw = byId.get(id)
 +
-+  ensureColumns(db, 'sync_log', [
-+    { name: 'message', ddl: 'TEXT' },
-+    { name: 'details', ddl: 'TEXT' },
-+    { name: 'created_at', ddl: 'TEXT NOT NULL' },
-+    { name: 'version', ddl: 'TEXT' },
-+    { name: 'store_client_id', ddl: 'TEXT' },
-+  ])
++            const w =
++              typeof raw?.w === 'number' && Number.isFinite(raw.w) ? Math.max(60, Math.round(raw.w)) : def.w
++            const visible = typeof raw?.visible === 'boolean' ? raw.visible : def.visible
 +
-+  // Indices (safe if already exist)
-+  try {
-+    db.exec('CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_client_id)')
-+  } catch {}
-+  try {
-+    db.exec('CREATE INDEX IF NOT EXISTS idx_sync_log_store ON sync_log(store_client_id)')
-+  } catch {}
-+}
++            out.push({ ...def, w, visible })
++            used.add(id)
++          }
 +
- function getDb(): Database.Database {
-   if (_db) return _db
- 
-@@ -17,6 +75,7 @@
-   const dbPath = join(dir, 'app.db')
-   _db = new Database(dbPath)
-   _db.pragma('journal_mode = WAL')
++          for (const def of DEFAULT_COLS) {
++            if (!used.has(def.id)) out.push(def)
++          }
 +
-   _db.exec(`
-     CREATE TABLE IF NOT EXISTS products (
-       offer_id TEXT PRIMARY KEY,
-@@ -52,6 +111,8 @@
-       value TEXT
-     );
-   `)
-+
-+  migrateSchema(_db)
- 
-   return _db
- }
-@@ -153,7 +214,6 @@
-   const info = getDb()
-     .prepare('INSERT INTO sync_log(type,status,message,details,created_at,version,store_client_id) VALUES(?,?,?,?,?,?,?)')
-     .run(type, 'started', null, null, now, version, storeClientId)
--
-   return Number(info.lastInsertRowid)
- }
- 
++          return out
++        }
++      }
+     } catch {}
+     return DEFAULT_COLS
+   })
