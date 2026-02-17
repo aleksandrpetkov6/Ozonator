@@ -1,167 +1,93 @@
---- a/electron/main/ozon.ts
-+++ b/electron/main/ozon.ts
-@@ -254,6 +254,131 @@
-   return null
- }
+diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
+--- a/electron/main/storage/db.ts
++++ b/electron/main/storage/db.ts
+@@ -6,6 +6,64 @@
  
-+
-+
-+type DescCategoryIndex = {
-+  categoryPathByTypeId: Map<number, string>
-+  typeNameById: Map<number, string>
-+}
-+
-+let descCategoryIndexCache: { ts: number; index: DescCategoryIndex } | null = null
-+const DESC_CATEGORY_INDEX_TTL_MS = 24 * 60 * 60 * 1000
-+
-+async function getDescCategoryIndex(secrets: Secrets): Promise<DescCategoryIndex> {
-+  if (descCategoryIndexCache && (Date.now() - descCategoryIndexCache.ts) < DESC_CATEGORY_INDEX_TTL_MS) {
-+    return descCategoryIndexCache.index
-+  }
-+
-+  const bodies: any[] = [
-+    { language: 'DEFAULT' },
-+    { language: 'RU' },
-+    {},
-+  ]
-+
-+  let json: any = null
-+  let lastErr: any = null
-+  for (const body of bodies) {
-+    try {
-+      json = await ozonPost(secrets, '/v1/description-category/tree', body)
-+      break
-+    } catch (e: any) {
-+      lastErr = e
-+      // если эндпойнта нет — это не recoverable
-+      if (e?.details?.status === 404) throw e
-+    }
-+  }
-+
-+  if (!json) throw lastErr ?? new Error('Failed to load description-category tree')
-+
-+  const data = json?.result ?? json?.data ?? json ?? {}
-+  const roots: any[] = Array.isArray(data)
-+    ? data
-+    : Array.isArray((data as any)?.items)
-+      ? (data as any).items
-+      : Array.isArray((data as any)?.result)
-+        ? (data as any).result
-+        : Array.isArray((data as any)?.result?.items)
-+          ? (data as any).result.items
-+          : []
-+
-+  const typeNameById = new Map<number, string>()
-+  const categoryPathByTypeId = new Map<number, string>()
-+
-+  const stack: Array<{ node: any; path: string[] }> = []
-+  for (const r of roots) stack.push({ node: r, path: [] })
-+  const seen = new Set<any>()
-+
-+  while (stack.length) {
-+    const { node, path } = stack.pop()!
-+    if (!node || typeof node !== 'object') continue
-+    if (seen.has(node)) continue
-+    seen.add(node)
-+
-+    const categoryId = (node as any).category_id ?? (node as any).categoryId ?? null
-+    const categoryName = pickFirstString(
-+      (node as any).category_name,
-+      (node as any).categoryName,
-+      (node as any).title,
-+      (node as any).name,
-+    )
-+
-+    const typeIdRaw =
-+      (node as any).type_id ??
-+      (node as any).typeId ??
-+      (node as any).description_category_id ??
-+      (node as any).descriptionCategoryId ??
-+      null
-+    const typeIdNum = (typeIdRaw != null) ? Number(typeIdRaw) : NaN
-+
-+    const typeName = pickFirstString(
-+      (node as any).type_name,
-+      (node as any).typeName,
-+      (node as any).name,
-+      (node as any).title,
-+    )
-+
-+    let nextPath = path
-+    if (categoryId != null && categoryName) {
-+      nextPath = [...path, categoryName]
-+    }
-+
-+    if (Number.isFinite(typeIdNum)) {
-+      if (typeName && !typeNameById.has(typeIdNum)) typeNameById.set(typeIdNum, typeName)
-+      const catPath = nextPath.join(' / ')
-+      if (catPath && !categoryPathByTypeId.has(typeIdNum)) categoryPathByTypeId.set(typeIdNum, catPath)
-+    }
-+
-+    const children: any[] = []
-+    for (const key of ['children', 'items', 'types', 'categories', 'subcategories', 'nodes'] as const) {
-+      const v = (node as any)[key]
-+      if (Array.isArray(v)) children.push(...v)
-+    }
-+
-+    // эвристика: некоторые ответы прячут вложенность под произвольными ключами
-+    if (!children.length) {
-+      for (const v of Object.values(node as any)) {
-+        if (!Array.isArray(v) || !v.length) continue
-+        const hasHints = v.some((o: any) =>
-+          o && typeof o === 'object' && (
-+            'category_id' in o ||
-+            'categoryId' in o ||
-+            'type_id' in o ||
-+            'typeId' in o ||
-+            'description_category_id' in o
-+          )
-+        )
-+        if (hasHints) children.push(...v)
-+      }
-+    }
-+
-+    for (const c of children) stack.push({ node: c, path: nextPath })
-+  }
-+
-+  const index: DescCategoryIndex = { categoryPathByTypeId, typeNameById }
-+  descCategoryIndexCache = { ts: Date.now(), index }
-+  return index
-+}
-+
- // ---------------- Public API ----------------
+ let _db: Database.Database | null = null
  
- export async function ozonTestAuth(secrets: Secrets) {
-@@ -407,5 +532,32 @@
-     // атрибуты не критичны — если упали, оставляем базовые поля
-   }
- 
-+  // Категории/типы: маппим description_category_id (type) в понятные названия.
-+  // Это закрывает "Категория пустая" даже если Ozon перестал отдавать category_id.
++type ColumnDef = { name: string; ddl: string }
++
++function tableColumns(db: Database.Database, table: string): Set<string> {
 +  try {
-+    const idx = await getDescCategoryIndex(secrets)
-+    for (const p of out) {
-+      const typeId = (p.type != null) ? Number(p.type) : NaN
-+      if (!Number.isFinite(typeId)) {
-+        // если type не число — оставляем как есть
-+        continue
-+      }
-+
-+      const typeName = idx.typeNameById.get(typeId) ?? null
-+      const categoryPath = idx.categoryPathByTypeId.get(typeId) ?? null
-+
-+      if (typeName) p.type = typeName
-+      // categoryPath = путь по дереву категорий до типа (без самого типа)
-+      if (categoryPath) p.category = categoryPath
-+
-+      // страховка: если категория всё ещё пустая — хотя бы подставим то, что есть
-+      if (!p.category && typeName) p.category = typeName
-+      if (!p.category && p.type) p.category = p.type
-+    }
++    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as any[]
++    return new Set(rows.map((r) => String(r.name)))
 +  } catch {
-+    // не критично: если дерево категорий не подтянулось — оставляем ID/пустые значения как есть
++    return new Set()
 +  }
++}
 +
++function ensureColumns(db: Database.Database, table: string, cols: ColumnDef[]): void {
++  const existing = tableColumns(db, table)
++  for (const c of cols) {
++    if (existing.has(c.name)) continue
++    try {
++      db.exec(`ALTER TABLE ${table} ADD COLUMN ${c.name} ${c.ddl}`)
++      existing.add(c.name)
++    } catch {
++      // ignore: either already exists, or sqlite can't alter due to legacy schema
++    }
++  }
++}
 +
-   return out
++function migrateSchema(db: Database.Database): void {
++  // products: older installs might miss columns — CREATE TABLE IF NOT EXISTS won't add them.
++  ensureColumns(db, 'products', [
++    { name: 'product_id', ddl: 'INTEGER' },
++    { name: 'sku', ddl: 'TEXT' },
++    { name: 'barcode', ddl: 'TEXT' },
++    { name: 'brand', ddl: 'TEXT' },
++    { name: 'category', ddl: 'TEXT' },
++    { name: 'type', ddl: 'TEXT' },
++    { name: 'name', ddl: 'TEXT' },
++    { name: 'is_visible', ddl: 'INTEGER' },
++    { name: 'hidden_reasons', ddl: 'TEXT' },
++    { name: 'created_at', ddl: 'TEXT' },
++    { name: 'archived', ddl: 'INTEGER NOT NULL DEFAULT 0' },
++    { name: 'store_client_id', ddl: 'TEXT' },
++  ])
++
++  ensureColumns(db, 'sync_log', [
++    { name: 'message', ddl: 'TEXT' },
++    { name: 'details', ddl: 'TEXT' },
++    { name: 'created_at', ddl: 'TEXT NOT NULL' },
++    { name: 'version', ddl: 'TEXT' },
++    { name: 'store_client_id', ddl: 'TEXT' },
++  ])
++
++  // Indices (safe if already exist)
++  try {
++    db.exec('CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_client_id)')
++  } catch {}
++  try {
++    db.exec('CREATE INDEX IF NOT EXISTS idx_sync_log_store ON sync_log(store_client_id)')
++  } catch {}
++}
++
+ function getDb(): Database.Database {
+   if (_db) return _db
+ 
+@@ -17,6 +75,7 @@
+   const dbPath = join(dir, 'app.db')
+   _db = new Database(dbPath)
+   _db.pragma('journal_mode = WAL')
++
+   _db.exec(`
+     CREATE TABLE IF NOT EXISTS products (
+       offer_id TEXT PRIMARY KEY,
+@@ -52,6 +111,8 @@
+       value TEXT
+     );
+   `)
++
++  migrateSchema(_db)
+ 
+   return _db
  }
+@@ -153,7 +214,6 @@
+   const info = getDb()
+     .prepare('INSERT INTO sync_log(type,status,message,details,created_at,version,store_client_id) VALUES(?,?,?,?,?,?,?)')
+     .run(type, 'started', null, null, now, version, storeClientId)
+-
+   return Number(info.lastInsertRowid)
+ }
+ 
