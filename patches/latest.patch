@@ -1,55 +1,121 @@
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -27,6 +27,9 @@
-   { id: 'archived', title: 'Архив', w: 90, visible: false },
- ]
+--- a/electron/main/ozon.ts
++++ b/electron/main/ozon.ts
+@@ -114,21 +114,66 @@
+ function chunk<T>(arr: T[], size: number) {
+   const out: T[][] = []
+   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
++  return out
++}
  
-+const COL_ID_SET = new Set<ColId>(DEFAULT_COLS.map((c) => c.id))
-+const isColId = (v: any): v is ColId => typeof v === 'string' && COL_ID_SET.has(v as ColId)
+-  // Преобразуем id категории/типа в названия (для UI — только слова, без цифр)
+-  try {
+-    const { catNameById, typeNameById } = await ozonGetCategoryTypeMaps(secrets)
+-    for (const p of out) {
+-      if (p.category && catNameById[p.category]) p.category = catNameById[p.category]
+-      if (p.type && typeNameById[p.type]) p.type = typeNameById[p.type]
++type CategoryTypeMaps = { catNameById: Map<number, string>; typeNameById: Map<number, string> }
 +
- function fmt(dtIso: string | null): string {
-   if (!dtIso) return ''
-   const d = new Date(dtIso)
-@@ -46,7 +49,41 @@
-   const [cols, setCols] = useState<Col[]>(() => {
-     try {
-       const saved = localStorage.getItem('ozonator-cols-v2')
--      if (saved) return JSON.parse(saved)
-+      if (saved) {
-+        const parsed = JSON.parse(saved)
-+        if (Array.isArray(parsed)) {
-+          const byId = new Map<ColId, any>()
-+          const order: ColId[] = []
-+          for (const raw of parsed) {
-+            const id = raw?.id
-+            if (!isColId(id)) continue
-+            byId.set(id, raw)
-+            if (!order.includes(id)) order.push(id)
-+          }
++let categoryTypeCache: { clientId: string; fetchedAt: number } & CategoryTypeMaps | null = null
 +
-+          const out: Col[] = []
-+          const used = new Set<ColId>()
++function mapIdToName(v: string | null, byId: Map<number, string>): string | null {
++  if (!v) return v
++  const n = Number(v)
++  if (!Number.isFinite(n)) return v
++  return byId.get(n) ?? v
++}
 +
-+          for (const id of order) {
-+            const def = DEFAULT_COLS.find((c) => c.id === id)
-+            if (!def) continue
-+            const raw = byId.get(id)
++async function ozonGetCategoryTypeMaps(secrets: Secrets): Promise<CategoryTypeMaps> {
++  const now = Date.now()
++  if (categoryTypeCache && categoryTypeCache.clientId === secrets.clientId && (now - categoryTypeCache.fetchedAt) < 24 * 60 * 60 * 1000) {
++    return { catNameById: categoryTypeCache.catNameById, typeNameById: categoryTypeCache.typeNameById }
++  }
 +
-+            const w =
-+              typeof raw?.w === 'number' && Number.isFinite(raw.w) ? Math.max(60, Math.round(raw.w)) : def.w
-+            const visible = typeof raw?.visible === 'boolean' ? raw.visible : def.visible
++  const json: any = await ozonPost(secrets, '/v1/description-category/tree', { language: 'DEFAULT' })
++  const root = json?.result ?? json?.data ?? json
++  const nodes: any[] =
++    Array.isArray(root) ? root :
++    Array.isArray(root?.items) ? root.items :
++    []
 +
-+            out.push({ ...def, w, visible })
-+            used.add(id)
-+          }
++  const catNameById = new Map<number, string>()
++  const typeNameById = new Map<number, string>()
 +
-+          for (const def of DEFAULT_COLS) {
-+            if (!used.has(def.id)) out.push(def)
-+          }
++  const walk = (node: any) => {
++    if (!node || typeof node !== 'object') return
 +
-+          return out
-+        }
-+      }
-     } catch {}
-     return DEFAULT_COLS
-   })
++    const catIdRaw = node.description_category_id ?? node.category_id ?? node.id
++    const catNameRaw = node.category_name ?? node.name ?? node.title
++    if (catIdRaw != null && typeof catNameRaw === 'string' && catNameRaw.trim()) {
++      const id = Number(catIdRaw)
++      if (Number.isFinite(id)) catNameById.set(id, catNameRaw.trim())
++    }
++
++    const typeIdRaw = node.type_id ?? node.typeId
++    const typeNameRaw = node.type_name ?? node.typeName
++    if (typeIdRaw != null && typeof typeNameRaw === 'string' && typeNameRaw.trim()) {
++      const id = Number(typeIdRaw)
++      if (Number.isFinite(id)) typeNameById.set(id, typeNameRaw.trim())
++    }
++
++    const children = node.children
++    if (Array.isArray(children)) {
++      for (const c of children) walk(c)
+     }
+-  } catch {
+-    // не критично — если дерево категорий недоступно, оставим как есть
+   }
+ 
+-  return out
++  for (const n of nodes) walk(n)
++
++  categoryTypeCache = { clientId: secrets.clientId, fetchedAt: now, catNameById, typeNameById }
++  return { catNameById, typeNameById }
+ }
+ 
++
+ function stringifyReason(x: any): string {
+   if (x == null) return ''
+   if (typeof x === 'string') return x
+@@ -382,7 +427,8 @@
+ 
+       const barcode = (x.barcode && String(x.barcode)) || (Array.isArray(x.barcodes) && x.barcodes[0]) || null
+ 
+-      const categoryId = (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
++      const categoryId = (x as any).description_category_id ?? (x as any).descriptionCategoryId ?? (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
++      const typeId = (x as any).type_id ?? (x as any).typeId ?? (x as any).type?.id ?? null
+       const brandRaw = (x as any).brand ?? (x as any).brand_name ?? (x as any).brandName ?? null
+       const visibleRaw = (x as any).visible ?? (x as any).is_visible ?? (x as any).isVisible ?? (x as any).visibility?.visible ?? null
+       const isVisible = (typeof visibleRaw === 'boolean') ? visibleRaw : ((visibleRaw == null) ? null : Boolean(visibleRaw))
+@@ -434,8 +480,8 @@
+   try {
+     const { catNameById, typeNameById } = await ozonGetCategoryTypeMaps(secrets)
+     for (const p of out) {
+-      if (p.category && catNameById[p.category]) p.category = catNameById[p.category]
+-      if (p.type && typeNameById[p.type]) p.type = typeNameById[p.type]
++      p.category = mapIdToName(p.category, catNameById)
++      p.type = mapIdToName(p.type, typeNameById)
+     }
+   } catch {
+     // не критично — если дерево категорий недоступно, оставим как есть
+--- a/electron/main/storage/db.ts
++++ b/electron/main/storage/db.ts
+@@ -231,7 +231,7 @@
+   `).all() as any
+ }
+ 
+-export function dbLogStart(type: 'check_auth' | 'sync_products', storeClientId?: string | null): number {
++export function dbLogStart(type: 'check_auth' | 'sync_products' | 'app_update', storeClientId?: string | null): number {
+   const startedAt = new Date().toISOString()
+   const info = mustDb().prepare(`
+     INSERT INTO sync_log (type, status, started_at, store_client_id)
+--- a/electron/main/types.ts
++++ b/electron/main/types.ts
+@@ -33,7 +33,7 @@
+ 
+ export type SyncLogRow = {
+   id: number
+-  type: 'check_auth' | 'sync_products'
++  type: 'check_auth' | 'sync_products' | 'app_update'
+   status: 'success' | 'error'
+   started_at: string
+   finished_at: string | null
