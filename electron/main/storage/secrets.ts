@@ -1,85 +1,77 @@
 import { app, safeStorage } from 'electron'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
-import { z } from 'zod'
 import type { Secrets } from '../types'
 
-const SecretsFileSchema = z.object({
-  clientIdEncB64: z.string(),
-  apiKeyEncB64: z.string(),
-  // не секрет, поэтому хранится в открытом виде
-  storeName: z.string().optional().nullable(),
-})
-
-type SecretsFile = z.infer<typeof SecretsFileSchema>
-
-function secretsPath() {
+function secretsPath(): string {
   return join(app.getPath('userData'), 'secrets.json')
 }
 
-function writeSecretsFile(payload: SecretsFile) {
-  writeFileSync(secretsPath(), JSON.stringify(payload, null, 2), 'utf-8')
+function ensureDir(): void {
+  try {
+    mkdirSync(app.getPath('userData'), { recursive: true })
+  } catch {}
+}
+
+function decryptMaybe(buf: Buffer): string {
+  if (safeStorage.isEncryptionAvailable()) {
+    return safeStorage.decryptString(buf)
+  }
+  // Fallback: если файл был сохранён в открытом виде (для dev/ручной правки)
+  return buf.toString('utf8')
 }
 
 export function hasSecrets(): boolean {
   return existsSync(secretsPath())
 }
 
-export function saveSecrets(secrets: Secrets) {
-  if (!safeStorage.isEncryptionAvailable()) {
-    throw Object.assign(new Error('Шифрование safeStorage недоступно на этой машине. Нельзя безопасно сохранить ключи.'), {
-      details: { code: 'ENCRYPTION_UNAVAILABLE' },
-    })
-  }
-
-  const clientIdEnc = safeStorage.encryptString(secrets.clientId)
-  const apiKeyEnc = safeStorage.encryptString(secrets.apiKey)
-
-  // При сохранении ключей всегда сбрасываем storeName.
-  // После успешной проверки доступа/синхронизации мы подтянем имя заново.
-  const payload: SecretsFile = {
-    clientIdEncB64: clientIdEnc.toString('base64'),
-    apiKeyEncB64: apiKeyEnc.toString('base64'),
-    storeName: null,
-  }
-
-  writeSecretsFile(payload)
-}
-
 export function loadSecrets(): Secrets {
   if (!existsSync(secretsPath())) {
-    throw Object.assign(new Error('Ключи не сохранены. Откройте Настройки → Магазин и сохраните Client-Id и Api-Key.'), {
-      details: { code: 'NO_SECRETS' },
-    })
+    throw new Error('Ключи не сохранены. Откройте Настройки.')
   }
-  const raw = readFileSync(secretsPath(), 'utf-8')
-  const parsed = SecretsFileSchema.parse(JSON.parse(raw))
+  const raw = readFileSync(secretsPath())
+  const jsonStr = decryptMaybe(raw)
+  const data = JSON.parse(jsonStr)
 
+  return {
+    clientId: String(data.clientId ?? '').trim(),
+    apiKey: String(data.apiKey ?? '').trim(),
+    storeName: data.storeName ? String(data.storeName) : null,
+  }
+}
+
+export function saveSecrets(secrets: { clientId: string; apiKey: string; storeName?: string | null }): void {
   if (!safeStorage.isEncryptionAvailable()) {
-    throw Object.assign(new Error('Шифрование safeStorage недоступно на этой машине. Нельзя расшифровать ключи.'), {
-      details: { code: 'ENCRYPTION_UNAVAILABLE' },
-    })
+    throw new Error(
+      'Шифрование safeStorage недоступно на этой машине.\n' +
+        'Нельзя безопасно сохранить Client-Id и Api-Key.\n\n' +
+        'Решение: включите пароль/пин для входа в Windows и перезапустите программу.'
+    )
   }
 
-  const clientId = safeStorage.decryptString(Buffer.from(parsed.clientIdEncB64, 'base64'))
-  const apiKey = safeStorage.decryptString(Buffer.from(parsed.apiKeyEncB64, 'base64'))
-  return { clientId, apiKey, storeName: parsed.storeName ?? null }
+  ensureDir()
+
+  const payload = JSON.stringify({
+    clientId: String(secrets.clientId).trim(),
+    apiKey: String(secrets.apiKey).trim(),
+    storeName: secrets.storeName ?? null,
+  })
+
+  const enc = safeStorage.encryptString(payload)
+  writeFileSync(secretsPath(), enc)
 }
 
-export function updateStoreName(storeName: string | null) {
-  if (!existsSync(secretsPath())) return
-
-  try {
-    const raw = readFileSync(secretsPath(), 'utf-8')
-    const parsed = SecretsFileSchema.parse(JSON.parse(raw))
-    writeSecretsFile({ ...parsed, storeName: (storeName ?? null) })
-  } catch {
-    // не критично
-  }
-}
-
-export function deleteSecrets() {
+export function deleteSecrets(): void {
   if (existsSync(secretsPath())) {
     unlinkSync(secretsPath())
+  }
+}
+
+export function updateStoreName(storeName: string): void {
+  try {
+    const s = loadSecrets()
+    saveSecrets({ clientId: s.clientId, apiKey: s.apiKey, storeName })
+  } catch {
+    // ignore
   }
 }

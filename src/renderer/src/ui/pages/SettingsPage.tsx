@@ -1,23 +1,26 @@
 import React, { useEffect, useState } from 'react'
 
-export default function SettingsPage() {
+export default function SettingsPage(props: { onStoreName?: (name: string | null) => void }) {
   const [clientId, setClientId] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [storeName, setStoreName] = useState<string>('')
+  const [storeName, setStoreName] = useState<string | null>(null)
+  const [status, setStatus] = useState<{ hasSecrets: boolean; encryptionAvailable: boolean } | null>(null)
+  const [busy, setBusy] = useState(false)
 
-  const [status, setStatus] = useState<string>('')
-  const [err, setErr] = useState<string>('')
+  const load = async () => {
+    const st = await window.api.secretsStatus()
+    setStatus(st)
 
-  async function load() {
-    try {
-      const resp = await window.api.loadSecrets()
-      if (resp.ok) {
-        setClientId(resp.secrets.clientId ?? '')
-        setApiKey(resp.secrets.apiKey ?? '')
-        setStoreName((resp.secrets as any).storeName ?? '')
+    if (st.hasSecrets) {
+      try {
+        const s = await window.api.loadSecrets()
+        setClientId(s.clientId || '')
+        setApiKey(s.apiKey || '')
+        setStoreName(s.storeName ?? null)
+        props.onStoreName?.(s.storeName ?? null)
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
   }
 
@@ -25,81 +28,70 @@ export default function SettingsPage() {
     load()
   }, [])
 
-  async function onSaveAndTest() {
-    setStatus('')
-    setErr('')
-
+  const saveAndTest = async () => {
     try {
+      setBusy(true)
       await window.api.saveSecrets({ clientId, apiKey })
-      const resp = await window.api.testAuth()
-
-      if (resp.ok) {
-        if (resp.storeName) setStoreName(resp.storeName)
-        setStatus('Доступ подтверждён.')
-
-        // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
-        load()
-
-        // обновим заголовок/лог
-        window.dispatchEvent(new Event('ozon:store-updated'))
-        window.dispatchEvent(new Event('ozon:logs-updated'))
+      const res = await window.api.testAuth()
+      if (!res?.ok) {
+        alert(res?.error || 'Ключи не подошли')
       } else {
-        setErr(resp.error ?? 'Ошибка проверки доступа')
+        const name = res?.storeName ?? null
+        setStoreName(name)
+        props.onStoreName?.(name)
       }
-    } catch (e: any) {
-      setErr(e?.message ?? String(e))
+      await load()
+    } finally {
+      setBusy(false)
     }
   }
 
-  async function onDelete() {
-    setStatus('')
-    setErr('')
-
-    try {
-      await window.api.deleteSecrets()
-      setClientId('')
-      setApiKey('')
-      setStoreName('')
-      setStatus('Ключи удалены.')
-      window.dispatchEvent(new Event('ozon:store-updated'))
-    } catch (e: any) {
-      setErr(e?.message ?? String(e))
-    }
+  const clear = async () => {
+    await window.api.deleteSecrets()
+    setClientId('')
+    setApiKey('')
+    setStoreName(null)
+    props.onStoreName?.(null)
+    await load()
   }
 
   return (
-    <div className="card">
-      <div className="h1">Настройки</div>
-
-      <div className="row" style={{ marginTop: 16 }}>
-        <div className="col field">
-          <label>Название магазина</label>
-          <input
-            value={storeName}
-            placeholder="Появится после проверки доступа"
-            readOnly
-          />
-        </div>
+    <div className="page">
+      <div className="row">
+        <div className="badge">Настройки</div>
+        {status ? (
+          <div className="badge">
+            Шифрование: {status.encryptionAvailable ? 'доступно' : 'недоступно'} • Ключи: {status.hasSecrets ? 'есть' : 'нет'}
+          </div>
+        ) : null}
       </div>
 
-      <div className="row" style={{ marginTop: 12 }}>
-        <div className="col field">
-          <label>Client-Id</label>
-          <input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="например 55201" />
+      {storeName ? (
+        <div className="row">
+          <div className="badge">Магазин: {storeName}</div>
         </div>
-        <div className="col field">
-          <label>Api-Key</label>
-          <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="например 9c70..." />
+      ) : (
+        <div className="row">
+          <div className="badge">Название магазина: не определено</div>
         </div>
+      )}
+
+      <div className="row">
+        <input className="input" placeholder="Client-Id" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+        <input className="input" placeholder="Api-Key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+        <button className="btn" onClick={saveAndTest} disabled={busy}>
+          Сохранить и проверить
+        </button>
+        <button className="btn" onClick={clear} disabled={busy}>
+          Удалить ключи
+        </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
-        <button className="primary" onClick={onSaveAndTest}>Сохранить и проверить</button>
-        <button onClick={onDelete}>Стереть ключи</button>
-      </div>
-
-      {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
-      {err && <div className="notice error" style={{ marginTop: 12 }}>{err}</div>}
+      {!status?.encryptionAvailable ? (
+        <div className="badge" style={{ maxWidth: 820 }}>
+          SafeStorage недоступен на этой машине — программа не сможет безопасно сохранить ключи. Обычно помогает включить пароль/пин входа в Windows и перезапустить.
+        </div>
+      ) : null}
     </div>
   )
 }
