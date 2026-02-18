@@ -506,28 +506,29 @@ button:disabled{
 
 /* Column header tools */
 .thDraggable{ position: relative; user-select: none; }
-.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; }
+.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; padding-right: 10px; }
 .thGrip{ margin-left: auto; color: rgba(0,0,0,.30); font-size: 14px; cursor: grab; }
 
 .thTitle{
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
   display: block;
   flex: 1 1 auto;
 }
 
 .colToggle{
-  height: 16px;
-  min-width: 22px;
-  padding: 0 6px;
+  width: 18px;
+  height: 24px;
+  min-width: 18px;
+  padding: 0;
   border-radius: 999px;
   border: 1px solid rgba(60,60,67,.18);
   background: rgba(255,255,255,.90);
   color: rgba(28,28,30,.72);
   font-size: 12px;
-  line-height: 16px;
+  line-height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
