@@ -432,6 +432,7 @@ button:disabled{
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  min-width: 0;
   border: 1px solid var(--hairline2);
   border-radius: var(--radius);
   overflow: hidden;
@@ -449,6 +450,7 @@ button:disabled{
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  min-width: 0;
 }
 
 .tableWrapY{
@@ -632,3 +634,18 @@ button:disabled{
   border-radius: 999px;
   background: white;
 }
+
+
+/* Header/body split scroll: вертикальный скролл начинается с данных (без шапки),
+   при этом вертикальная полоса всегда видна даже при горизонтальной прокрутке. */
+.tableHeadX{
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* old Edge */
+}
+
+.tableHeadX::-webkit-scrollbar{ height: 0; width: 0; }
+
+.tableBody tr:first-child td{ border-top: none; }
