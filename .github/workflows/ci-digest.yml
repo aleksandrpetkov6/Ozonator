@@ -1,0 +1,66 @@
+name: CI digest (public)
+
+on:
+  workflow_run:
+    workflows:
+      - "Windows CI (Озонатор)"
+      - "publish-nightly-release"
+      - "Apply patch and open PR"
+      - "enable-automerge"
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build digest (last failed log tail)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          WF_NAME: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          {
+            echo "# CI digest"
+            echo
+            echo "- Workflow: ${WF_NAME}"
+            echo "- Run: ${RUN_URL}"
+            echo "- Conclusion: ${CONCLUSION}"
+            echo "- Branch: ${HEAD_BRANCH}"
+            echo "- Commit: ${HEAD_SHA}"
+            echo
+            echo "## Failed logs (tail)"
+            echo
+            echo '```'
+            gh run view "${RUN_ID}" -R "${REPO}" --log-failed 2>&1 | tail -n 220 || true
+            echo '```'
+          } > out/last.md
+
+      - name: Publish to ci-report branch (force)
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout --orphan ci-report
+          git rm -rf . >/dev/null 2>&1 || true
+          cp out/last.md last.md
+
+          git add last.md
+          git commit -m "CI digest: ${{ github.event.workflow_run.name }} #${{ github.event.workflow_run.id }} (${{ github.event.workflow_run.conclusion }})" || true
+          git push -f origin ci-report
