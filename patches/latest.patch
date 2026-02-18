@@ -1,16 +1,206 @@
+diff --git a/src/renderer/src/ui/App.tsx b/src/renderer/src/ui/App.tsx
+index d0336b1..b225dc5 100644
+--- a/src/renderer/src/ui/App.tsx
++++ b/src/renderer/src/ui/App.tsx
+@@ -139,8 +139,7 @@ export default function App() {
+       <div className="topbar">
+         <div className="topbarInner">
+           <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
+-            <div className="appName">Озонатор</div>
+-            {storeName && <div className="appStoreName">{storeName}</div>}
++            {storeName && <div className="appName">{storeName}</div>}
+           </div>
+ 
+           <div className="topbarSlot">
+@@ -153,12 +152,34 @@ export default function App() {
+ 
+             {isProducts && (
+               <div className="topbarSearch">
+-                <input
+-                  className="searchInput search"
+-                  value={productsQuery}
+-                  onChange={(e) => setProductsQuery(e.target.value)}
+-                  placeholder="Поиск по таблице…"
+-                />
++                <div className="searchWrap">
++                  <input
++                    className="searchInput search"
++                    value={productsQuery}
++                    onChange={(e) => setProductsQuery(e.target.value)}
++                    onKeyDown={(e) => {
++                      if (e.key === 'Escape') {
++                        e.preventDefault()
++                        e.stopPropagation()
++                        setProductsQuery('')
++                      }
++                    }}
++                    placeholder="Поиск по таблице…"
++                  />
++
++                  {productsQuery && (
++                    <button
++                      type="button"
++                      className="searchClearBtn"
++                      title="Очистить"
++                      aria-label="Очистить"
++                      onMouseDown={(e) => e.preventDefault()}
++                      onClick={() => setProductsQuery('')}
++                    >
++                      ×
++                    </button>
++                  )}
++                </div>
+               </div>
+             )}
+           </div>
+diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
+index a0dd3e5..d938940 100644
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -110,8 +110,9 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+ 
+   const [draggingId, setDraggingId] = useState<string | null>(null)
+   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
++  const [resizeX, setResizeX] = useState<number | null>(null)
+ 
+-  const resizingRef = useRef<{ id: string; startX: number; startW: number } | null>(null)
++  const resizingRef = useRef<{ id: string; startX: number; startW: number; startRight: number } | null>(null)
+   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
+   const didAutoInitRef = useRef(false)
+ 
+@@ -281,23 +282,35 @@ function onDragOverHeader(e: React.DragEvent) {
+   }
+ 
+   function startResize(e: React.MouseEvent, colId: string) {
+     e.preventDefault()
+     e.stopPropagation()
+ 
+     const col = cols.find(c => String(c.id) === colId)
+     if (!col) return
+ 
+-    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w }
++    const head = headScrollRef.current
++    const row = headerRowRef.current
++    const cell = row?.querySelector<HTMLElement>(`th[data-col-id="${colId}"]`)
++    const startRight = cell ? (cell.offsetLeft + cell.offsetWidth) : 0
++
++    const scrollLeft = head?.scrollLeft ?? 0
++    setResizeX(Math.round(startRight - scrollLeft))
++
++    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w, startRight }
+ 
+     const onMove = (ev: MouseEvent) => {
+       const r = resizingRef.current
+       if (!r) return
+       const dx = ev.clientX - r.startX
+       const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
+       setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
++
++      const sl = headScrollRef.current?.scrollLeft ?? 0
++      setResizeX(Math.round(r.startRight + dx - sl))
+     }
+ 
+     const onUp = () => {
+       resizingRef.current = null
++      setResizeX(null)
+       window.removeEventListener('mousemove', onMove)
+       window.removeEventListener('mouseup', onUp)
+     }
+ 
+     window.addEventListener('mousemove', onMove)
+     window.addEventListener('mouseup', onUp)
+   }
+@@ -460,6 +473,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+ 
+       <div className="productsTableArea">
+         <div className="tableWrap" style={{ marginTop: 12 }}>
++          {resizeX != null && <div className="resizeIndicator" style={{ left: resizeX }} />}
+           <div className="tableHeadX" ref={headScrollRef}>
+             <div className="tableWrapY tableHeadInner" style={{ minWidth: tableMinWidth }}>
+               {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
+               <table className="table tableFixed tableHead" style={{ minWidth: tableMinWidth }}>
+@@ -477,6 +491,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+                       return (
+                         <th
+                           key={id}
++                          data-col-id={id}
+                           draggable
+                           onDragStart={(e) => onDragStart(e, id)}
+                           onDragEnd={onDragEnd}
+                           className={`thDraggable ${draggingId === id ? 'thDragging' : ''}`.trim()}
 diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
+index 9a8c4a1..a3a3a3b 100644
 --- a/src/renderer/src/ui/styles.css
 +++ b/src/renderer/src/ui/styles.css
-@@ -5,0 +6,14 @@
+@@ -379,7 +379,45 @@
+ .productsTableArea{ display:flex; flex-direction:column; flex:1; min-height:0; }
+ .search{ min-width: 310px; }
+-.searchInput{ padding-left: 12px; }
++.searchInput{ padding-left: 12px; padding-right: 36px; }
 +
-+/* === UI tweaks (таблица «Товары») === */
-+/* Убираем «Озонатор» из генеральной шапки */
-+.appName, .appNameLink{ display: none !important; }
++.searchWrap{
++  position: relative;
++  display: inline-flex;
++  align-items: center;
++}
 +
-+/* Таблица «Товары»: шрифт 10px (включая шапку) */
-+.productsCard .table{ font-size: 10px !important; }
++.searchClearBtn{
++  position: absolute;
++  right: 10px;
++  width: 22px;
++  height: 22px;
++  border-radius: 999px;
++  border: 1px solid rgba(60,60,67,.18);
++  background: rgba(255,255,255,.92);
++  color: rgba(28,28,30,.75);
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  padding: 0;
++  font-size: 16px;
++  line-height: 22px;
++  cursor: pointer;
++  box-shadow: 0 1px 0 rgba(255,255,255,.65) inset;
++}
 +
-+/* При регулировке ширины: границы колонок видны вниз по всей таблице */
-+.productsCard .table th, .productsCard .table td{ border-right: 1px solid rgba(60,60,67,.12) !important; }
-+.productsCard .table th:last-child, .productsCard .table td:last-child{ border-right: none !important; }
++.searchClearBtn:hover{
++  background: rgba(255,255,255,1);
++  border-color: rgba(60,60,67,.26);
++}
 +
++.searchClearBtn:active{
++  transform: scale(.98);
++}
+ 
+ /* Products table density (вкладка «Товары») */
+ .productsCard .table th,
+ .productsCard .table td{
+@@ -450,6 +488,7 @@
+ 
+ /* Tables */
+ .tableWrap{
++  position: relative;
+   margin-top: 14px;
+   display: flex;
+   flex-direction: column;
+   flex: 1;
+@@ -667,6 +706,16 @@
+   pointer-events: none;
+   z-index: 6;
+ }
+ 
++.resizeIndicator{
++  position: absolute;
++  top: 0;
++  bottom: 0;
++  width: 1px;
++  background: rgba(60,60,67,.40);
++  pointer-events: none;
++  z-index: 20;
++}
++
+ .thDropLeft::before,
+ .thDropRight::before{
+   content: '';
+   position: absolute;
+   top: 0;
