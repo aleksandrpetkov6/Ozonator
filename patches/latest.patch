@@ -1,33 +1,16 @@
+diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
 --- a/src/renderer/src/ui/styles.css
 +++ b/src/renderer/src/ui/styles.css
-@@ -380,6 +380,30 @@
- .productsTableArea{ display:flex; flex-direction:column; flex:1; min-height:0; }
- .search{ min-width: 310px; }
- .searchInput{ padding-left: 12px; }
+@@ -5,0 +6,14 @@
 +
-+/* Products table density (вкладка «Товары») */
-+.productsCard .table th,
-+.productsCard .table td{
-+  /* Слева/справа: в 3 раза меньше, сверху/снизу: в 5 раз меньше */
-+  padding: 2px 4px;
-+}
++/* === UI tweaks (таблица «Товары») === */
++/* Убираем «Озонатор» из генеральной шапки */
++.appName, .appNameLink{ display: none !important; }
 +
-+.productsCard .thInner{
-+  /* Расстояние между «свернуть» и названием — в 2 раза меньше */
-+  gap: 4px;
-+  /* Шапка ровная и без лишней высоты */
-+  min-height: 20px;
-+  padding-right: 6px;
-+}
++/* Таблица «Товары»: шрифт 10px (включая шапку) */
++.productsCard .table{ font-size: 10px !important; }
 +
-+.productsCard .thInner .colToggle{
-+  /* Значок «свернуть» = высота текста заголовка */
-+  width: 1em;
-+  height: 1em;
-+  min-width: 1em;
-+  font-size: 1em;
-+  line-height: 1em;
-+}
- 
- /* Status dot */
- .syncDot{
++/* При регулировке ширины: границы колонок видны вниз по всей таблице */
++.productsCard .table th, .productsCard .table td{ border-right: 1px solid rgba(60,60,67,.12) !important; }
++.productsCard .table th:last-child, .productsCard .table td:last-child{ border-right: none !important; }
++
