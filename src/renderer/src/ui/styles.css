@@ -506,13 +506,22 @@ button:disabled{
 
 /* Column header tools */
 .thDraggable{ position: relative; user-select: none; }
-.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; }
 .thGrip{ margin-left: auto; color: rgba(0,0,0,.30); font-size: 14px; cursor: grab; }
 
+.thTitle{
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  flex: 1 1 auto;
+}
+
 .colToggle{
-  width: 16px;
   height: 16px;
-  padding: 0;
+  min-width: 22px;
+  padding: 0 6px;
   border-radius: 999px;
   border: 1px solid rgba(60,60,67,.18);
   background: rgba(255,255,255,.90);
@@ -523,6 +532,7 @@ button:disabled{
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  flex: 0 0 auto;
   transition: transform .12s ease, background .16s ease;
 }
 

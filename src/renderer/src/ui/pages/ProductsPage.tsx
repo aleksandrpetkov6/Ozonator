@@ -470,7 +470,7 @@ function onDragOverHeader(e: React.DragEvent) {
                         >
                           <div className="thInner">
                             <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
-                            <span>{c.title}</span>
+                            <span className="thTitle" title={c.title}>{c.title}</span>
                             <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
                           </div>
                           <div
