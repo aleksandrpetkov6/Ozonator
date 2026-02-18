@@ -1,48 +1,81 @@
---- a/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-18 10:31:04.916098105 +0000
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-18 10:48:12.987884107 +0000
-@@ -470,7 +470,7 @@
-                         >
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -471,7 +471,6 @@
                            <div className="thInner">
+
                              <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
--                            <span>{c.title}</span>
-+                            <span className="thTitle" title={c.title}>{c.title}</span>
-                             <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
+
+                             <span className="thTitle" title={c.title}>{c.title}</span>
+
+-                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
+
                            </div>
+
                            <div
 
---- a/src/renderer/src/ui/styles.css	2026-02-18 10:31:04.916966057 +0000
-+++ b/src/renderer/src/ui/styles.css	2026-02-18 10:49:40.982989811 +0000
-@@ -506,13 +506,22 @@
- 
+                             className="thResizer"
+
+
+--- a/src/renderer/src/ui/styles.css
++++ b/src/renderer/src/ui/styles.css
+@@ -495,18 +495,25 @@
  /* Column header tools */
+
  .thDraggable{ position: relative; user-select: none; }
--.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; }
-+.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; }
- .thGrip{ margin-left: auto; color: rgba(0,0,0,.30); font-size: 14px; cursor: grab; }
- 
-+.thTitle{
-+  min-width: 0;
-+  overflow: hidden;
-+  text-overflow: ellipsis;
-+  white-space: nowrap;
-+  display: block;
-+  flex: 1 1 auto;
-+}
+
+ .thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; }
+
+-.thGrip{ margin-left: auto; color: rgba(0,0,0,.30); font-size: 14px; cursor: grab; }
+
+-
+
 +
+
++
+
++.thTitle{
+
++  flex: 1 1 auto;
+
++  min-width: 0;
+
++  overflow: hidden;
+
++  white-space: nowrap;
+
++  text-overflow: clip; /* без … */
+
++}
+
  .colToggle{
+
 -  width: 16px;
-   height: 16px;
--  padding: 0;
-+  min-width: 22px;
-+  padding: 0 6px;
+
+-  height: 16px;
+
++  width: 14px;
+
++  height: 20px;
+
+   padding: 0;
+
    border-radius: 999px;
+
    border: 1px solid rgba(60,60,67,.18);
+
    background: rgba(255,255,255,.90);
-@@ -523,6 +532,7 @@
+
+   color: rgba(28,28,30,.72);
+
+   font-size: 12px;
+
+-  line-height: 16px;
+
++  line-height: 20px;
+
+   display: inline-flex;
+
    align-items: center;
+
    justify-content: center;
-   cursor: pointer;
-+  flex: 0 0 auto;
-   transition: transform .12s ease, background .16s ease;
- }
- 
+
