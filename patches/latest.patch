@@ -1,68 +1,65 @@
 diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
-index 0000000..0000000 100644
+index 1111111..2222222 100644
 --- a/src/renderer/src/ui/styles.css
 +++ b/src/renderer/src/ui/styles.css
-@@ -1,1 +1,68 @@
- .tableBody tr:first-child td{ border-top: none; }
+@@ -5,1 +5,50 @@
+-*/ .tableHeadX{ overflow-x: auto; overflow-y: hidden; min-width: 0; scrollbar-width: none; /* Firefox */ -ms-overflow-style: none; /* old Edge */ } .tableHeadX::-webkit-scrollbar{ height: 0; width: 0; } .tableBody tr:first-child td{ border-top: none; }
++*/ .tableHeadX{ overflow-x: auto; overflow-y: hidden; min-width: 0; scrollbar-width: none; /* Firefox */ -ms-overflow-style: none; /* old Edge */ } .tableHeadX::-webkit-scrollbar{ height: 0; width: 0; } .tableBody tr:first-child td{ border-top: none; }
 +
-+/* ===================================================================
-+   Column header compactness & UX tweaks
-+   Требования (18.02.2026):
-+   - «свернуть» (+/-) всегда овальный (вертикальный), меньше, ближе к границам
-+   - убрать 6 точек (грип) из шапки
-+   - текст заголовка не должен вылезать за границу; без троеточий, просто обрезать
-+   - убрать «Озонатор» из верхней шапки (оставляем название магазина)
-+   - показать границы колонок по всей таблице (визуальная определённость)
-+   - ускорить/облегчить отрисовку при прокрутке: убираем blur в шапке таблицы
-+   =================================================================== */
++/* === Products table header compact + performance tweaks (variant 2) === */
 +
-+/* Убираем «Озонатор» из верхней шапки, оставляем только storeName */
++/* Убираем "Озонатор" из шапки */
 +.appName{ display: none !important; }
++.appTitle{ padding-left: 0 !important; padding-right: 0 !important; }
 +
-+/* Убираем «6 точек» (иконка-грип для перетаскивания) — перетаскивание и так работает по всей шапке */
-+.thGrip{ display: none !important; }
-+
-+/* Компактнее шапка колонок: меньше пустого места слева/справа */
-+.table th{ padding-left: 4px; padding-right: 4px; }
-+
-+/* Чуть компактнее строки (не критично, но помогает при большом числе колонок) */
-+.table td{ padding-left: 8px; padding-right: 8px; }
-+
-+/* Овал +/- всегда вертикальный, фиксированного размера (не превращается в круг/не плющится) */
-+.colToggle{
-+  width: 10px !important;
-+  height: 18px !important;
-+  line-height: 18px !important;
-+  border-radius: 999px !important;
-+  font-size: 10px !important;
-+  flex: 0 0 auto !important;
-+}
-+
-+/* Меньше расстояние между +/- и заголовком */
++/* Меньше воздуха в шапке столбца */
++.table th{ padding-left: 4px !important; padding-right: 4px !important; }
 +.thInner{
 +  gap: 3px !important;
-+  min-width: 0; /* важно для корректного обрезания текста в flex */
++  padding-right: 3px !important; /* было 10px */
++  overflow: hidden !important;
 +}
 +
-+/* Заголовок колонки: без троеточий, просто обрезаем по ширине и НЕ вылезаем за границы */
-+.thInner > span{
-+  min-width: 0;
-+  overflow: hidden;
-+  white-space: nowrap;
-+  text-overflow: clip !important; /* вместо ... */
++/* Убираем 6 точек‑"хваталку" */
++.thGrip{ display: none !important; }
++
++/* Без троеточия — просто обрезаем по ширине */
++.thTitle,
++.cellText{
++  text-overflow: clip !important;
++}
++.thTitle{ max-width: 100% !important; }
++
++/* Значок свернуть: всегда вертикальный овал, и меньше */
++.colToggle{
++  width: 10px !important;
++  min-width: 10px !important;
++  height: 16px !important;
++  padding: 0 !important;
++  border-radius: 999px !important;
++  line-height: 16px !important;
++  font-size: 9px !important;
 +}
 +
-+/* Уже и ближе «ручка» ресайза — уменьшает пустое пространство справа */
-+.thResizer{ width: 6px !important; }
-+.thResizer::after{ left: 2px !important; width: 1px !important; }
++/* Вариант 2: нейтральный (не синий) индикатор вставки/дропа */
++.dropIndicator,
++.thDropLeft::before,
++.thDropRight::before{
++  background: rgba(60,60,67,.28) !important;
++}
 +
-+/* Границы колонок по всей таблице (визуальная определённость при ресайзе) */
-+.table th, .table td{ border-right: 1px solid rgba(60,60,67,.12); }
-+.table th:last-child, .table td:last-child{ border-right: none; }
++/* Границы колонок по всей таблице (визуальная определенность при ресайзе) */
++.table th,
++.table td{
++  box-shadow: inset -1px 0 0 rgba(60,60,67,.10);
++}
++.table th:last-child,
++.table td:last-child{
++  box-shadow: none;
++}
 +
-+/* Производительность: blur в sticky‑шапке сильно нагружает отрисовку при скролле */
++/* Ускоряем скролл/ресайз: убираем дорогой blur на sticky header */
 +.table th{
 +  backdrop-filter: none !important;
 +  -webkit-backdrop-filter: none !important;
-+  background: rgba(251,251,253,1) !important;
 +}
