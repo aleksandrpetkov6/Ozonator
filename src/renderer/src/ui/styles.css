@@ -428,6 +428,8 @@ button:disabled{
   margin-top: 14px;
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
   border: 1px solid var(--hairline2);
   border-radius: var(--radius);
   overflow: hidden;
