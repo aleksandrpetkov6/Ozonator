@@ -109,7 +109,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   const [cols, setCols] = useState<ColDef[]>(readCols)
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right' } | null>(null)
+  const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
 
   const resizingRef = useRef<{ id: string; startX: number; startW: number } | null>(null)
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -179,43 +179,61 @@ export default function ProductsPage({ query = '', onStats }: Props) {
     e.dataTransfer.effectAllowed = 'move'
   }
 
-  function onDragOverHeader(e: React.DragEvent) {
+
+function onDragOverHeader(e: React.DragEvent) {
   e.preventDefault()
   e.dataTransfer.dropEffect = 'move'
 
   const head = headScrollRef.current
-  if (!head) return
+  const row = headerRowRef.current
+  if (!head || !row) return
   if (visibleCols.length === 0) return
 
   const headRect = head.getBoundingClientRect()
-  const totalW = visibleCols.reduce((s, c) => s + c.w, 0)
+  const x = (e.clientX - headRect.left) + head.scrollLeft
 
-  const xRaw = (e.clientX - headRect.left) + head.scrollLeft
-  const x = Math.max(0, Math.min(totalW, Math.round(xRaw)))
+  const cells = Array.from(row.children) as HTMLElement[]
+  if (cells.length === 0) return
 
-  let acc = 0
   let targetId = String(visibleCols[0].id)
   let side: 'left' | 'right' = 'left'
+  let lineX = 0
 
-  for (let i = 0; i < visibleCols.length; i++) {
-    const w = visibleCols[i].w
-    const mid = acc + w / 2
+  for (let i = 0; i < cells.length; i++) {
+    const cell = cells[i]
+    const left = cell.offsetLeft
+    const w = cell.offsetWidth
+    const mid = left + (w / 2)
 
     if (x < mid) {
       targetId = String(visibleCols[i].id)
       side = 'left'
+      lineX = left
       break
     }
 
-    acc += w
-    if (i === visibleCols.length - 1) {
+    if (i === cells.length - 1) {
       targetId = String(visibleCols[i].id)
       side = 'right'
+      lineX = left + w
     }
   }
 
-  setDropHint(prev => (prev && prev.id === targetId && prev.side === side) ? prev : { id: targetId, side })
+  const next = { id: targetId, side, x: Math.round(lineX) }
+
+  setDropHint((prev) => {
+    if (!prev) return next
+
+    // если линия «дрожит» на 1px — фиксируем положение, но обновляем цель
+    const stableX = (Math.abs(next.x - prev.x) <= 1) ? prev.x : next.x
+    const stable = { ...next, x: stableX }
+
+    if (prev.id === stable.id && prev.side === stable.side && prev.x === stable.x) return prev
+    return stable
+  })
 }
+
+
 
   function onDrop(e: React.DragEvent) {
   e.preventDefault()
@@ -380,6 +398,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   const headScrollRef = useRef<HTMLDivElement | null>(null)
   const bodyScrollRef = useRef<HTMLDivElement | null>(null)
   const scrollSyncLockRef = useRef(false)
+  const headerRowRef = useRef<HTMLTableRowElement | null>(null)
 
   useEffect(() => {
     const head = headScrollRef.current
@@ -429,7 +448,8 @@ export default function ProductsPage({ query = '', onStats }: Props) {
       <div className="productsTableArea">
         <div className="tableWrap" style={{ marginTop: 12 }}>
           <div className="tableHeadX" ref={headScrollRef}>
-            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
+            <div className="tableWrapY tableHeadInner" style={{ minWidth: tableMinWidth }}>
+              {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
               <table className="table tableFixed tableHead" style={{ minWidth: tableMinWidth }}>
                 <colgroup>
                   {visibleCols.map(c => (
@@ -437,19 +457,16 @@ export default function ProductsPage({ query = '', onStats }: Props) {
                   ))}
                 </colgroup>
                 <thead onDragOver={onDragOverHeader} onDrop={onDrop}>
-                  <tr>
+                  <tr ref={headerRowRef}>
                     {visibleCols.map(c => {
                       const id = String(c.id)
-                      const isDrop = dropHint && dropHint.id === id
-                      const dropCls = isDrop ? (dropHint!.side === 'left' ? 'thDropLeft' : 'thDropRight') : ''
-
                       return (
                         <th
                           key={id}
                           draggable
                           onDragStart={(e) => onDragStart(e, id)}
-onDragEnd={onDragEnd}
-                          className={`thDraggable ${draggingId === id ? 'thDragging' : ''} ${dropCls}`.trim()}
+                          onDragEnd={onDragEnd}
+                          className={`thDraggable ${draggingId === id ? 'thDragging' : ''}`.trim()}
                         >
                           <div className="thInner">
                             <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
