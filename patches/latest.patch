@@ -1,59 +1,68 @@
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -224,8 +224,8 @@
-   setDropHint((prev) => {
-     if (!prev) return next
- 
--    // если линия «дрожит» на 1px — фиксируем положение, но обновляем цель
--    const stableX = (Math.abs(next.x - prev.x) <= 1) ? prev.x : next.x
-+    // если линия «дрожит» на 3px — фиксируем положение, но обновляем цель
-+    const stableX = (Math.abs(next.x - prev.x) <= 3) ? prev.x : next.x
-     const stable = { ...next, x: stableX }
- 
-     if (prev.id === stable.id && prev.side === stable.side && prev.x === stable.x) return prev
-@@ -471,7 +471,6 @@
-                           <div className="thInner">
-                             <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
-                             <span className="thTitle" title={c.title}>{c.title}</span>
--                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
-                           </div>
-                           <div
-                             className="thResizer"
+diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
+index 0000000..0000000 100644
 --- a/src/renderer/src/ui/styles.css
 +++ b/src/renderer/src/ui/styles.css
-@@ -506,28 +506,29 @@
- 
- /* Column header tools */
- .thDraggable{ position: relative; user-select: none; }
--.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; }
-+.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; padding-right: 10px; }
- .thGrip{ margin-left: auto; color: rgba(0,0,0,.30); font-size: 14px; cursor: grab; }
- 
- .thTitle{
-   min-width: 0;
-   overflow: hidden;
--  text-overflow: ellipsis;
-+  text-overflow: clip;
-   white-space: nowrap;
-   display: block;
-   flex: 1 1 auto;
- }
- 
- .colToggle{
--  height: 16px;
--  min-width: 22px;
--  padding: 0 6px;
-+  width: 18px;
-+  height: 24px;
-+  min-width: 18px;
-+  padding: 0;
-   border-radius: 999px;
-   border: 1px solid rgba(60,60,67,.18);
-   background: rgba(255,255,255,.90);
-   color: rgba(28,28,30,.72);
-   font-size: 12px;
--  line-height: 16px;
-+  line-height: 24px;
-   display: inline-flex;
-   align-items: center;
-   justify-content: center;
+@@ -1,1 +1,68 @@
+ .tableBody tr:first-child td{ border-top: none; }
++
++/* ===================================================================
++   Column header compactness & UX tweaks
++   Требования (18.02.2026):
++   - «свернуть» (+/-) всегда овальный (вертикальный), меньше, ближе к границам
++   - убрать 6 точек (грип) из шапки
++   - текст заголовка не должен вылезать за границу; без троеточий, просто обрезать
++   - убрать «Озонатор» из верхней шапки (оставляем название магазина)
++   - показать границы колонок по всей таблице (визуальная определённость)
++   - ускорить/облегчить отрисовку при прокрутке: убираем blur в шапке таблицы
++   =================================================================== */
++
++/* Убираем «Озонатор» из верхней шапки, оставляем только storeName */
++.appName{ display: none !important; }
++
++/* Убираем «6 точек» (иконка-грип для перетаскивания) — перетаскивание и так работает по всей шапке */
++.thGrip{ display: none !important; }
++
++/* Компактнее шапка колонок: меньше пустого места слева/справа */
++.table th{ padding-left: 4px; padding-right: 4px; }
++
++/* Чуть компактнее строки (не критично, но помогает при большом числе колонок) */
++.table td{ padding-left: 8px; padding-right: 8px; }
++
++/* Овал +/- всегда вертикальный, фиксированного размера (не превращается в круг/не плющится) */
++.colToggle{
++  width: 10px !important;
++  height: 18px !important;
++  line-height: 18px !important;
++  border-radius: 999px !important;
++  font-size: 10px !important;
++  flex: 0 0 auto !important;
++}
++
++/* Меньше расстояние между +/- и заголовком */
++.thInner{
++  gap: 3px !important;
++  min-width: 0; /* важно для корректного обрезания текста в flex */
++}
++
++/* Заголовок колонки: без троеточий, просто обрезаем по ширине и НЕ вылезаем за границы */
++.thInner > span{
++  min-width: 0;
++  overflow: hidden;
++  white-space: nowrap;
++  text-overflow: clip !important; /* вместо ... */
++}
++
++/* Уже и ближе «ручка» ресайза — уменьшает пустое пространство справа */
++.thResizer{ width: 6px !important; }
++.thResizer::after{ left: 2px !important; width: 1px !important; }
++
++/* Границы колонок по всей таблице (визуальная определённость при ресайзе) */
++.table th, .table td{ border-right: 1px solid rgba(60,60,67,.12); }
++.table th:last-child, .table td:last-child{ border-right: none; }
++
++/* Производительность: blur в sticky‑шапке сильно нагружает отрисовку при скролле */
++.table th{
++  backdrop-filter: none !important;
++  -webkit-backdrop-filter: none !important;
++  background: rgba(251,251,253,1) !important;
++}
