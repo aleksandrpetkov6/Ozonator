@@ -110,8 +110,9 @@ export default function ProductsPage({ query = '', onStats }: Props) {
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
+  const [resizeX, setResizeX] = useState<number | null>(null)
 
-  const resizingRef = useRef<{ id: string; startX: number; startW: number } | null>(null)
+  const resizingRef = useRef<{ id: string; startX: number; startW: number; startRight: number } | null>(null)
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const didAutoInitRef = useRef(false)
 
@@ -287,7 +288,15 @@ function onDragOverHeader(e: React.DragEvent) {
     const col = cols.find(c => String(c.id) === colId)
     if (!col) return
 
-    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w }
+    const head = headScrollRef.current
+    const row = headerRowRef.current
+    const cell = row?.querySelector<HTMLElement>(`th[data-col-id="${colId}"]`)
+    const startRight = cell ? (cell.offsetLeft + cell.offsetWidth) : 0
+
+    const scrollLeft = head?.scrollLeft ?? 0
+    setResizeX(Math.round(startRight - scrollLeft))
+
+    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w, startRight }
 
     const onMove = (ev: MouseEvent) => {
       const r = resizingRef.current
@@ -295,10 +304,14 @@ function onDragOverHeader(e: React.DragEvent) {
       const dx = ev.clientX - r.startX
       const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
       setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
+
+      const sl = headScrollRef.current?.scrollLeft ?? 0
+      setResizeX(Math.round(r.startRight + dx - sl))
     }
 
     const onUp = () => {
       resizingRef.current = null
+      setResizeX(null)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
@@ -447,6 +460,7 @@ function onDragOverHeader(e: React.DragEvent) {
 
       <div className="productsTableArea">
         <div className="tableWrap" style={{ marginTop: 12 }}>
+          {resizeX != null && <div className="resizeIndicator" style={{ left: resizeX }} />}
           <div className="tableHeadX" ref={headScrollRef}>
             <div className="tableWrapY tableHeadInner" style={{ minWidth: tableMinWidth }}>
               {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
@@ -463,6 +477,7 @@ function onDragOverHeader(e: React.DragEvent) {
                       return (
                         <th
                           key={id}
+                          data-col-id={id}
                           draggable
                           onDragStart={(e) => onDragStart(e, id)}
                           onDragEnd={onDragEnd}
