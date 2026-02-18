@@ -224,8 +224,8 @@ function onDragOverHeader(e: React.DragEvent) {
   setDropHint((prev) => {
     if (!prev) return next
 
-    // если линия «дрожит» на 1px — фиксируем положение, но обновляем цель
-    const stableX = (Math.abs(next.x - prev.x) <= 1) ? prev.x : next.x
+    // если линия «дрожит» на 3px — фиксируем положение, но обновляем цель
+    const stableX = (Math.abs(next.x - prev.x) <= 3) ? prev.x : next.x
     const stable = { ...next, x: stableX }
 
     if (prev.id === stable.id && prev.side === stable.side && prev.x === stable.x) return prev
@@ -471,7 +471,6 @@ function onDragOverHeader(e: React.DragEvent) {
                           <div className="thInner">
                             <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
                             <span className="thTitle" title={c.title}>{c.title}</span>
-                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
                           </div>
                           <div
                             className="thResizer"
