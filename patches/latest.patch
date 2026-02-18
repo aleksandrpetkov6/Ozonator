@@ -1,120 +1,59 @@
-diff --git a/.github/workflows/publish-ci-digest.yml b/.github/workflows/publish-ci-digest.yml
-new file mode 100644
-index 0000000..1111111
---- /dev/null
-+++ b/.github/workflows/publish-ci-digest.yml
-@@ -0,0 +1,126 @@
-+name: Publish CI digest (public)
-+
-+on:
-+  workflow_run:
-+    workflows:
-+      - "Windows CI (Озонатор)"
-+      - "publish-nightly-release"
-+      - "Apply patch and open PR"
-+      - "enable-automerge"
-+    types: [completed]
-+
-+permissions:
-+  actions: read
-+  contents: write
-+
-+concurrency:
-+  group: ci-digest
-+  cancel-in-progress: true
-+
-+jobs:
-+  digest:
-+    runs-on: ubuntu-latest
-+    steps:
-+      - name: Checkout (for push)
-+        uses: actions/checkout@v4
-+        with:
-+          fetch-depth: 0
-+
-+      - name: Build digest
-+        env:
-+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-+          REPO: ${{ github.repository }}
-+          RUN_ID: ${{ github.event.workflow_run.id }}
-+          RUN_URL: ${{ github.event.workflow_run.html_url }}
-+          WF_NAME: ${{ github.event.workflow_run.name }}
-+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-+          EVENT: ${{ github.event.workflow_run.event }}
-+          CREATED_AT: ${{ github.event.workflow_run.created_at }}
-+          UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
-+        run: |
-+          set -euo pipefail
-+          mkdir -p out/runs
-+
-+          md="out/runs/${RUN_ID}.md"
-+          {
-+            echo "# CI digest"
-+            echo
-+            echo "- Workflow: \`${WF_NAME}\`"
-+            echo "- Run: ${RUN_URL}"
-+            echo "- Conclusion: **${CONCLUSION}**"
-+            echo "- Event: \`${EVENT}\`"
-+            echo "- Branch: \`${HEAD_BRANCH}\`"
-+            echo "- Commit: \`${HEAD_SHA}\`"
-+            echo "- Created: ${CREATED_AT}"
-+            echo "- Updated: ${UPDATED_AT}"
-+            echo
-+            echo "## Failed logs (tail)"
-+            echo
-+          } > "$md"
-+
-+          # Try to fetch only failed step logs (works even when artifacts are missing)
-+          set +e
-+          gh run view "${RUN_ID}" -R "${REPO}" --log-failed > out/log-failed.txt 2>&1
-+          code=$?
-+          set -e
-+          if [ $code -ne 0 ]; then
-+            {
-+              echo "> Не удалось получить логи через gh (код $code)."
-+              echo "> См. out/log-failed.txt (будет приложено ниже)."
-+              echo
-+            } >> "$md"
-+          fi
-+
-+          {
-+            echo "```"
-+            tail -n 220 out/log-failed.txt || true
-+            echo "```"
-+            echo
-+          } >> "$md"
-+
-+          # Also list artifacts (if any)
-+          set +e
-+          gh api -H "Accept: application/vnd.github+json" "/repos/${REPO}/actions/runs/${RUN_ID}/artifacts" > out/artifacts.json 2>/dev/null
-+          set -e
-+          if [ -s out/artifacts.json ]; then
-+            echo "## Artifacts (names)" >> "$md"
-+            echo >> "$md"
-+            echo "```" >> "$md"
-+            jq -r '.artifacts[]? | "\(.name) (\(.size_in_bytes) bytes)"' out/artifacts.json 2>/dev/null || true >> "$md"
-+            echo "```" >> "$md"
-+            echo >> "$md"
-+          fi
-+
-+          # last.md pointer
-+          cp "$md" out/last.md
-+
-+      - name: Publish to ci-report branch (force)
-+        run: |
-+          set -euo pipefail
-+          git config user.name  "github-actions[bot]"
-+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-+
-+          # orphan branch with only digest files
-+          git checkout --orphan ci-report
-+          git rm -rf . >/dev/null 2>&1 || true
-+          mkdir -p runs
-+          cp -r out/runs/* runs/
-+          cp out/last.md last.md
-+
-+          git add runs last.md
-+          git commit -m "CI digest: ${{ github.event.workflow_run.name }} #${{ github.event.workflow_run.id }} (${{ github.event.workflow_run.conclusion }})" || true
-+          git push -f origin ci-report
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -224,8 +224,8 @@
+   setDropHint((prev) => {
+     if (!prev) return next
+ 
+-    // если линия «дрожит» на 1px — фиксируем положение, но обновляем цель
+-    const stableX = (Math.abs(next.x - prev.x) <= 1) ? prev.x : next.x
++    // если линия «дрожит» на 3px — фиксируем положение, но обновляем цель
++    const stableX = (Math.abs(next.x - prev.x) <= 3) ? prev.x : next.x
+     const stable = { ...next, x: stableX }
+ 
+     if (prev.id === stable.id && prev.side === stable.side && prev.x === stable.x) return prev
+@@ -471,7 +471,6 @@
+                           <div className="thInner">
+                             <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
+                             <span className="thTitle" title={c.title}>{c.title}</span>
+-                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
+                           </div>
+                           <div
+                             className="thResizer"
+--- a/src/renderer/src/ui/styles.css
++++ b/src/renderer/src/ui/styles.css
+@@ -506,28 +506,29 @@
+ 
+ /* Column header tools */
+ .thDraggable{ position: relative; user-select: none; }
+-.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; }
++.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; padding-right: 10px; }
+ .thGrip{ margin-left: auto; color: rgba(0,0,0,.30); font-size: 14px; cursor: grab; }
+ 
+ .thTitle{
+   min-width: 0;
+   overflow: hidden;
+-  text-overflow: ellipsis;
++  text-overflow: clip;
+   white-space: nowrap;
+   display: block;
+   flex: 1 1 auto;
+ }
+ 
+ .colToggle{
+-  height: 16px;
+-  min-width: 22px;
+-  padding: 0 6px;
++  width: 18px;
++  height: 24px;
++  min-width: 18px;
++  padding: 0;
+   border-radius: 999px;
+   border: 1px solid rgba(60,60,67,.18);
+   background: rgba(255,255,255,.90);
+   color: rgba(28,28,30,.72);
+   font-size: 12px;
+-  line-height: 16px;
++  line-height: 24px;
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
