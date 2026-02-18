@@ -1,59 +1,33 @@
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -224,8 +224,8 @@
-   setDropHint((prev) => {
-     if (!prev) return next
- 
--    // если линия «дрожит» на 1px — фиксируем положение, но обновляем цель
--    const stableX = (Math.abs(next.x - prev.x) <= 1) ? prev.x : next.x
-+    // если линия «дрожит» на 3px — фиксируем положение, но обновляем цель
-+    const stableX = (Math.abs(next.x - prev.x) <= 3) ? prev.x : next.x
-     const stable = { ...next, x: stableX }
- 
-     if (prev.id === stable.id && prev.side === stable.side && prev.x === stable.x) return prev
-@@ -471,7 +471,6 @@
-                           <div className="thInner">
-                             <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
-                             <span className="thTitle" title={c.title}>{c.title}</span>
--                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
-                           </div>
-                           <div
-                             className="thResizer"
 --- a/src/renderer/src/ui/styles.css
 +++ b/src/renderer/src/ui/styles.css
-@@ -506,28 +506,29 @@
+@@ -380,6 +380,30 @@
+ .productsTableArea{ display:flex; flex-direction:column; flex:1; min-height:0; }
+ .search{ min-width: 310px; }
+ .searchInput{ padding-left: 12px; }
++
++/* Products table density (вкладка «Товары») */
++.productsCard .table th,
++.productsCard .table td{
++  /* Слева/справа: в 3 раза меньше, сверху/снизу: в 5 раз меньше */
++  padding: 2px 4px;
++}
++
++.productsCard .thInner{
++  /* Расстояние между «свернуть» и названием — в 2 раза меньше */
++  gap: 4px;
++  /* Шапка ровная и без лишней высоты */
++  min-height: 20px;
++  padding-right: 6px;
++}
++
++.productsCard .thInner .colToggle{
++  /* Значок «свернуть» = высота текста заголовка */
++  width: 1em;
++  height: 1em;
++  min-width: 1em;
++  font-size: 1em;
++  line-height: 1em;
++}
  
- /* Column header tools */
- .thDraggable{ position: relative; user-select: none; }
--.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; }
-+.thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; padding-right: 10px; }
- .thGrip{ margin-left: auto; color: rgba(0,0,0,.30); font-size: 14px; cursor: grab; }
- 
- .thTitle{
-   min-width: 0;
-   overflow: hidden;
--  text-overflow: ellipsis;
-+  text-overflow: clip;
-   white-space: nowrap;
-   display: block;
-   flex: 1 1 auto;
- }
- 
- .colToggle{
--  height: 16px;
--  min-width: 22px;
--  padding: 0 6px;
-+  width: 18px;
-+  height: 24px;
-+  min-width: 18px;
-+  padding: 0;
-   border-radius: 999px;
-   border: 1px solid rgba(60,60,67,.18);
-   background: rgba(255,255,255,.90);
-   color: rgba(28,28,30,.72);
-   font-size: 12px;
--  line-height: 16px;
-+  line-height: 24px;
-   display: inline-flex;
-   align-items: center;
-   justify-content: center;
+ /* Status dot */
+ .syncDot{
