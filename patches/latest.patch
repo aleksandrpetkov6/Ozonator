@@ -1,17 +1,1002 @@
+diff --git a/electron/main/index.ts b/electron/main/index.ts
+index fd98f91..a69526d 100644
+--- a/electron/main/index.ts
++++ b/electron/main/index.ts
+@@ -124,7 +124,9 @@ ipcMain.handle('net:check', async () => {
+ })
+ 
+ ipcMain.handle('ozon:testAuth', async () => {
+-  const logId = dbLogStart('check_auth')
++  let storeClientId: string | null = null
++  try { storeClientId = loadSecrets().clientId } catch {}
++  const logId = dbLogStart('check_auth', storeClientId)
+ 
+   try {
+     const secrets = loadSecrets()
+@@ -138,22 +140,28 @@ ipcMain.handle('ozon:testAuth', async () => {
+       // не критично
+     }
+ 
+-    dbLogFinish(logId, { status: 'success' })
++    dbLogFinish(logId, { status: 'success', storeClientId: secrets.clientId })
+ 
+     const refreshed = loadSecrets()
+     return { ok: true, storeName: refreshed.storeName ?? null }
+   } catch (e: any) {
+-    dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details })
++    dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
+     return { ok: false, error: e?.message ?? String(e) }
+   }
+ })
+ 
+ ipcMain.handle('ozon:syncProducts', async () => {
+-  const logId = dbLogStart('sync_products')
++  let storeClientId: string | null = null
++  try { storeClientId = loadSecrets().clientId } catch {}
++  const logId = dbLogStart('sync_products', storeClientId)
+ 
+   try {
+     const secrets = loadSecrets()
+ 
++    const existingOfferIds = new Set(dbGetProducts(secrets.clientId).map((p: any) => p.offer_id))
++    let processed = 0
++    let added = 0
++
+     let lastId = ''
+     const limit = 1000
+     let pages = 0
+@@ -163,6 +171,8 @@ ipcMain.handle('ozon:syncProducts', async () => {
+     for (let guard = 0; guard < 200; guard++) {
+       const { items, lastId: next, total: totalMaybe } = await ozonProductList(secrets, { lastId, limit })
+       pages += 1
++      // items.length — сколько пришло с API
++      // processed/added — считаем как обновлено/новых
+       total += items.length
+ 
+       const ids = items.map(i => i.product_id).filter(Boolean) as number[]
+@@ -191,6 +201,15 @@ ipcMain.handle('ozon:syncProducts', async () => {
+         }
+       })
+ 
++      processed += enriched.length
++      for (const it of enriched) {
++        const offer = String((it as any).offer_id)
++        if (!existingOfferIds.has(offer)) {
++          existingOfferIds.add(offer)
++          added += 1
++        }
++      }
++
+       dbUpsertProducts(enriched)
+ 
+       if (!next) break
+@@ -211,13 +230,15 @@ ipcMain.handle('ozon:syncProducts', async () => {
+       }
+     }
+ 
++    const updated = Math.max(0, processed - added)
++
+     dbLogFinish(logId, {
+       status: 'success',
+       itemsCount: total,
++      storeClientId: secrets.clientId,
+       meta: {
+-        pages,
+-        infoBatches: pages,
+-        infoFetched: total,
++        updated,
++        added,
+         storeClientId: secrets.clientId,
+         storeName: loadSecrets().storeName ?? null,
+       },
+@@ -225,7 +246,7 @@ ipcMain.handle('ozon:syncProducts', async () => {
+ 
+     return { ok: true, itemsCount: total, pages }
+   } catch (e: any) {
+-    dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details })
++    dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
+     return { ok: false, error: e?.message ?? String(e) }
+   }
+ })
+@@ -248,7 +269,14 @@ ipcMain.handle('data:getProducts', async () => {
+ 
+ ipcMain.handle('data:getSyncLog', async () => {
+   try {
+-    const logs = dbGetSyncLog()
++    let storeClientId: string | null = null
++    try {
++      storeClientId = loadSecrets().clientId
++    } catch {
++      storeClientId = null
++    }
++
++    const logs = dbGetSyncLog(storeClientId)
+     return { ok: true, logs }
+   } catch (e: any) {
+     return { ok: false, error: e?.message ?? String(e), logs: [] }
+diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
+index 5e497e1..42a16c1 100644
+--- a/electron/main/storage/db.ts
++++ b/electron/main/storage/db.ts
+@@ -38,7 +38,8 @@ export function ensureDb() {
+       items_count INTEGER NULL,
+       error_message TEXT NULL,
+       error_details TEXT NULL,
+-      meta TEXT NULL
++      meta TEXT NULL,
++      store_client_id TEXT NULL
+     );
+ 
+     CREATE INDEX IF NOT EXISTS idx_sync_log_started_at ON sync_log(started_at);
+@@ -66,6 +67,16 @@ export function ensureDb() {
+ 
+   // Чтобы не смешивать товары разных магазинов при смене ключей
+   add('store_client_id', 'TEXT NULL')
++
++  // Логи: фильтрация по магазину
++  const logCols = new Set(
++    (db.prepare('PRAGMA table_info(sync_log)').all() as any[]).map((r) => String(r.name))
++  )
++  if (!logCols.has('store_client_id')) {
++    db.exec(`ALTER TABLE sync_log ADD COLUMN store_client_id TEXT NULL;`)
++    logCols.add('store_client_id')
++  }
++
+ }
+ 
+ function mustDb(): Database.Database {
+@@ -193,12 +204,12 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
+   `).all() as any
+ }
+ 
+-export function dbLogStart(type: 'check_auth' | 'sync_products'): number {
++export function dbLogStart(type: 'check_auth' | 'sync_products', storeClientId?: string | null): number {
+   const startedAt = new Date().toISOString()
+   const info = mustDb().prepare(`
+-    INSERT INTO sync_log (type, status, started_at)
+-    VALUES (?, 'pending', ?)
+-  `).run(type, startedAt)
++    INSERT INTO sync_log (type, status, started_at, store_client_id)
++    VALUES (?, 'pending', ?, ?)
++  `).run(type, startedAt, storeClientId ?? null)
+ 
+   return Number(info.lastInsertRowid)
+ }
+@@ -209,11 +220,12 @@ export function dbLogFinish(id: number, args: {
+   errorMessage?: string
+   errorDetails?: any
+   meta?: any
++  storeClientId?: string | null
+ }) {
+   const finishedAt = new Date().toISOString()
+   mustDb().prepare(`
+     UPDATE sync_log
+-    SET status=?, finished_at=?, items_count=?, error_message=?, error_details=?, meta=?
++    SET status=?, finished_at=?, items_count=?, error_message=?, error_details=?, meta=?, store_client_id=COALESCE(?, store_client_id)
+     WHERE id=?
+   `).run(
+     args.status,
+@@ -222,11 +234,22 @@ export function dbLogFinish(id: number, args: {
+     args.errorMessage ?? null,
+     args.errorDetails ? JSON.stringify(args.errorDetails).slice(0, 20000) : null,
+     args.meta ? JSON.stringify(args.meta).slice(0, 20000) : null,
++    args.storeClientId ?? null,
+     id
+   )
+ }
+ 
+-export function dbGetSyncLog() {
++export function dbGetSyncLog(storeClientId?: string | null) {
++  if (storeClientId) {
++    return mustDb().prepare(`
++      SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
++      FROM sync_log
++      WHERE store_client_id = ?
++      ORDER BY id DESC
++      LIMIT 500
++    `).all(storeClientId)
++  }
++
+   return mustDb().prepare(`
+     SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
+     FROM sync_log
+diff --git a/src/renderer/src/ui/App.tsx b/src/renderer/src/ui/App.tsx
+index 8f3a219..d0336b1 100644
+--- a/src/renderer/src/ui/App.tsx
++++ b/src/renderer/src/ui/App.tsx
+@@ -33,9 +33,37 @@ export default function App() {
+   const runningRef = useRef(false)
+   useEffect(() => { runningRef.current = running }, [running])
+ 
+-  const [lastOkAt, setLastOkAt] = useState<string | null>(null)
+   const [lastError, setLastError] = useState<string | null>(null)
+ 
++  const [storeName, setStoreName] = useState<string | null>(null)
++  const [productsQuery, setProductsQuery] = useState('')
++  const [productsTotal, setProductsTotal] = useState(0)
++  const [productsFiltered, setProductsFiltered] = useState(0)
++
++  const pathname = location.pathname || '/'
++  const isProducts = pathname === '/' || pathname.startsWith('/products')
++
++  async function refreshStoreName() {
++    try {
++      const resp = await window.api.loadSecrets()
++      if (resp?.ok) {
++        const name = (resp.secrets as any)?.storeName
++        const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
++        setStoreName(cleaned)
++        document.title = cleaned ? `Озонатор — ${cleaned}` : 'Озонатор'
++      }
++    } catch {
++      // ignore
++    }
++  }
++
++  useEffect(() => {
++    refreshStoreName()
++    const onStore = () => refreshStoreName()
++    window.addEventListener('ozon:store-updated', onStore)
++    return () => window.removeEventListener('ozon:store-updated', onStore)
++  }, [])
++
+   const dotState = useMemo(() => {
+     if (!online) return 'offline'
+     if (running) return 'running'
+@@ -57,7 +85,7 @@ export default function App() {
+     // ключи должны быть сохранены
+     const st = await window.api.secretsStatus()
+     if (!st.hasSecrets) {
+-      if (reason === 'manual') setLastError('Ключи не сохранены. Откройте Настройки → Магазин.')
++      if (reason === 'manual') setLastError('Ключи не сохранены. Откройте Настройки.')
+       return
+     }
+ 
+@@ -68,12 +96,12 @@ export default function App() {
+       if (!resp.ok) {
+         setLastError(resp.error ?? 'Ошибка синхронизации')
+       } else {
+-        setLastOkAt(new Date().toISOString())
+         setLastError(null)
+ 
+-        // Обновляем список товаров + лог
++        // Обновляем список товаров + лог + имя магазина (если подтянулось)
+         window.dispatchEvent(new Event('ozon:products-updated'))
+         window.dispatchEvent(new Event('ozon:logs-updated'))
++        window.dispatchEvent(new Event('ozon:store-updated'))
+       }
+     } finally {
+       setRunning(false)
+@@ -110,16 +138,36 @@ export default function App() {
+     <div className="appShell">
+       <div className="topbar">
+         <div className="topbarInner">
+-          <NavLink className="appNameLink" to="/">Озонатор</NavLink>
++          <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
++            <div className="appName">Озонатор</div>
++            {storeName && <div className="appStoreName">{storeName}</div>}
++          </div>
+ 
+           <div className="topbarSlot">
+-            <div className="segmented">
+-              <NavLink to="/products">Товары</NavLink>
+-              <NavLink to="/logs">Лог</NavLink>
++            <div className="segmented" aria-label="Навигация">
++              <NavLink to="/products">
++                <span>Товары</span>
++                <span className="segCount">Всего: {productsTotal}</span>
++              </NavLink>
+             </div>
++
++            {isProducts && (
++              <div className="topbarSearch">
++                <input
++                  className="searchInput search"
++                  value={productsQuery}
++                  onChange={(e) => setProductsQuery(e.target.value)}
++                  placeholder="Поиск по таблице…"
++                />
++              </div>
++            )}
+           </div>
+ 
+           <div className="topbarRight">
++            <NavLink className="iconLink" to="/logs" title="Лог">
++              🗒️
++            </NavLink>
++
+             <NavLink className="iconLink" to="/settings" title="Настройки">
+               ⚙️
+             </NavLink>
+@@ -138,24 +186,42 @@ export default function App() {
+         </div>
+       </div>
+ 
+-      <div className={(() => {
+-        const p = location.pathname || '/'
+-        const isProducts = p === '/' || p.startsWith('/products')
+-        return isProducts ? 'container containerWide' : 'container'
+-      })()}>
+-        {lastError && <div className="notice error">{lastError}</div>}
+-        {!lastError && lastOkAt && (
+-          <div className="notice">
+-            Синхронизировано: {new Date(lastOkAt).toLocaleString()}
+-          </div>
+-        )}
+-
+-        <Routes>
+-          <Route path="/" element={<ProductsPage />} />
+-          <Route path="/products" element={<ProductsPage />} />
+-          <Route path="/logs" element={<LogsPage />} />
+-          <Route path="/settings" element={<SettingsPage />} />
+-        </Routes>
++      <div className="pageArea">
++        <div className={isProducts ? "container containerWide" : "container"}>
++          {lastError && <div className="notice error">{lastError}</div>}
++
++          <Routes>
++            <Route
++              path="/"
++              element={
++                <ProductsPage
++                  query={productsQuery}
++                  onStats={(s) => {
++                    setProductsTotal(s.total)
++                    setProductsFiltered(s.filtered)
++                  }}
++                />
++              }
++            />
++            <Route
++              path="/products"
++              element={
++                <ProductsPage
++                  query={productsQuery}
++                  onStats={(s) => {
++                    setProductsTotal(s.total)
++                    setProductsFiltered(s.filtered)
++                  }}
++                />
++              }
++            />
++            <Route path="/logs" element={<LogsPage />} />
++            <Route path="/settings" element={<SettingsPage />} />
++          </Routes>
++
++          {/* пока не показываем filtered рядом, но оставили стейт под быстрые итерации */}
++          {productsFiltered /* noop */ && false}
++        </div>
+       </div>
+     </div>
+   )
+diff --git a/src/renderer/src/ui/pages/LogsPage.tsx b/src/renderer/src/ui/pages/LogsPage.tsx
+index 2e93540..9a62d9a 100644
+--- a/src/renderer/src/ui/pages/LogsPage.tsx
++++ b/src/renderer/src/ui/pages/LogsPage.tsx
+@@ -18,9 +18,10 @@ const TYPE_RU: Record<string, string> = {
+ }
+ 
+ const STATUS_RU: Record<string, string> = {
++  pending: 'Ожидает',
++  running: 'В процессе',
+   success: 'Успешно',
+   error: 'Ошибка',
+-  running: 'В процессе',
+ }
+ 
+ function typeRu(v?: string | null) {
+@@ -47,6 +48,29 @@ function fmtDt(iso?: string | null) {
+   return `${dd}.${mm}.${yy} ${hh}:${mi}:${ss}`
+ }
+ 
++function detailsRu(meta?: string | null): string {
++  if (!meta) return '-'
++  try {
++    const m = JSON.parse(meta)
++
++    // Новый формат: показываем только обновлено + новых
++    if (typeof m?.updated === 'number' || typeof m?.added === 'number') {
++      const upd = (typeof m?.updated === 'number') ? m.updated : 0
++      const add = (typeof m?.added === 'number') ? m.added : 0
++      return `обновлено: ${upd}, новых: ${add}`
++    }
++
++    // Старый формат — fallback
++    const parts: string[] = []
++    if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
++    if (typeof m?.infoBatches === 'number') parts.push(`батчей: ${m.infoBatches}`)
++    if (typeof m?.infoFetched === 'number') parts.push(`расширено: ${m.infoFetched}`)
++    return parts.length ? parts.join(', ') : meta
++  } catch {
++    return meta
++  }
++}
++
+ export default function LogsPage() {
+   const [logs, setLogs] = useState<LogRow[]>([])
+ 
+@@ -76,7 +100,6 @@ export default function LogsPage() {
+             <th>Статус</th>
+             <th>Старт</th>
+             <th>Финиш</th>
+-            <th>Кол-во</th>
+             <th>Детали</th>
+             <th>Ошибка</th>
+           </tr>
+@@ -91,26 +114,11 @@ export default function LogsPage() {
+               </td>
+               <td className="small">{fmtDt(l.started_at)}</td>
+               <td className="small">{fmtDt(l.finished_at)}</td>
+-              <td>{l.items_count ?? '-'}</td>
+-              <td className="small">
+-                {(() => {
+-                  if (!l.meta) return '-'
+-                  try {
+-                    const m = JSON.parse(l.meta)
+-                    const parts: string[] = []
+-                    if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
+-                    if (typeof m?.infoBatches === 'number') parts.push(`батчей: ${m.infoBatches}`)
+-                    if (typeof m?.infoFetched === 'number') parts.push(`расширено: ${m.infoFetched}`)
+-                    return parts.length ? parts.join(', ') : l.meta
+-                  } catch {
+-                    return l.meta
+-                  }
+-                })()}
+-              </td>
++              <td className="small">{detailsRu(l.meta)}</td>
+               <td className="small">{l.error_message ?? '-'}</td>
+             </tr>
+           ))}
+-          {logs.length === 0 && <tr><td colSpan={8} className="small">Пока нет записей.</td></tr>}
++          {logs.length === 0 && <tr><td colSpan={7} className="small">Пока нет записей.</td></tr>}
+         </tbody>
+       </table>
+     </div>
 diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
+index a213394..d757ce7 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -1 +1 @@
--import React, { useEffect, useMemo, useRef, useState } from 'react' type ColId = | 'offer_id' | 'product_id' | 'name' | 'brand' | 'category' | 'type' | 'sku' | 'barcode' | 'created_at' | 'archived' type Col = { id: ColId; title: string; w: number; visible: boolean } const DEFAULT_COLS: Col[] = [ { id: 'offer_id', title: 'Артикул', w: 180, visible: true }, { id: 'name', title: 'Название', w: 320, visible: true }, { id: 'brand', title: 'Бренд', w: 160, visible: true }, { id: 'category', title: 'Категория', w: 220, visible: true }, { id: 'type', title: 'Тип', w: 180, visible: true }, { id: 'sku', title: 'SKU', w: 130, visible: true }, { id: 'barcode', title: 'Barcode', w: 160, visible: false }, { id: 'product_id', title: 'Product ID', w: 120, visible: false }, { id: 'created_at', title: 'Создан', w: 170, visible: true }, { id: 'archived', title: 'Архив', w: 90, visible: false }, ] const COL_ID_SET = new Set(DEFAULT_COLS.map((c) => c.id)) const isColId = (v: any): v is ColId => typeof v === 'string' && COL_ID_SET.has(v as ColId) function fmt(dtIso: string | null): string { if (!dtIso) return '' const d = new Date(dtIso) if (Number.isNaN(d.getTime())) return dtIso const pad = (n: number) => String(n).padStart(2, '0') return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${String(d.getFullYear()).slice(-2)} ${pad(d.getHours())}:${pad( d.getMinutes() )}:${pad(d.getSeconds())}` } const ROW_H = 34 const OVERSCAN = 12 export default function ProductsPage() { const [all, setAll] = useState([]) const [q, setQ] = useState('') const [cols, setCols] = useState(() => { try { const saved = localStorage.getItem('ozonator-cols-v2') if (saved) { const parsed = JSON.parse(saved) if (Array.isArray(parsed)) { const byId = new Map() const order: ColId[] = [] for (const raw of parsed) { const id = raw?.id if (!isColId(id)) continue byId.set(id, raw) if (!order.includes(id)) order.push(id) } const out: Col[] = [] const used = new Set() for (const id of order) { const def = DEFAULT_COLS.find((c) => c.id === id) if (!def) continue const raw = byId.get(id) const w = typeof raw?.w === 'number' && Number.isFinite(raw.w) ? Math.max(60, Math.round(raw.w)) : def.w const visible = typeof raw?.visible === 'boolean' ? raw.visible : def.visible out.push({ ...def, w, visible }) used.add(id) } for (const def of DEFAULT_COLS) { if (!used.has(def.id)) out.push(def) } return out } } } catch {} return DEFAULT_COLS }) const [scrollTop, setScrollTop] = useState(0) const [viewportH, setViewportH] = useState(400) const wrapRef = useRef(null) // resize const [resizeGuideX, setResizeGuideX] = useState(null) const resizeRef = useRef<{ id: ColId; startX: number; startW: number; raf?: number } | null>(null) // drag reorder const [dropGuide, setDropGuide] = useState<{ id: ColId; side: 'left' | 'right'; x: number } | null>(null) const dragRef = useRef<{ draggingId: ColId; raf?: number; lastKey?: string } | null>(null) const visibleCols = useMemo(() => cols.filter((c) => c.visible), [cols]) const hiddenCols = useMemo(() => cols.filter((c) => !c.visible), [cols]) const gridTemplate = useMemo(() => visibleCols.map((c) => `${c.w}px`).join(' '), [visibleCols]) const tableW = useMemo(() => visibleCols.reduce((s, c) => s + c.w, 0), [visibleCols]) useEffect(() => { try { localStorage.setItem('ozonator-cols-v2', JSON.stringify(cols)) } catch {} }, [cols]) const load = async () => { const rows = await window.api.getProducts() setAll(Array.isArray(rows) ? rows : []) } useEffect(() => { load() }, []) useEffect(() => { const el = wrapRef.current if (!el) return const onScroll = () => { setScrollTop(el.scrollTop) } onScroll() el.addEventListener('scroll', onScroll, { passive: true }) const ro = new ResizeObserver(() => { setViewportH(el.clientHeight) }) ro.observe(el) return () => { el.removeEventListener('scroll', onScroll as any) ro.disconnect() } }, []) const filtered = useMemo(() => { const qq = q.trim().toLowerCase() if (!qq) return all return all.filter((r) => { const hay = [ r.offer_id, r.name, r.brand, r.category, r.type, r.sku, r.barcode, String(r.product_id ?? ''), ] .filter(Boolean) .join(' ') .toLowerCase() return hay.includes(qq) }) }, [all, q]) const totalH = filtered.length * ROW_H const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN) const end = Math.min(filtered.length, Math.ceil((scrollTop + viewportH) / ROW_H) + OVERSCAN) const slice = filtered.slice(start, end) // ===== column actions ===== const hideCol = (id: ColId) => setCols((prev) => prev.map((c) => (c.id === id ? { ...c, visible: false } : c))) const showCol = (id: ColId) => setCols((prev) => prev.map((c) => (c.id === id ? { ...c, visible: true } : c))) // ===== resize ===== const onResizeDown = (id: ColId, e: React.MouseEvent) => { e.preventDefault() e.stopPropagation() const col = cols.find((c) => c.id === id) if (!col) return resizeRef.current = { id, startX: e.clientX, startW: col.w } const onMove = (ev: MouseEvent) => { const r = resizeRef.current if (!r) return const dx = ev.clientX - r.startX const w = Math.max(60, r.startW + dx) // guide line (вниз по всей таблице) const wrap = wrapRef.current if (wrap) { const rect = wrap.getBoundingClientRect() const x = Math.min(Math.max(0, (r.startW + dx) + visibleColsBeforeWidth(r.id, cols) - wrap.scrollLeft), tableW) setResizeGuideX(rect.left + x) } // throttled width update if (r.raf) cancelAnimationFrame(r.raf) r.raf = requestAnimationFrame(() => { setCols((prev) => prev.map((c) => (c.id === id ? { ...c, w } : c))) }) } const onUp = () => { resizeRef.current = null setResizeGuideX(null) window.removeEventListener('mousemove', onMove) window.removeEventListener('mouseup', onUp) } window.addEventListener('mousemove', onMove) window.addEventListener('mouseup', onUp) } // ===== drag reorder ===== const onDragStart = (id: ColId) => { dragRef.current = { draggingId: id } } const onDragEnd = () => { dragRef.current = null setDropGuide(null) } const onDragOverHeader = (targetId: ColId, e: React.DragEvent) => { e.preventDefault() const drag = dragRef.current if (!drag) return if (drag.draggingId === targetId) return const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect() const x = e.clientX - rect.left const side: 'left' | 'right' = x < rect.width / 2 ? 'left' : 'right' // анти-джиттер: обновляем только если реально изменилось (и чуть гистерезис) const key = `${targetId}:${side}` if (drag.lastKey === key) return drag.lastKey = key if (drag.raf) cancelAnimationFrame(drag.raf) drag.raf = requestAnimationFrame(() => { // x-position for guide within whole table const targetLeft = visibleColsBeforeWidth(targetId, cols) const guideX = side === 'left' ? targetLeft : targetLeft + (cols.find((c) => c.id === targetId)?.w ?? 0) setDropGuide({ id: targetId, side, x: guideX }) }) } const onDropHeader = (targetId: ColId, e: React.DragEvent) => { e.preventDefault() const drag = dragRef.current if (!drag) return const fromId = drag.draggingId if (fromId === targetId) return const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect() const x = e.clientX - rect.left const side: 'left' | 'right' = x < rect.width / 2 ? 'left' : 'right' setCols((prev) => reorder(prev, fromId, targetId, side)) setDropGuide(null) } // ===== render ===== return (
-+import React, { useEffect, useMemo, useRef, useState } from 'react' type ColId = | 'offer_id' | 'product_id' | 'name' | 'brand' | 'category' | 'type' | 'sku' | 'barcode' | 'created_at' | 'archived' type Col = { id: ColId; title: string; w: number; visible: boolean } const DEFAULT_COLS: Col[] = [ { id: 'offer_id', title: 'Артикул', w: 180, visible: true }, { id: 'name', title: 'Название', w: 320, visible: true }, { id: 'brand', title: 'Бренд', w: 160, visible: true }, { id: 'category', title: 'Категория', w: 220, visible: true }, { id: 'type', title: 'Тип', w: 180, visible: true }, { id: 'sku', title: 'SKU', w: 130, visible: true }, { id: 'barcode', title: 'Barcode', w: 160, visible: false }, { id: 'product_id', title: 'Product ID', w: 120, visible: false }, { id: 'created_at', title: 'Создан', w: 170, visible: true }, { id: 'archived', title: 'Архив', w: 90, visible: false }, ] const COL_ID_SET = new Set(DEFAULT_COLS.map((c) => c.id)) const isColId = (v: any): v is ColId => typeof v === 'string' && COL_ID_SET.has(v as ColId) function fmt(dtIso: string | null): string { if (!dtIso) return '' const d = new Date(dtIso) if (Number.isNaN(d.getTime())) return dtIso const pad = (n: number) => String(n).padStart(2, '0') return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${String(d.getFullYear()).slice(-2)} ${pad(d.getHours())}:${pad( d.getMinutes() )}:${pad(d.getSeconds())}` } const ROW_H = 34 const OVERSCAN = 12 export default function ProductsPage() { const [all, setAll] = useState([]) const [q, setQ] = useState('') const [cols, setCols] = useState(() => { try { const saved = localStorage.getItem('ozonator-cols-v2') if (saved) { const parsed = JSON.parse(saved) if (Array.isArray(parsed)) { const byId = new Map() const order: ColId[] = [] for (const raw of parsed) { const id = raw?.id if (!isColId(id)) continue byId.set(id, raw) if (!order.includes(id)) order.push(id) } const out: Col[] = [] const used = new Set() for (const id of order) { const def = DEFAULT_COLS.find((c) => c.id === id) if (!def) continue const raw = byId.get(id) const w = typeof raw?.w === 'number' && Number.isFinite(raw.w) ? Math.max(60, Math.round(raw.w)) : def.w const visible = typeof raw?.visible === 'boolean' ? raw.visible : def.visible out.push({ ...def, w, visible }) used.add(id) } for (const def of DEFAULT_COLS) { if (!used.has(def.id)) out.push(def) } return out } } } catch {} return DEFAULT_COLS }) const [scrollTop, setScrollTop] = useState(0) const [viewportH, setViewportH] = useState(400) const wrapRef = useRef(null) // resize const [resizeGuideX, setResizeGuideX] = useState(null) const resizeRef = useRef<{ id: ColId; startX: number; startW: number; raf?: number } | null>(null) // drag reorder const [dropGuide, setDropGuide] = useState<{ id: ColId; side: 'left' | 'right'; x: number } | null>(null) const dragRef = useRef<{ draggingId: ColId; raf?: number; lastKey?: string } | null>(null) const visibleCols = useMemo(() => cols.filter((c) => c.visible), [cols]) const hiddenCols = useMemo(() => cols.filter((c) => !c.visible), [cols]) const gridTemplate = useMemo(() => visibleCols.map((c) => `${c.w}px`).join(' '), [visibleCols]) const tableW = useMemo(() => visibleCols.reduce((s, c) => s + c.w, 0), [visibleCols]) useEffect(() => { try { localStorage.setItem('ozonator-cols-v2', JSON.stringify(cols)) } catch {} }, [cols]) const load = async () => { const rows = await window.api.getProducts() setAll(Array.isArray(rows) ? rows : []) } useEffect(() => { load() }, []) useEffect(() => { const el = wrapRef.current as any as HTMLDivElement | null if (!el) return let syncing = false const bar = document.createElement('div') bar.className = 'hScrollSticky' const inner = document.createElement('div') inner.className = 'hScrollStickyInner' bar.appendChild(inner) const parent = el.parentElement if (parent) parent.insertBefore(bar, el.nextSibling) const refresh = () => { const w = Math.max(tableW, el.scrollWidth) inner.style.width = `${w}px` const need = w > el.clientWidth + 1 bar.style.display = need ? 'block' : 'none' if (need && !syncing) { syncing = true bar.scrollLeft = el.scrollLeft syncing = false } setViewportH(el.clientHeight) } const onScroll = () => { setScrollTop(el.scrollTop) if (!syncing) { syncing = true bar.scrollLeft = el.scrollLeft syncing = false } } const onBarScroll = () => { if (syncing) return syncing = true el.scrollLeft = bar.scrollLeft syncing = false } onScroll() refresh() el.addEventListener('scroll', onScroll, { passive: true }) bar.addEventListener('scroll', onBarScroll, { passive: true }) const ro = new ResizeObserver(refresh) ro.observe(el) return () => { el.removeEventListener('scroll', onScroll as any) bar.removeEventListener('scroll', onBarScroll as any) ro.disconnect() bar.remove() } }, [tableW]) const filtered = useMemo(() => { const qq = q.trim().toLowerCase() if (!qq) return all return all.filter((r) => { const hay = [ r.offer_id, r.name, r.brand, r.category, r.type, r.sku, r.barcode, String(r.product_id ?? ''), ] .filter(Boolean) .join(' ') .toLowerCase() return hay.includes(qq) }) }, [all, q]) const totalH = filtered.length * ROW_H const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN) const end = Math.min(filtered.length, Math.ceil((scrollTop + viewportH) / ROW_H) + OVERSCAN) const slice = filtered.slice(start, end) // ===== column actions ===== const hideCol = (id: ColId) => setCols((prev) => prev.map((c) => (c.id === id ? { ...c, visible: false } : c))) const showCol = (id: ColId) => setCols((prev) => prev.map((c) => (c.id === id ? { ...c, visible: true } : c))) // ===== resize ===== const onResizeDown = (id: ColId, e: React.MouseEvent) => { e.preventDefault() e.stopPropagation() const col = cols.find((c) => c.id === id) if (!col) return resizeRef.current = { id, startX: e.clientX, startW: col.w } const onMove = (ev: MouseEvent) => { const r = resizeRef.current if (!r) return const dx = ev.clientX - r.startX const w = Math.max(60, r.startW + dx) // guide line (вниз по всей таблице) const wrap = wrapRef.current if (wrap) { const rect = wrap.getBoundingClientRect() const x = Math.min(Math.max(0, (r.startW + dx) + visibleColsBeforeWidth(r.id, cols) - wrap.scrollLeft), tableW) setResizeGuideX(rect.left + x) } // throttled width update if (r.raf) cancelAnimationFrame(r.raf) r.raf = requestAnimationFrame(() => { setCols((prev) => prev.map((c) => (c.id === id ? { ...c, w } : c))) }) } const onUp = () => { resizeRef.current = null setResizeGuideX(null) window.removeEventListener('mousemove', onMove) window.removeEventListener('mouseup', onUp) } window.addEventListener('mousemove', onMove) window.addEventListener('mouseup', onUp) } // ===== drag reorder ===== const onDragStart = (id: ColId) => { dragRef.current = { draggingId: id } } const onDragEnd = () => { dragRef.current = null setDropGuide(null) } const onDragOverHeader = (targetId: ColId, e: React.DragEvent) => { e.preventDefault() const drag = dragRef.current if (!drag) return if (drag.draggingId === targetId) return const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect() const x = e.clientX - rect.left const side: 'left' | 'right' = x < rect.width / 2 ? 'left' : 'right' // анти-джиттер: обновляем только если реально изменилось (и чуть гистерезис) const key = `${targetId}:${side}` if (drag.lastKey === key) return drag.lastKey = key if (drag.raf) cancelAnimationFrame(drag.raf) drag.raf = requestAnimationFrame(() => { // x-position for guide within whole table const targetLeft = visibleColsBeforeWidth(targetId, cols) const guideX = side === 'left' ? targetLeft : targetLeft + (cols.find((c) => c.id === targetId)?.w ?? 0) setDropGuide({ id: targetId, side, x: guideX }) }) } const onDropHeader = (targetId: ColId, e: React.DragEvent) => { e.preventDefault() const drag = dragRef.current if (!drag) return const fromId = drag.draggingId if (fromId === targetId) return const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect() const x = e.clientX - rect.left const side: 'left' | 'right' = x < rect.width / 2 ? 'left' : 'right' setCols((prev) => reorder(prev, fromId, targetId, side)) setDropGuide(null) } // ===== render ===== return (
-
+@@ -21,6 +21,11 @@ type ColDef = {
+   visible: boolean
+ }
+ 
++type Props = {
++  query?: string
++  onStats?: (s: { total: number; filtered: number }) => void
++}
++
+ const DEFAULT_COLS: ColDef[] = [
+   { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
+   { id: 'name', title: 'Наименование', w: 320, visible: true },
+@@ -34,6 +39,21 @@ const DEFAULT_COLS: ColDef[] = [
+   { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
+ ]
+ 
++const AUTO_MIN_W = 80
++const AUTO_PAD = 34
++const AUTO_MAX_W: Record<string, number> = {
++  offer_id: 240,
++  sku: 220,
++  barcode: 260,
++  brand: 220,
++  is_visible: 180,
++  created_at: 240,
++  updated_at: 240,
++  type: 320,
++  category: 380,
++  name: 460,
++}
++
+ function readCols(): ColDef[] {
+   try {
+     const raw = localStorage.getItem('ozonator_cols')
+@@ -84,16 +104,20 @@ function visibilityText(p: Product): string {
+   return 'Неизвестно'
+ }
+ 
+-export default function ProductsPage() {
++export default function ProductsPage({ query = '', onStats }: Props) {
+   const [products, setProducts] = useState<Product[]>([])
+-  const [query, setQuery] = useState('')
+-
+   const [cols, setCols] = useState<ColDef[]>(readCols)
+ 
+   const [draggingId, setDraggingId] = useState<string | null>(null)
+   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right' } | null>(null)
+ 
+   const resizingRef = useRef<{ id: string; startX: number; startW: number } | null>(null)
++  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
++  const didAutoInitRef = useRef(false)
++
++  const hasStoredCols = useMemo(() => {
++    try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
++  }, [])
+ 
+   async function load() {
+     const resp = await window.api.getProducts()
+@@ -118,7 +142,7 @@ export default function ProductsPage() {
+   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
+ 
+   const filtered = useMemo(() => {
+-    const q = query.trim().toLowerCase()
++    const q = String(query ?? '').trim().toLowerCase()
+     if (!q) return products
+ 
+     return products.filter((p) => {
+@@ -137,6 +161,10 @@ export default function ProductsPage() {
+     })
+   }, [products, query, visibleCols])
+ 
++  useEffect(() => {
++    onStats?.({ total: products.length, filtered: filtered.length })
++  }, [products.length, filtered.length, onStats])
++
+   function hideCol(id: string) {
+     setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: false } : c))
+   }
+@@ -209,7 +237,7 @@ export default function ProductsPage() {
+       const r = resizingRef.current
+       if (!r) return
+       const dx = ev.clientX - r.startX
+-      const w = Math.max(80, Math.round(r.startW + dx))
++      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
+       setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
+     }
+ 
+@@ -238,18 +266,81 @@ export default function ProductsPage() {
+     return { text: (v == null || v === '') ? '-' : String(v) }
+   }
+ 
++  function measureTextWidth(text: string): number {
++    const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'))
++    const ctx = canvas.getContext('2d')
++    if (!ctx) return text.length * 7
++
++    const cs = window.getComputedStyle(document.body)
++    const fontSize = cs.fontSize || '13px'
++    const fontFamily = cs.fontFamily || 'system-ui'
++    const fontWeight = cs.fontWeight || '400'
++    ctx.font = `${fontWeight} ${fontSize} ${fontFamily}`
++
++    return ctx.measureText(text).width
++  }
++
++  function getCellString(p: Product, colId: ColDef['id']): string {
++    if (colId === 'archived') return ''
++    if (colId === 'is_visible') return visibilityText(p)
++    if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
++    if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
++    return toText((p as any)[colId])
++  }
++
++  function autoSizeColumn(colId: string, rows: Product[]) {
++    const col = cols.find(c => String(c.id) === colId)
++    if (!col) return
++
++    const cap = AUTO_MAX_W[colId] ?? 320
++
++    let max = measureTextWidth(col.title)
++    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
++    for (const p of sample) {
++      const s = getCellString(p, col.id)
++      if (!s) continue
++      const w = measureTextWidth(s)
++      if (w > max) max = w
++    }
++
++    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
++    setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
++  }
++
++  // Первичная авто-ширина (если пользователь ещё ничего не сохранял)
++  useEffect(() => {
++    if (didAutoInitRef.current) return
++    if (hasStoredCols) return
++    if (products.length === 0) return
++
++    didAutoInitRef.current = true
++
++    // авто-подгоняем только видимые дефолтные столбцы
++    const next = cols.map((c) => {
++      if (!c.visible) return c
++      const cap = AUTO_MAX_W[String(c.id)] ?? 320
++
++      let max = measureTextWidth(c.title)
++      const sample = products.length > 1600 ? products.slice(0, 1600) : products
++      for (const p of sample) {
++        const s = getCellString(p, c.id)
++        if (!s) continue
++        const w = measureTextWidth(s)
++        if (w > max) max = w
++      }
++
++      const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
++      return { ...c, w: nextW }
++    })
++
++    setCols(next)
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [products.length])
++
++  const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
++
+   return (
+     <div className="card productsCard">
+-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+-        <div className="badge">Всего: {products.length}</div>
+-        <input
+-          className="searchInput search"
+-          value={query}
+-          onChange={(e) => setQuery(e.target.value)}
+-          placeholder="Поиск по таблице…"
+-        />
+-      </div>
+-
+       {hiddenCols.length > 0 && (
+         <div className="collapsedBar">
+           <span className="small">Скрытые столбцы:</span>
+@@ -263,67 +354,76 @@ export default function ProductsPage() {
+       )}
+ 
+       <div className="productsTableArea">
+-        <div className="tableWrap tableWrapY" style={{ marginTop: 12 }}>
+-          <table className="table tableFixed" style={{ minWidth: Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)) }}>
+-            <colgroup>
+-              {visibleCols.map(c => (
+-                <col key={String(c.id)} style={{ width: c.w }} />
+-              ))}
+-            </colgroup>
+-            <thead>
+-              <tr>
+-                {visibleCols.map(c => {
+-                  const id = String(c.id)
+-                  const isDrop = dropHint && dropHint.id === id
+-                  const dropCls = isDrop ? (dropHint!.side === 'left' ? 'thDropLeft' : 'thDropRight') : ''
+-
+-                  return (
+-                    <th
+-                      key={id}
+-                      draggable
+-                      onDragStart={(e) => onDragStart(e, id)}
+-                      onDragOver={(e) => onDragOverHeader(e, id)}
+-                      onDrop={(e) => onDrop(e, id)}
+-                      onDragEnd={onDragEnd}
+-                      className={`thDraggable ${draggingId === id ? 'thDragging' : ''} ${dropCls}`.trim()}
+-                    >
+-                      <div className="thInner">
+-                        <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
+-                        <span>{c.title}</span>
+-                        <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
+-                      </div>
+-                      <div
+-                        className="thResizer"
+-                        title="Изменить ширину"
+-                        onMouseDown={(e) => startResize(e, id)}
+-                      />
+-                    </th>
+-                  )
+-                })}
+-              </tr>
+-            </thead>
+-            <tbody>
+-              {filtered.map(p => (
+-                <tr key={p.offer_id}>
+-                  {visibleCols.map(c => {
+-                    const id = String(c.id)
+-                    const { text, title } = cellText(p, c.id)
+-                    return (
+-                      <td key={id}>
+-                        <div className="cellText" title={title ?? text}>{text}</div>
+-                      </td>
+-                    )
+-                  })}
+-                </tr>
+-              ))}
+-
+-              {filtered.length === 0 && (
+-                <tr>
+-                  <td colSpan={visibleCols.length} className="empty">Ничего не найдено.</td>
+-                </tr>
+-              )}
+-            </tbody>
+-          </table>
++        <div className="tableWrap" style={{ marginTop: 12 }}>
++          <div className="tableWrapX">
++            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
++              <table className="table tableFixed" style={{ minWidth: tableMinWidth }}>
++                <colgroup>
++                  {visibleCols.map(c => (
++                    <col key={String(c.id)} style={{ width: c.w }} />
++                  ))}
++                </colgroup>
++                <thead>
++                  <tr>
++                    {visibleCols.map(c => {
++                      const id = String(c.id)
++                      const isDrop = dropHint && dropHint.id === id
++                      const dropCls = isDrop ? (dropHint!.side === 'left' ? 'thDropLeft' : 'thDropRight') : ''
++
++                      return (
++                        <th
++                          key={id}
++                          draggable
++                          onDragStart={(e) => onDragStart(e, id)}
++                          onDragOver={(e) => onDragOverHeader(e, id)}
++                          onDrop={(e) => onDrop(e, id)}
++                          onDragEnd={onDragEnd}
++                          className={`thDraggable ${draggingId === id ? 'thDragging' : ''} ${dropCls}`.trim()}
++                        >
++                          <div className="thInner">
++                            <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
++                            <span>{c.title}</span>
++                            <span className="thGrip" title="Перетащите, чтобы поменять столбцы местами">⋮⋮</span>
++                          </div>
++                          <div
++                            className="thResizer"
++                            title="Изменить ширину (двойной клик — по содержимому)"
++                            onMouseDown={(e) => startResize(e, id)}
++                            onDoubleClick={(e) => {
++                              e.preventDefault()
++                              e.stopPropagation()
++                              autoSizeColumn(id, filtered)
++                            }}
++                          />
++                        </th>
++                      )
++                    })}
++                  </tr>
++                </thead>
++                <tbody>
++                  {filtered.map(p => (
++                    <tr key={p.offer_id}>
++                      {visibleCols.map(c => {
++                        const id = String(c.id)
++                        const { text, title } = cellText(p, c.id)
++                        return (
++                          <td key={id}>
++                            <div className="cellText" title={title ?? text}>{text}</div>
++                          </td>
++                        )
++                      })}
++                    </tr>
++                  ))}
++
++                  {filtered.length === 0 && (
++                    <tr>
++                      <td colSpan={visibleCols.length} className="empty">Ничего не найдено.</td>
++                    </tr>
++                  )}
++                </tbody>
++              </table>
++            </div>
++          </div>
+         </div>
+       </div>
+     </div>
+diff --git a/src/renderer/src/ui/pages/SettingsPage.tsx b/src/renderer/src/ui/pages/SettingsPage.tsx
+index c96af37..f6b45f5 100644
+--- a/src/renderer/src/ui/pages/SettingsPage.tsx
++++ b/src/renderer/src/ui/pages/SettingsPage.tsx
+@@ -25,31 +25,24 @@ export default function SettingsPage() {
+     load()
+   }, [])
+ 
+-  async function onSave() {
++  async function onSaveAndTest() {
+     setStatus('')
+     setErr('')
+ 
+     try {
+       await window.api.saveSecrets({ clientId, apiKey })
+-      setStatus('Сохранено локально. Теперь нажмите «Проверить доступ» — название магазина подтянется автоматически.')
+-      setStoreName('')
+-    } catch (e: any) {
+-      setErr(e?.message ?? String(e))
+-    }
+-  }
+-
+-  async function onTest() {
+-    setStatus('')
+-    setErr('')
+-
+-    try {
+       const resp = await window.api.testAuth()
++
+       if (resp.ok) {
+         if (resp.storeName) setStoreName(resp.storeName)
+         setStatus('Доступ подтверждён.')
+ 
+         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
+         load()
++
++        // обновим заголовок/лог
++        window.dispatchEvent(new Event('ozon:store-updated'))
++        window.dispatchEvent(new Event('ozon:logs-updated'))
+       } else {
+         setErr(resp.error ?? 'Ошибка проверки доступа')
+       }
+@@ -68,6 +61,7 @@ export default function SettingsPage() {
+       setApiKey('')
+       setStoreName('')
+       setStatus('Ключи удалены.')
++      window.dispatchEvent(new Event('ozon:store-updated'))
+     } catch (e: any) {
+       setErr(e?.message ?? String(e))
+     }
+@@ -75,17 +69,14 @@ export default function SettingsPage() {
+ 
+   return (
+     <div className="card">
+-      <div className="h1">Настройки магазина</div>
+-      <div className="small" style={{ marginTop: 6 }}>
+-        Ключи хранятся локально в зашифрованном виде (Electron safeStorage). Не отправляются в лог и не попадают в базу.
+-      </div>
++      <div className="h1">Настройки</div>
+ 
+       <div className="row" style={{ marginTop: 16 }}>
+         <div className="col field">
+           <label>Название магазина</label>
+           <input
+             value={storeName}
+-            placeholder="Подтянется с Ozon после проверки доступа"
++            placeholder="Появится после проверки доступа"
+             readOnly
+           />
+         </div>
+@@ -103,18 +94,12 @@ export default function SettingsPage() {
+       </div>
+ 
+       <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
+-        <button className="primary" onClick={onSave}>Сохранить локально</button>
+-        <button onClick={onTest}>Проверить доступ</button>
++        <button className="primary" onClick={onSaveAndTest}>Сохранить и проверить</button>
+         <button onClick={onDelete}>Стереть ключи</button>
+       </div>
+ 
+       {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
+       {err && <div className="notice error" style={{ marginTop: 12 }}>{err}</div>}
+-
+-      <div className="notice" style={{ marginTop: 14 }}>
+-        <b>Важно.</b> Если вы меняете ключи на другой магазин, список «Товары» будет показывать данные только по активному магазину.
+-        Старые данные других магазинов остаются в базе, но не отображаются.
+-      </div>
+     </div>
+   )
+ }
 diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
+index 942182c..87a475d 100644
 --- a/src/renderer/src/ui/styles.css
 +++ b/src/renderer/src/ui/styles.css
-@@ -1 +1,5 @@
--/* ===== Base ===== */ html, body, #root { height: 100%; } body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #ffffff; color: #111827; } * { box-sizing: border-box; } a { color: inherit; } /* ===== Layout ===== */ .app { height: 100%; display: flex; flex-direction: column; } .header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid #e5e7eb; background: #ffffff; } .brand { display: flex; align-items: baseline; gap: 10px; min-width: 280px; } .brandTitle { font-weight: 800; letter-spacing: 0.2px; } .brandStore { font-size: 12px; color: #6b7280; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .headerBtns { display: flex; gap: 8px; align-items: center; } .iconBtn { height: 36px; min-width: 36px; padding: 0 10px; border: 1px solid #d1d5db; border-radius: 10px; background: #f3f4f6; /* единый фон как у "настройки" */ cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; user-select: none; } .iconBtn:hover { background: #e5e7eb; } .iconBtn:active { transform: translateY(1px); } .iconBtnPrimary { border-color: #c7d2fe; background: #eef2ff; } .iconBtnPrimary:hover { background: #e0e7ff; } .main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; } .page { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 12px; gap: 10px; } /* ===== Controls ===== */ .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; } .input { height: 34px; padding: 0 10px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; outline: none; } .input:focus { border-color: #a5b4fc; } .btn { height: 34px; padding: 0 12px; border: 1px solid #d1d5db; border-radius: 10px; background: #ffffff; cursor: pointer; } .btn:hover { background: #f9fafb; } .btn:active { transform: translateY(1px); } .badge { font-size: 12px; color: #374151; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 999px; padding: 4px 10px; } /* ===== Table (virtualized grid) ===== */ .tableWrap { flex: 1 1 auto; min-height: 0; border: 1px solid #e5e7eb; border-radius: 12px; overflow: auto; position: relative; scrollbar-gutter: stable both-edges; background: #fff; } .tableInner { position: relative; min-width: 600px; } .headerRowSticky { position: sticky; top: 0; z-index: 5; background: #ffffff; border-bottom: 1px solid #e5e7eb; } .gridRow { display: grid; align-items: center; height: 34px; line-height: 34px; border-bottom: 1px solid #f3f4f6; } .headerCell { font-size: 12px; font-weight: 700; color: #374151; padding: 0 10px; position: relative; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .cell { font-size: 13px; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .rowAlt { background: #fcfcfd; } .resizeHandle { position: absolute; right: 0; top: 0; bottom: 0; width: 10px; cursor: col-resize; } .resizeGuide { position: absolute; top: 0; bottom: 0; width: 2px; background: #2563eb; opacity: 0.6; pointer-events: none; z-index: 10; } .dropGuide { position: absolute; top: 0; bottom: 0; width: 3px; background: #2563eb; opacity: 0.55; pointer-events: none; z-index: 9; } /* ===== Hidden columns bar (compact) ===== */ .hiddenBar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; } .hiddenChip { height: 24px; padding: 0 8px; border: 1px dashed #d1d5db; border-radius: 999px; background: #ffffff; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; } .hiddenChipBtn { border: none; background: #f3f4f6; border-radius: 999px; width: 18px; height: 18px; cursor: pointer; line-height: 18px; text-align: center; } .hiddenChipBtn:hover { background: #e5e7eb; } /* ===== Logs list ===== */ .logList { display: flex; flex-direction: column; gap: 8px; } .logItem { border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px 12px; background: #fff; } .logTop { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; } .logType { font-weight: 700; } .logMeta { color: #6b7280; font-size: 12px; } .logMsg { margin-top: 6px; color: #374151; font-size: 13px; white-space: pre-wrap; }
-+/* ===== Base ===== */ html, body, #root { height: 100%; } body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #ffffff; color: #111827; } * { box-sizing: border-box; } a { color: inherit; } /* ===== Layout ===== */ .app { height: 100%; display: flex; flex-direction: column; } .header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid #e5e7eb; background: #ffffff; } .brand { display: flex; align-items: baseline; gap: 10px; min-width: 280px; } .brandTitle { font-weight: 800; letter-spacing: 0.2px; } .brandStore { font-size: 12px; color: #6b7280; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .headerBtns { display: flex; gap: 8px; align-items: center; } .iconBtn { height: 36px; min-width: 36px; padding: 0 10px; border: 1px solid #d1d5db; border-radius: 10px; background: #f3f4f6; /* единый фон как у "настройки" */ cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; user-select: none; } .iconBtn:hover { background: #e5e7eb; } .iconBtn:active { transform: translateY(1px); } .iconBtnPrimary { border-color: #c7d2fe; background: #eef2ff; } .iconBtnPrimary:hover { background: #e0e7ff; } .main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; } .page { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 12px; gap: 10px; } /* ===== Controls ===== */ .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; } .input { height: 34px; padding: 0 10px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; outline: none; } .input:focus { border-color: #a5b4fc; } .btn { height: 34px; padding: 0 12px; border: 1px solid #d1d5db; border-radius: 10px; background: #ffffff; cursor: pointer; } .btn:hover { background: #f9fafb; } .btn:active { transform: translateY(1px); } .badge { font-size: 12px; color: #374151; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 999px; padding: 4px 10px; } /* ===== Table (virtualized grid) ===== */ .tableWrap { flex: 1 1 auto; min-height: 0; border: 1px solid #e5e7eb; border-radius: 12px; overflow: auto; position: relative; scrollbar-gutter: stable both-edges; background: #fff; } .tableInner { position: relative; min-width: 600px; } .headerRowSticky { position: sticky; top: 0; z-index: 5; background: #ffffff; border-bottom: 1px solid #e5e7eb; } .gridRow { display: grid; align-items: center; height: 34px; line-height: 34px; border-bottom: 1px solid #f3f4f6; } .headerCell { font-size: 12px; font-weight: 700; color: #374151; padding: 0 10px; position: relative; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .cell { font-size: 13px; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .rowAlt { background: #fcfcfd; } .resizeHandle { position: absolute; right: 0; top: 0; bottom: 0; width: 10px; cursor: col-resize; } .resizeGuide { position: absolute; top: 0; bottom: 0; width: 2px; background: #2563eb; opacity: 0.6; pointer-events: none; z-index: 10; } .dropGuide { position: absolute; top: 0; bottom: 0; width: 3px; background: #2563eb; opacity: 0.55; pointer-events: none; z-index: 9; } /* ===== Hidden columns bar (compact) ===== */ .hiddenBar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; } .hiddenChip { height: 24px; padding: 0 8px; border: 1px dashed #d1d5db; border-radius: 999px; background: #ffffff; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; } .hiddenChipBtn { border: none; background: #f3f4f6; border-radius: 999px; width: 18px; height: 18px; cursor: pointer; line-height: 18px; text-align: center; } .hiddenChipBtn:hover { background: #e5e7eb; } /* ===== Logs list ===== */ .logList { display: flex; flex-direction: column; gap: 8px; } .logItem { border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px 12px; background: #fff; } .logTop { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; } .logType { font-weight: 700; } .logMeta { color: #6b7280; font-size: 12px; } .logMsg { margin-top: 6px; color: #374151; font-size: 13px; white-space: pre-wrap; }
+@@ -41,17 +41,28 @@ body{
+ 
+ a{ color: inherit; text-decoration: none; }
+ 
+-.appShell{ min-height: 100%; }
++.appShell{ min-height: 100%; display: flex; flex-direction: column; }
 +
-+/* ===== Sticky horizontal scrollbar (always visible) ===== */
-+.hScrollSticky { position: sticky; bottom: 0; height: 14px; overflow-x: auto; overflow-y: hidden; background: #ffffff; border-top: 1px solid #e5e7eb; z-index: 6; }
-+.hScrollStickyInner { height: 1px; }
++.pageArea{ flex: 1; min-height: 0; overflow: hidden; }
+ 
+ .container{
+-  max-width: 1220px;
+-  margin: 0 auto;
++  max-width: none;
++  margin: 0;
+   padding: 18px 18px 26px;
++  height: 100%;
++  overflow: auto;
+ }
+ 
++/* прячем системный вертикальный скролл страницы — скроллим только контент */
++.container::-webkit-scrollbar { height: 10px; width: 10px; }
++.container::-webkit-scrollbar-thumb { background: rgba(0,0,0,.20); border-radius: 999px; border: 2px solid rgba(255,255,255,.75); }
++.container::-webkit-scrollbar-track { background: rgba(0,0,0,.04); border-radius: 999px; }
++
++
+ /* Full-width content area (used for Products page table) */
+ .containerWide{
+   max-width: none;
++  overflow: hidden;
+ }
+ 
+ /* Topbar */
+@@ -66,7 +77,7 @@ a{ color: inherit; text-decoration: none; }
+ }
+ 
+ .topbarInner{
+-  max-width: 1220px;
++  max-width: none;
+   margin: 0 auto;
+   padding: 12px 18px;
+   display: flex;
+@@ -74,6 +85,43 @@ a{ color: inherit; text-decoration: none; }
+   gap: 14px;
+ }
+ 
++.appTitle{
++  display: inline-flex;
++  align-items: baseline;
++  gap: 10px;
++  padding: 6px 10px;
++  border-radius: 12px;
++}
++
++.appName{
++  font-size: 20px;
++  font-weight: 820;
++  letter-spacing: -0.02em;
++}
++
++.appStoreName{
++  font-size: 13px;
++  font-weight: 650;
++  color: rgba(60,60,67,.78);
++  letter-spacing: 0;
++}
++
++.segCount{
++  margin-left: 8px;
++  padding: 2px 8px;
++  border-radius: 999px;
++  border: 1px solid rgba(60,60,67,.14);
++  background: rgba(255,255,255,.72);
++  color: rgba(60,60,67,.78);
++  font-size: 12px;
++  font-weight: 650;
++}
++
++.topbarSearch{
++  display: inline-flex;
++  align-items: center;
++}
++
+ .appNameLink{
+   font-size: 20px;
+   font-weight: 820;
+@@ -324,7 +372,8 @@ button:disabled{
+ .productsCard{
+   display: flex;
+   flex-direction: column;
+-  height: calc(100vh - 118px); /* topbar + padding */
++  height: 100%;
++  min-height: 0;
+ }
+ .productsTableArea{ display:flex; flex-direction:column; flex:1; min-height:0; }
+ .search{ min-width: 310px; }
+@@ -377,6 +426,8 @@ button:disabled{
+ /* Tables */
+ .tableWrap{
+   margin-top: 14px;
++  display: flex;
++  flex-direction: column;
+   border: 1px solid var(--hairline2);
+   border-radius: var(--radius);
+   overflow: hidden;
+@@ -384,11 +435,24 @@ button:disabled{
+   box-shadow: 0 1px 0 rgba(255,255,255,.55) inset;
+ }
+ 
+-.tableWrapY{ overflow: auto; flex: 1; min-height: 0; }
++.tableWrapX{
++  overflow-x: auto;
++  overflow-y: hidden;
++  flex: 1;
++  min-height: 0;
++}
++
++.tableWrapY{
++  overflow-y: auto;
++  overflow-x: hidden;
++  height: 100%;
++}
++
++/* Scrollbars */
++.tableWrapX::-webkit-scrollbar, .tableWrapY::-webkit-scrollbar { height: 10px; width: 10px; }
++.tableWrapX::-webkit-scrollbar-thumb, .tableWrapY::-webkit-scrollbar-thumb { background: rgba(0,0,0,.20); border-radius: 999px; border: 2px solid rgba(255,255,255,.75); }
++.tableWrapX::-webkit-scrollbar-track, .tableWrapY::-webkit-scrollbar-track { background: rgba(0,0,0,.04); border-radius: 999px; }
+ 
+-.tableWrapY::-webkit-scrollbar { height: 10px; width: 10px; }
+-.tableWrapY::-webkit-scrollbar-thumb { background: rgba(0,0,0,.20); border-radius: 999px; border: 2px solid rgba(255,255,255,.75); }
+-.tableWrapY::-webkit-scrollbar-track { background: rgba(0,0,0,.04); border-radius: 999px; }
+ 
+ .table{
+   width: 100%;
