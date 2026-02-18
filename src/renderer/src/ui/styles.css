@@ -381,6 +381,30 @@ button:disabled{
 .search{ min-width: 310px; }
 .searchInput{ padding-left: 12px; }
 
+/* Products table density (вкладка «Товары») */
+.productsCard .table th,
+.productsCard .table td{
+  /* Слева/справа: в 3 раза меньше, сверху/снизу: в 5 раз меньше */
+  padding: 2px 4px;
+}
+
+.productsCard .thInner{
+  /* Расстояние между «свернуть» и названием — в 2 раза меньше */
+  gap: 4px;
+  /* Шапка ровная и без лишней высоты */
+  min-height: 20px;
+  padding-right: 6px;
+}
+
+.productsCard .thInner .colToggle{
+  /* Значок «свернуть» = высота текста заголовка */
+  width: 1em;
+  height: 1em;
+  min-width: 1em;
+  font-size: 1em;
+  line-height: 1em;
+}
+
 /* Status dot */
 .syncDot{
   width: 18px;
