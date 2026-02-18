@@ -1,0 +1,99 @@
+name: AutoFix (generate latest.patch)
+
+on:
+  workflow_run:
+    # ВАЖНО: имя должно совпадать 1:1 с тем, как workflow называется в Actions слева
+    workflows:
+      - "Windows CI (Озонатор)"
+    types: [completed]
+
+concurrency:
+  group: autofix-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  autofix:
+    if: >
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout main (must match failed SHA)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Verify HEAD SHA matches failed run SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+          CUR_SHA="$(git rev-parse HEAD)"
+          echo "Expected: $HEAD_SHA"
+          echo "Current : $CUR_SHA"
+          if [ "$CUR_SHA" != "$HEAD_SHA" ]; then
+            echo "Main advanced; skip autofix for old SHA."
+            exit 0
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download CI logs (for prompt context)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p _ci_logs
+          gh run download "${{ github.event.workflow_run.id }}" --log -D _ci_logs || true
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+
+      - name: Generate patches/latest.patch via OpenAI and validate by re-running checks
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        run: |
+          set -euo pipefail
+          node scripts/autofix_generate_patch.mjs \
+            --logs-dir _ci_logs \
+            --run-id "${{ github.event.workflow_run.id }}" \
+            --sha "${{ github.event.workflow_run.head_sha }}"
+
+      - name: Commit & push only patches/latest.patch (triggers existing Apply patch and open PR)
+        shell: bash
+        env:
+          PR_BOT_TOKEN: ${{ secrets.PR_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ ! -f patches/latest.patch ]; then
+            echo "patches/latest.patch not found; nothing to push"
+            exit 0
+          fi
+
+          git config user.name "ozonator-bot"
+          git config user.email "ozonator-bot@users.noreply.github.com"
+
+          git add patches/latest.patch
+
+          if git diff --staged --quiet; then
+            echo "No changes in patches/latest.patch"
+            exit 0
+          fi
+
+          git commit -m "autofix: update patches/latest.patch (run ${{ github.event.workflow_run.id }})"
+
+          # Push using PR_BOT_TOKEN (PAT). GITHUB_TOKEN pushes do NOT trigger new workflow runs on push.
+          git remote set-url origin "https://x-access-token:${PR_BOT_TOKEN}@github.com/${{ github.repository }}.git"
+          git push origin HEAD:main
