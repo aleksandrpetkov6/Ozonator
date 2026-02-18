@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..1111111
 --- /dev/null
 +++ b/.github/workflows/publish-ci-digest.yml
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,126 @@
 +name: Publish CI digest (public)
 +
 +on:
@@ -16,6 +16,7 @@ index 0000000..1111111
 +    types: [completed]
 +
 +permissions:
++  actions: read
 +  contents: write
 +
 +concurrency:
