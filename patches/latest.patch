@@ -1,8 +1,15 @@
-diff --git a/src/renderer/src/ui/App.tsx b/src/renderer/src/ui/App.tsx
-index d0336b1..b225dc5 100644
 --- a/src/renderer/src/ui/App.tsx
 +++ b/src/renderer/src/ui/App.tsx
-@@ -139,8 +139,7 @@ export default function App() {
+@@ -50,7 +50,7 @@
+         const name = (resp.secrets as any)?.storeName
+         const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
+         setStoreName(cleaned)
+-        document.title = cleaned ? `Озонатор — ${cleaned}` : 'Озонатор'
++        document.title = cleaned ? cleaned : 'Ozon Seller OS'
+       }
+     } catch {
+       // ignore
+@@ -139,8 +139,7 @@
        <div className="topbar">
          <div className="topbarInner">
            <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
@@ -12,7 +19,7 @@ index d0336b1..b225dc5 100644
            </div>
  
            <div className="topbarSlot">
-@@ -153,12 +152,34 @@ export default function App() {
+@@ -153,12 +152,33 @@
  
              {isProducts && (
                <div className="topbarSearch">
@@ -36,7 +43,6 @@ index d0336b1..b225dc5 100644
 +                    }}
 +                    placeholder="Поиск по таблице…"
 +                  />
-+
 +                  {productsQuery && (
 +                    <button
 +                      type="button"
@@ -53,11 +59,9 @@ index d0336b1..b225dc5 100644
                </div>
              )}
            </div>
-diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index a0dd3e5..d938940 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -110,8 +110,9 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+@@ -110,8 +110,9 @@
  
    const [draggingId, setDraggingId] = useState<string | null>(null)
    const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
@@ -68,13 +72,7 @@ index a0dd3e5..d938940 100644
    const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
    const didAutoInitRef = useRef(false)
  
-@@ -281,23 +282,35 @@ function onDragOverHeader(e: React.DragEvent) {
-   }
- 
-   function startResize(e: React.MouseEvent, colId: string) {
-     e.preventDefault()
-     e.stopPropagation()
- 
+@@ -287,7 +288,15 @@
      const col = cols.find(c => String(c.id) === colId)
      if (!col) return
  
@@ -91,7 +89,7 @@ index a0dd3e5..d938940 100644
  
      const onMove = (ev: MouseEvent) => {
        const r = resizingRef.current
-       if (!r) return
+@@ -295,10 +304,14 @@
        const dx = ev.clientX - r.startX
        const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
        setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
@@ -106,11 +104,7 @@ index a0dd3e5..d938940 100644
        window.removeEventListener('mousemove', onMove)
        window.removeEventListener('mouseup', onUp)
      }
- 
-     window.addEventListener('mousemove', onMove)
-     window.addEventListener('mouseup', onUp)
-   }
-@@ -460,6 +473,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+@@ -447,6 +460,7 @@
  
        <div className="productsTableArea">
          <div className="tableWrap" style={{ marginTop: 12 }}>
@@ -118,8 +112,7 @@ index a0dd3e5..d938940 100644
            <div className="tableHeadX" ref={headScrollRef}>
              <div className="tableWrapY tableHeadInner" style={{ minWidth: tableMinWidth }}>
                {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
-               <table className="table tableFixed tableHead" style={{ minWidth: tableMinWidth }}>
-@@ -477,6 +491,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+@@ -463,6 +477,7 @@
                        return (
                          <th
                            key={id}
@@ -127,12 +120,10 @@ index a0dd3e5..d938940 100644
                            draggable
                            onDragStart={(e) => onDragStart(e, id)}
                            onDragEnd={onDragEnd}
-                           className={`thDraggable ${draggingId === id ? 'thDragging' : ''}`.trim()}
-diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
-index 9a8c4a1..a3a3a3b 100644
 --- a/src/renderer/src/ui/styles.css
 +++ b/src/renderer/src/ui/styles.css
-@@ -379,7 +379,45 @@
+@@ -379,7 +379,41 @@
+ }
  .productsTableArea{ display:flex; flex-direction:column; flex:1; min-height:0; }
  .search{ min-width: 310px; }
 -.searchInput{ padding-left: 12px; }
@@ -174,8 +165,7 @@ index 9a8c4a1..a3a3a3b 100644
  
  /* Products table density (вкладка «Товары») */
  .productsCard .table th,
- .productsCard .table td{
-@@ -450,6 +488,7 @@
+@@ -451,6 +485,7 @@
  
  /* Tables */
  .tableWrap{
@@ -183,9 +173,7 @@ index 9a8c4a1..a3a3a3b 100644
    margin-top: 14px;
    display: flex;
    flex-direction: column;
-   flex: 1;
-@@ -667,6 +706,16 @@
-   pointer-events: none;
+@@ -634,6 +669,16 @@
    z-index: 6;
  }
  
@@ -202,5 +190,3 @@ index 9a8c4a1..a3a3a3b 100644
  .thDropLeft::before,
  .thDropRight::before{
    content: '';
-   position: absolute;
-   top: 0;
