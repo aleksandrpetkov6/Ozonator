@@ -1,30 +1,112 @@
---- a/src/renderer/src/ui/styles.css
-+++ b/src/renderer/src/ui/styles.css
-@@ -441,15 +441,23 @@
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-18 09:40:47.193451815 +0000
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-18 09:40:47.297350274 +0000
+@@ -339,6 +339,41 @@
  
- .tableWrapX{
-   overflow-x: auto;
--  overflow-y: hidden;
-+  /* Важно: вертикальный скролл должен быть всегда виден,
-+     даже когда таблицу прокручивают по горизонтали.
-+     Поэтому вертикальную прокрутку держим на том же контейнере,
-+     который имеет фиксированную ширину (viewport), а не на внутреннем
-+     блоке шириной «все столбцы». */
-+  overflow-y: auto;
+   const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
+ 
++  const headScrollRef = useRef<HTMLDivElement | null>(null)
++  const bodyScrollRef = useRef<HTMLDivElement | null>(null)
++  const scrollSyncLockRef = useRef(false)
++
++  useEffect(() => {
++    const head = headScrollRef.current
++    const body = bodyScrollRef.current
++    if (!head || !body) return
++
++    const syncFromBody = () => {
++      if (scrollSyncLockRef.current) return
++      scrollSyncLockRef.current = true
++      head.scrollLeft = body.scrollLeft
++      scrollSyncLockRef.current = false
++    }
++
++    const syncFromHead = () => {
++      if (scrollSyncLockRef.current) return
++      scrollSyncLockRef.current = true
++      body.scrollLeft = head.scrollLeft
++      scrollSyncLockRef.current = false
++    }
++
++    body.addEventListener('scroll', syncFromBody, { passive: true })
++    head.addEventListener('scroll', syncFromHead, { passive: true })
++
++    // первичная синхронизация
++    head.scrollLeft = body.scrollLeft
++
++    return () => {
++      body.removeEventListener('scroll', syncFromBody)
++      head.removeEventListener('scroll', syncFromHead)
++    }
++  }, [visibleCols.length])
++
+   return (
+     <div className="card productsCard">
+       {hiddenCols.length > 0 && (
+@@ -355,9 +390,9 @@
+ 
+       <div className="productsTableArea">
+         <div className="tableWrap" style={{ marginTop: 12 }}>
+-          <div className="tableWrapX">
++          <div className="tableHeadX" ref={headScrollRef}>
+             <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
+-              <table className="table tableFixed" style={{ minWidth: tableMinWidth }}>
++              <table className="table tableFixed tableHead" style={{ minWidth: tableMinWidth }}>
+                 <colgroup>
+                   {visibleCols.map(c => (
+                     <col key={String(c.id)} style={{ width: c.w }} />
+@@ -400,6 +435,18 @@
+                     })}
+                   </tr>
+                 </thead>
++              </table>
++            </div>
++          </div>
++
++          <div className="tableWrapX" ref={bodyScrollRef}>
++            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
++              <table className="table tableFixed tableBody" style={{ minWidth: tableMinWidth }}>
++                <colgroup>
++                  {visibleCols.map(c => (
++                    <col key={String(c.id)} style={{ width: c.w }} />
++                  ))}
++                </colgroup>
+                 <tbody>
+                   {filtered.map(p => (
+                     <tr key={p.offer_id}>
+--- a/src/renderer/src/ui/styles.css	2026-02-18 09:40:47.202396139 +0000
++++ b/src/renderer/src/ui/styles.css	2026-02-18 09:42:11.801485431 +0000
+@@ -432,6 +432,7 @@
+   flex-direction: column;
    flex: 1;
    min-height: 0;
++  min-width: 0;
+   border: 1px solid var(--hairline2);
+   border-radius: var(--radius);
+   overflow: hidden;
+@@ -449,6 +450,7 @@
+   overflow-y: auto;
+   flex: 1;
+   min-height: 0;
++  min-width: 0;
  }
  
  .tableWrapY{
--  overflow-y: auto;
--  overflow-x: hidden;
--  height: 100%;
-+  /* Внутренний контейнер больше не является скролл‑контейнером.
-+     Он может быть шире (по сумме ширин колонок) и тем самым
-+     обеспечивать горизонтальную прокрутку, а вертикальная остаётся
-+     на .tableWrapX и всегда на виду. */
-+  overflow: visible;
-+  height: auto;
+@@ -632,3 +634,18 @@
+   border-radius: 999px;
+   background: white;
  }
- 
- /* Scrollbars */
++
++
++/* Header/body split scroll: вертикальный скролл начинается с данных (без шапки),
++   при этом вертикальная полоса всегда видна даже при горизонтальной прокрутке. */
++.tableHeadX{
++  overflow-x: auto;
++  overflow-y: hidden;
++  min-width: 0;
++  scrollbar-width: none; /* Firefox */
++  -ms-overflow-style: none; /* old Edge */
++}
++
++.tableHeadX::-webkit-scrollbar{ height: 0; width: 0; }
++
++.tableBody tr:first-child td{ border-top: none; }
