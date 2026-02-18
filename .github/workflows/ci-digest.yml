@@ -21,6 +21,11 @@ jobs:
   digest:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Build digest (last failed run)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,12 +40,11 @@ jobs:
 
           TARGET_RUN_ID="${CUR_RUN_ID}"
           if [ "${CUR_CONCLUSION}" = "success" ]; then
-            # Find latest failed run among watched workflows
             found="$(gh api -H "Accept: application/vnd.github+json" "/repos/${REPO}/actions/runs?per_page=50" \
-              --jq '.workflow_runs[] 
-                    | select(.conclusion != null) 
-                    | select(.conclusion != "success") 
-                    | select(.name | test("'"$WATCH_REGEX"'")) 
+              --jq '.workflow_runs[]
+                    | select(.conclusion != null)
+                    | select(.conclusion != "success")
+                    | select(.name | test("'"$WATCH_REGEX"'"))
                     | .id' | head -n 1 || true)"
             if [ -n "${found}" ]; then
               TARGET_RUN_ID="${found}"
