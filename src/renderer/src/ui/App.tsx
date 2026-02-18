@@ -50,7 +50,7 @@ export default function App() {
         const name = (resp.secrets as any)?.storeName
         const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
         setStoreName(cleaned)
-        document.title = cleaned ? `Озонатор — ${cleaned}` : 'Озонатор'
+        document.title = cleaned ? cleaned : 'Ozon Seller OS'
       }
     } catch {
       // ignore
@@ -139,8 +139,7 @@ export default function App() {
       <div className="topbar">
         <div className="topbarInner">
           <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
-            <div className="appName">Озонатор</div>
-            {storeName && <div className="appStoreName">{storeName}</div>}
+            {storeName && <div className="appName">{storeName}</div>}
           </div>
 
           <div className="topbarSlot">
@@ -153,12 +152,33 @@ export default function App() {
 
             {isProducts && (
               <div className="topbarSearch">
-                <input
-                  className="searchInput search"
-                  value={productsQuery}
-                  onChange={(e) => setProductsQuery(e.target.value)}
-                  placeholder="Поиск по таблице…"
-                />
+                <div className="searchWrap">
+                  <input
+                    className="searchInput search"
+                    value={productsQuery}
+                    onChange={(e) => setProductsQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        setProductsQuery('')
+                      }
+                    }}
+                    placeholder="Поиск по таблице…"
+                  />
+                  {productsQuery && (
+                    <button
+                      type="button"
+                      className="searchClearBtn"
+                      title="Очистить"
+                      aria-label="Очистить"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => setProductsQuery('')}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
