@@ -339,6 +339,41 @@ export default function ProductsPage({ query = '', onStats }: Props) {
 
   const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
 
+  const headScrollRef = useRef<HTMLDivElement | null>(null)
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null)
+  const scrollSyncLockRef = useRef(false)
+
+  useEffect(() => {
+    const head = headScrollRef.current
+    const body = bodyScrollRef.current
+    if (!head || !body) return
+
+    const syncFromBody = () => {
+      if (scrollSyncLockRef.current) return
+      scrollSyncLockRef.current = true
+      head.scrollLeft = body.scrollLeft
+      scrollSyncLockRef.current = false
+    }
+
+    const syncFromHead = () => {
+      if (scrollSyncLockRef.current) return
+      scrollSyncLockRef.current = true
+      body.scrollLeft = head.scrollLeft
+      scrollSyncLockRef.current = false
+    }
+
+    body.addEventListener('scroll', syncFromBody, { passive: true })
+    head.addEventListener('scroll', syncFromHead, { passive: true })
+
+    // первичная синхронизация
+    head.scrollLeft = body.scrollLeft
+
+    return () => {
+      body.removeEventListener('scroll', syncFromBody)
+      head.removeEventListener('scroll', syncFromHead)
+    }
+  }, [visibleCols.length])
+
   return (
     <div className="card productsCard">
       {hiddenCols.length > 0 && (
@@ -355,9 +390,9 @@ export default function ProductsPage({ query = '', onStats }: Props) {
 
       <div className="productsTableArea">
         <div className="tableWrap" style={{ marginTop: 12 }}>
-          <div className="tableWrapX">
+          <div className="tableHeadX" ref={headScrollRef}>
             <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
-              <table className="table tableFixed" style={{ minWidth: tableMinWidth }}>
+              <table className="table tableFixed tableHead" style={{ minWidth: tableMinWidth }}>
                 <colgroup>
                   {visibleCols.map(c => (
                     <col key={String(c.id)} style={{ width: c.w }} />
@@ -400,6 +435,18 @@ export default function ProductsPage({ query = '', onStats }: Props) {
                     })}
                   </tr>
                 </thead>
+              </table>
+            </div>
+          </div>
+
+          <div className="tableWrapX" ref={bodyScrollRef}>
+            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
+              <table className="table tableFixed tableBody" style={{ minWidth: tableMinWidth }}>
+                <colgroup>
+                  {visibleCols.map(c => (
+                    <col key={String(c.id)} style={{ width: c.w }} />
+                  ))}
+                </colgroup>
                 <tbody>
                   {filtered.map(p => (
                     <tr key={p.offer_id}>
