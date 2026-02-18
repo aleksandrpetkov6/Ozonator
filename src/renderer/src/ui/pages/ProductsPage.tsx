@@ -179,45 +179,83 @@ export default function ProductsPage({ query = '', onStats }: Props) {
     e.dataTransfer.effectAllowed = 'move'
   }
 
-  function onDragOverHeader(e: React.DragEvent, targetId: string) {
-    e.preventDefault()
+  function onDragOverHeader(e: React.DragEvent) {
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'move'
 
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const side: 'left' | 'right' = x < rect.width / 2 ? 'left' : 'right'
-    setDropHint({ id: targetId, side })
+  const head = headScrollRef.current
+  if (!head) return
+  if (visibleCols.length === 0) return
+
+  const headRect = head.getBoundingClientRect()
+  const totalW = visibleCols.reduce((s, c) => s + c.w, 0)
+
+  const xRaw = (e.clientX - headRect.left) + head.scrollLeft
+  const x = Math.max(0, Math.min(totalW, Math.round(xRaw)))
+
+  let acc = 0
+  let targetId = String(visibleCols[0].id)
+  let side: 'left' | 'right' = 'left'
+
+  for (let i = 0; i < visibleCols.length; i++) {
+    const w = visibleCols[i].w
+    const mid = acc + w / 2
+
+    if (x < mid) {
+      targetId = String(visibleCols[i].id)
+      side = 'left'
+      break
+    }
+
+    acc += w
+    if (i === visibleCols.length - 1) {
+      targetId = String(visibleCols[i].id)
+      side = 'right'
+    }
   }
 
-  function onDrop(e: React.DragEvent, targetId: string) {
-    e.preventDefault()
+  setDropHint(prev => (prev && prev.id === targetId && prev.side === side) ? prev : { id: targetId, side })
+}
 
-    const draggedId = e.dataTransfer.getData('text/plain')
-    if (!draggedId) return
+  function onDrop(e: React.DragEvent) {
+  e.preventDefault()
 
-    setCols(prev => {
-      const fromIdx = prev.findIndex(c => String(c.id) === draggedId)
-      const toIdxRaw = prev.findIndex(c => String(c.id) === targetId)
-      if (fromIdx < 0 || toIdxRaw < 0 || fromIdx === toIdxRaw) return prev
+  const draggedId = e.dataTransfer.getData('text/plain')
+  if (!draggedId) return
 
-      const side = dropHint?.id === targetId ? dropHint.side : 'left'
-      const insertBase = toIdxRaw + (side === 'right' ? 1 : 0)
-
-      const next = [...prev]
-      const [moved] = next.splice(fromIdx, 1)
-
-      let insertIdx = insertBase
-      // если элемент забрали слева, индексы сдвинулись
-      if (fromIdx < insertIdx) insertIdx -= 1
-      if (insertIdx < 0) insertIdx = 0
-      if (insertIdx > next.length) insertIdx = next.length
-
-      next.splice(insertIdx, 0, moved)
-      return next
-    })
-
+  const hint = dropHint
+  if (!hint) {
     setDraggingId(null)
     setDropHint(null)
+    return
   }
+
+  const targetId = hint.id
+  const side = hint.side
+
+  setCols(prev => {
+    const fromIdx = prev.findIndex(c => String(c.id) === draggedId)
+    const toIdxRaw = prev.findIndex(c => String(c.id) === targetId)
+    if (fromIdx < 0 || toIdxRaw < 0 || fromIdx === toIdxRaw) return prev
+
+    const insertBase = toIdxRaw + (side === 'right' ? 1 : 0)
+
+    const next = [...prev]
+    const [moved] = next.splice(fromIdx, 1)
+
+    let insertIdx = insertBase
+    // если элемент забрали слева, индексы сдвинулись
+    if (fromIdx < insertIdx) insertIdx -= 1
+    if (insertIdx < 0) insertIdx = 0
+    if (insertIdx > next.length) insertIdx = next.length
+
+    next.splice(insertIdx, 0, moved)
+    return next
+  })
+
+  setDraggingId(null)
+  setDropHint(null)
+}
 
   function onDragEnd() {
     setDraggingId(null)
@@ -398,7 +436,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
                     <col key={String(c.id)} style={{ width: c.w }} />
                   ))}
                 </colgroup>
-                <thead>
+                <thead onDragOver={onDragOverHeader} onDrop={onDrop}>
                   <tr>
                     {visibleCols.map(c => {
                       const id = String(c.id)
@@ -410,9 +448,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
                           key={id}
                           draggable
                           onDragStart={(e) => onDragStart(e, id)}
-                          onDragOver={(e) => onDragOverHeader(e, id)}
-                          onDrop={(e) => onDrop(e, id)}
-                          onDragEnd={onDragEnd}
+onDragEnd={onDragEnd}
                           className={`thDraggable ${draggingId === id ? 'thDragging' : ''} ${dropCls}`.trim()}
                         >
                           <div className="thInner">
