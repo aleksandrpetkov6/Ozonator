@@ -62,6 +62,10 @@ jobs:
           CREATED_AT="$(echo "$run_json" | jq -r '.created_at')"
           UPDATED_AT="$(echo "$run_json" | jq -r '.updated_at')"
 
+          # Переключаемся на коммит того run-а, который пишем в отчёт
+          git fetch --no-tags origin "${HEAD_SHA}" >/dev/null 2>&1 || true
+          git checkout -f "${HEAD_SHA}" >/dev/null 2>&1 || true
+
           gh run view "${TARGET_RUN_ID}" -R "${REPO}" --log-failed > out/log-failed.txt 2>&1 || true
 
           {
@@ -81,7 +85,24 @@ jobs:
             echo "```"
             tail -n 220 out/log-failed.txt 2>/dev/null || true
             echo "```"
+            echo
           } > out/last.md
+
+          # Если это ошибка — добавляем полный текст патча
+          if [ "${CONCLUSION}" != "success" ]; then
+            {
+              echo "## Patch (patches/latest.patch)"
+              echo
+              if [ -f patches/latest.patch ]; then
+                echo "```diff"
+                cat patches/latest.patch
+                echo "```"
+              else
+                echo "_Файл patches/latest.patch не найден в коммите ${HEAD_SHA}_"
+              fi
+              echo
+            } >> out/last.md
+          fi
 
       - name: Publish last.md to ci-report (force)
         run: |
