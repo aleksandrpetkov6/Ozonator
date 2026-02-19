@@ -1,64 +1,107 @@
 --- a/src/renderer/src/ui/App.tsx
 +++ b/src/renderer/src/ui/App.tsx
-@@ -44,13 +44,16 @@
-   const isProducts = pathname === '/' || pathname.startsWith('/products')
+@@ -141,10 +141,11 @@
+     <div className="appShell">
+       <div className="topbar">
+         <div className="topbarInner">
+-          <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
+-            <div className="appName">Озонатор</div>
+-            {storeName && <div className="appStoreName">{storeName}</div>}
+-          </div>
++          {storeName && (
++            <div className="appTitle" title={`Подключен магазин: ${storeName}`}>
++              <div className="appStoreName">{storeName}</div>
++            </div>
++          )}
  
-   async function refreshStoreName() {
-+    const baseTitle = 'Озонатор'
-+    document.title = baseTitle
-+
-     try {
-       const resp = await window.api.loadSecrets()
-       if (resp?.ok) {
-         const name = (resp.secrets as any)?.storeName
-         const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
-         setStoreName(cleaned)
--        document.title = cleaned ? cleaned : 'Ozon Seller OS'
-+        document.title = cleaned ? `${baseTitle} — ${cleaned}` : baseTitle
+           <div className="topbarSlot">
+             <div className="segmented" aria-label="Навигация">
+--- a/src/renderer/src/ui/pages/SettingsPage.tsx
++++ b/src/renderer/src/ui/pages/SettingsPage.tsx
+@@ -14,7 +14,11 @@
+       if (resp.ok) {
+         setClientId(resp.secrets.clientId ?? '')
+         setApiKey(resp.secrets.apiKey ?? '')
+-        setStoreName((resp.secrets as any).storeName ?? '')
++        {
++          const name = (resp.secrets as any).storeName
++          const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : ''
++          setStoreName(cleaned)
++        }
        }
      } catch {
        // ignore
-@@ -139,7 +142,8 @@
-       <div className="topbar">
-         <div className="topbarInner">
-           <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
--            {storeName && <div className="appName">{storeName}</div>}
-+            <div className="appName">Озонатор</div>
-+            {storeName && <div className="appStoreName">{storeName}</div>}
-           </div>
+@@ -34,8 +38,7 @@
+       const resp = await window.api.testAuth()
  
-           <div className="topbarSlot">
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -406,7 +406,7 @@
-     // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [products.length])
+       if (resp.ok) {
+-        if (resp.storeName) setStoreName(resp.storeName)
+-        setStatus('Доступ подтверждён.')
++        if (typeof resp.storeName === 'string' && resp.storeName.trim()) setStoreName(resp.storeName.trim())
  
--  const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
-+  const tableWidth = useMemo(() => Math.max(1, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
+         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
+         load()
+@@ -71,14 +74,15 @@
+     <div className="card">
+       <div className="h1">Настройки</div>
  
-   const headScrollRef = useRef<HTMLDivElement | null>(null)
-   const bodyScrollRef = useRef<HTMLDivElement | null>(null)
-@@ -462,9 +462,9 @@
-         <div className="tableWrap" style={{ marginTop: 12 }}>
-           {resizeX != null && <div className="resizeIndicator" style={{ left: resizeX }} />}
-           <div className="tableHeadX" ref={headScrollRef}>
--            <div className="tableWrapY tableHeadInner" style={{ minWidth: tableMinWidth }}>
-+            <div className="tableWrapY tableHeadInner" style={{ width: tableWidth }}>
-               {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
--              <table className="table tableFixed tableHead" style={{ minWidth: tableMinWidth }}>
-+              <table className="table tableFixed tableHead" style={{ width: tableWidth }}>
-                 <colgroup>
-                   {visibleCols.map(c => (
-                     <col key={String(c.id)} style={{ width: c.w }} />
-@@ -507,8 +507,8 @@
-           </div>
+-      <div className="row" style={{ marginTop: 16 }}>
+-        <div className="col field">
+-          <label>Название магазина</label>
+-          <input
+-            value={storeName}
+-            placeholder="Появится после проверки доступа"
+-            readOnly
+-          />
++      <div className="row" style={{ marginTop: 12 }}>
++        <div className="col">
++          {err ? (
++            <span className="pill pillError">{err}</span>
++          ) : storeName ? (
++            <span className="pill" title="Название магазина">Магазин: {storeName}</span>
++          ) : (
++            <span className="small muted">Название магазина появится после проверки доступа</span>
++          )}
+         </div>
+       </div>
  
-           <div className="tableWrapX" ref={bodyScrollRef}>
--            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
--              <table className="table tableFixed tableBody" style={{ minWidth: tableMinWidth }}>
-+            <div className="tableWrapY" style={{ width: tableWidth }}>
-+              <table className="table tableFixed tableBody" style={{ width: tableWidth }}>
-                 <colgroup>
-                   {visibleCols.map(c => (
-                     <col key={String(c.id)} style={{ width: c.w }} />
+@@ -99,7 +103,6 @@
+       </div>
+ 
+       {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
+-      {err && <div className="notice error" style={{ marginTop: 12 }}>{err}</div>}
+     </div>
+   )
+ }
+--- a/src/renderer/src/ui/pages/LogsPage.tsx
++++ b/src/renderer/src/ui/pages/LogsPage.tsx
+@@ -91,7 +91,7 @@
+   }, [])
+ 
+   return (
+-    <div className="card">
++    <div className="card logsCard">
+       <table className="table" style={{ marginTop: 10 }}>
+         <thead>
+           <tr>
+--- a/src/renderer/src/ui/styles.css
++++ b/src/renderer/src/ui/styles.css
+@@ -421,6 +421,18 @@
+   /* Слева/справа: в 3 раза меньше, сверху/снизу: в 5 раз меньше */
+   padding: 2px 4px;
+ }
++
++.logsCard .table th,
++.logsCard .table td{
++  padding: 2px 4px;
++}
++
++.pillError{
++  border-color: rgba(255,59,48,.25);
++  background: rgba(255,59,48,.08);
++  color: var(--red);
++}
++
+ 
+ .productsCard .thInner{
+   /* Расстояние между «свернуть» и названием — в 2 раза меньше */
