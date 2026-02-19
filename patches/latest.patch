@@ -1,895 +1,292 @@
-diff -ruN orig/.github/workflows/publish-nightly.yml work/.github/workflows/publish-nightly.yml
---- orig/.github/workflows/publish-nightly.yml	2026-02-19 10:20:25.732163019 +0000
-+++ work/.github/workflows/publish-nightly.yml	2026-02-19 10:50:23.017780738 +0000
-@@ -1,95 +1,167 @@
--name: publish-nightly-release
-+name: Publish Nightly (Озонатор)
+--- a/electron/main/ozon.ts
++++ b/electron/main/ozon.ts
+@@ -254,6 +254,70 @@
+   return null
+ }
  
- on:
--  push:
--    branches: [main]
-   workflow_dispatch:
--
--permissions:
--  contents: write
--
--concurrency:
--  group: nightly-release
--  cancel-in-progress: true
-+  push:
-+    branches:
-+      - main
- 
- jobs:
--  build_and_release:
--    if: github.event_name != 'pull_request'
-+  publish-nightly:
-     runs-on: windows-latest
- 
-+    permissions:
-+      contents: write
++function isReasonableStoreName(s: string): boolean {
++  const t = s.trim()
++  if (!t) return false
++  // Название магазина обычно короткое. Длинные строки часто оказываются "мусором" (токены/идентификаторы).
++  if (t.length > 120) return false
++  // Похоже на base64/hex/токен — не принимаем как имя магазина.
++  if (/^[A-Za-z0-9+/_-]{40,}$/.test(t)) return false
++  return true
++}
 +
-     defaults:
-       run:
-         shell: pwsh
- 
-     steps:
--      - uses: actions/checkout@v4
--        with:
--          fetch-depth: 0
-+      - name: Checkout
-+        uses: actions/checkout@v4
- 
--      - uses: actions/setup-node@v4
-+      - name: Setup Node 20
-+        uses: actions/setup-node@v4
-         with:
-           node-version: 20
-           cache: npm
- 
--      - name: Install
--        run: npm ci
--
--      - name: Lint
--        run: npm run lint
--
--      - name: Typecheck
--        run: npm run typecheck
-+      - name: Install dependencies (npm ci; fallback --legacy-peer-deps)
-+        id: install
-+        run: |
-+          $ok = $true
-+          try {
-+            npm ci
-+            if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
-+          } catch {
-+            Write-Host "npm ci failed. Retrying with npm ci --legacy-peer-deps"
-+            npm ci --legacy-peer-deps
-+            if ($LASTEXITCODE -ne 0) { $ok = $false }
-+          }
- 
--      - name: Build (dist)
--        run: npm run dist -- --publish never
-+          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
- 
--      - name: Prepare assets (exe + portable zip)
--        id: prep
-+      - name: Lint (if script exists)
-+        id: lint
-+        if: always() && steps.install.outputs.ok == 'true'
-+        continue-on-error: true
-         run: |
--          $ErrorActionPreference = "Stop"
-+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
-+          $hasLint = $false
-+          if ($null -ne $pkg.scripts) {
-+            $hasLint = $pkg.scripts.PSObject.Properties.Name -contains 'lint'
-+          }
- 
--          if (-not (Test-Path "release")) { throw "release/ folder not found" }
-+          if (-not $hasLint) {
-+            Write-Host "No lint script in package.json"
-+            "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+            exit 0
-+          }
- 
--          $exe = Get-ChildItem -Path "release" -Recurse -File -Filter "*.exe" |
--            Sort-Object LastWriteTime -Descending |
--            Select-Object -First 1
--          if (-not $exe) { throw "No .exe found in release/" }
-+          npm run lint
-+          $ok = ($LASTEXITCODE -eq 0)
-+          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
++function deepPickFirstString(root: any, keys: string[]): string | null {
++  const want = new Set(keys.map(k => k.toLowerCase()))
++  const seen = new Set<any>()
++  const q: any[] = [root]
++  let guard = 0
 +
-+      - name: Type check (script if exists; else tsc --noEmit)
-+        id: typecheck
-+        if: always() && steps.install.outputs.ok == 'true'
-+        continue-on-error: true
-+        run: |
-+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
-+          $hasTypecheck = $false
-+          if ($null -ne $pkg.scripts) {
-+            $hasTypecheck = $pkg.scripts.PSObject.Properties.Name -contains 'typecheck'
-+          }
- 
--          $portableZip = Join-Path $PWD "portable-win-unpacked.zip"
--          $winUnpacked = Get-ChildItem -Path "release" -Directory -Recurse |
--            Where-Object { $_.Name -eq "win-unpacked" } |
--            Select-Object -First 1
-+          if ($hasTypecheck) {
-+            npm run typecheck
-+            $ok = ($LASTEXITCODE -eq 0)
-+            "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+            exit 0
-+          }
- 
--          $hasPortable = $false
--          if ($winUnpacked) {
--            if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
--            Compress-Archive -Path (Join-Path $winUnpacked.FullName "*") -DestinationPath $portableZip
--            $hasPortable = $true
-+          if (Test-Path -Path 'tsconfig.json') {
-+            npx tsc -p tsconfig.json --noEmit
-+            $ok = ($LASTEXITCODE -eq 0)
-+            "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+            exit 0
-           }
- 
--          $stableExe = Join-Path $PWD "Ozonator.exe"
--          Copy-Item $exe.FullName $stableExe -Force
-+          Write-Host "No typecheck script and no tsconfig.json"
-+          "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
- 
--          "exe_path=$stableExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
--          "portable_ok=$($hasPortable.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
--          "portable_zip=$portableZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+      - name: Build installer (npm run dist)
-+        id: dist
-+        if: always() && steps.install.outputs.ok == 'true'
-+        run: |
-+          npm run dist -- --publish never
-+          $ok = ($LASTEXITCODE -eq 0)
-+          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
- 
--      - name: "Publish/Update nightly release (tag: nightly)"
--        env:
--          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-+      - name: Prepare release assets (Ozonator.exe + optional portable)
-+        if: steps.dist.outputs.ok == 'true'
-         run: |
--          $ErrorActionPreference = "Stop"
-+          New-Item -ItemType Directory -Force -Path release | Out-Null
- 
--          # Recreate release each time so the tag 'nightly' always points to the current commit.
--          try {
--            gh release delete nightly --yes --cleanup-tag
--          } catch {
--            # ok if not exists
-+          # 1) Installer exe — prefer release\Озонатор.exe (electron-builder output)
-+          $installerOk = $false
-+          $preferred = @(
-+            (Join-Path $PWD 'release\Озонатор.exe'),
-+            (Join-Path $PWD 'release\Ozonator.exe'),
-+            (Join-Path $PWD 'Озонатор.exe'),
-+            (Join-Path $PWD 'Ozonator.exe')
++  while (q.length && guard < 5000) {
++    const cur = q.shift()
++    guard++
++
++    if (cur == null) continue
++
++    if (typeof cur !== 'object') continue
++
++    if (seen.has(cur)) continue
++    seen.add(cur)
++
++    if (Array.isArray(cur)) {
++      for (const it of cur) {
++        if (it && typeof it === 'object') q.push(it)
++      }
++      continue
++    }
++
++    for (const [kRaw, v] of Object.entries(cur)) {
++      const k = String(kRaw).toLowerCase()
++
++      if (want.has(k)) {
++        if (typeof v === 'string' && isReasonableStoreName(v)) return v.trim()
++
++        if (v && typeof v === 'object') {
++          const candidate = pickFirstString(
++            (v as any).name,
++            (v as any).title,
++            (v as any).value,
++            (v as any).company_name,
++            (v as any).companyName,
++            (v as any).seller_name,
++            (v as any).sellerName,
++            (v as any).shop_name,
++            (v as any).shopName,
 +          )
-+
-+          foreach ($p in $preferred) {
-+            if (Test-Path $p) {
-+              Copy-Item $p 'release\Ozonator.exe' -Force
-+              $installerOk = $true
-+              break
-+            }
-           }
- 
--          $assets = @("${{ steps.prep.outputs.exe_path }}")
--          if ("${{ steps.prep.outputs.portable_ok }}" -eq "true") {
--            $assets += "${{ steps.prep.outputs.portable_zip }}"
-+          if (-not $installerOk -and (Test-Path 'release')) {
-+            $exe = Get-ChildItem -Path 'release' -Recurse -File -Filter '*.exe' |
-+              Where-Object { $_.FullName -notmatch 'win-unpacked' } |
-+              Sort-Object Length -Descending |
-+              Select-Object -First 1
-+            if ($exe) {
-+              Copy-Item $exe.FullName 'release\Ozonator.exe' -Force
-+              $installerOk = $true
-+            }
-           }
- 
--          gh release create nightly $assets --title "nightly" --notes "Automated nightly build" --prerelease --target $env:GITHUB_SHA
-+          if (-not $installerOk) {
-+            throw "Installer exe not found"
-+          }
-+
-+          # 2) Portable (optional): zip win-unpacked
-+          $winUnpacked = $null
-+          if (Test-Path 'release') {
-+            $winUnpacked = Get-ChildItem -Path 'release' -Directory -Recurse |
-+              Where-Object { $_.Name -eq 'win-unpacked' } |
-+              Select-Object -First 1
-+          }
-+
-+          if ($null -ne $winUnpacked) {
-+            $zipPath = Join-Path $PWD 'release\portable-win-unpacked.zip'
-+            if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-+            Compress-Archive -Path (Join-Path $winUnpacked.FullName '*') -DestinationPath $zipPath
-+          }
-+
-+      - name: Publish Nightly Release
-+        if: steps.dist.outputs.ok == 'true'
-+        uses: ncipollo/release-action@v1
-+        with:
-+          tag: nightly
-+          name: Nightly build
-+          prerelease: true
-+          allowUpdates: true
-+          replacesArtifacts: true
-+          artifacts: release\Ozonator.exe,release\portable-win-unpacked.zip
-+          artifactErrorsFailBuild: false
-+          body: |
-+            Автоматическая ночная сборка (Windows).
-+            
-+            Скачивание без архива: Ozonator.exe
-diff -ruN orig/src/renderer/src/ui/App.tsx work/src/renderer/src/ui/App.tsx
---- orig/src/renderer/src/ui/App.tsx	2026-02-19 10:20:25.610996956 +0000
-+++ work/src/renderer/src/ui/App.tsx	2026-02-19 10:39:36.910366381 +0000
-@@ -1,9 +1,14 @@
--import React, { useEffect, useMemo, useRef, useState } from 'react'
--import { NavLink, Route, Routes, useLocation } from 'react-router-dom'
-+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-+import { NavLink, useLocation } from 'react-router-dom'
- import SettingsPage from './pages/SettingsPage'
- import ProductsPage from './pages/ProductsPage'
- import LogsPage from './pages/LogsPage'
- 
-+const baseTitle = 'Озонатор'
-+const STORE_NAME_LS_KEY = 'ozonator_store_name'
-+
-+const ProductsPageMemo = React.memo(ProductsPage)
-+
- function useOnline() {
-   const [online, setOnline] = useState<boolean>(true)
- 
-@@ -31,33 +36,62 @@
- 
-   const [running, setRunning] = useState(false)
-   const runningRef = useRef(false)
--  useEffect(() => { runningRef.current = running }, [running])
-+  useEffect(() => {
-+    runningRef.current = running
-+  }, [running])
- 
-   const [lastError, setLastError] = useState<string | null>(null)
- 
--  const [storeName, setStoreName] = useState<string | null>(null)
-+  const [storeName, setStoreName] = useState<string>('')
-   const [productsQuery, setProductsQuery] = useState('')
-   const [productsTotal, setProductsTotal] = useState(0)
-   const [productsFiltered, setProductsFiltered] = useState(0)
- 
-   const pathname = location.pathname || '/'
--  const isProducts = pathname === '/' || pathname.startsWith('/products')
-+  const isProducts = !pathname.startsWith('/logs') && !pathname.startsWith('/settings')
- 
--  async function refreshStoreName() {
--    const baseTitle = 'Озонатор'
--    document.title = baseTitle
-+  const onProductStats = useCallback((s: { total: number; filtered: number }) => {
-+    setProductsTotal(s.total)
-+    setProductsFiltered(s.filtered)
-+  }, [])
- 
-+  async function refreshStoreName() {
-+    // 1) Пробуем secrets
-     try {
-       const resp = await window.api.loadSecrets()
--      if (resp?.ok) {
--        const name = (resp.secrets as any)?.storeName
--        const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
-+      if (resp.ok) {
-+        const raw = (resp.secrets as any).storeName
-+        const cleaned = typeof raw === 'string' && raw.trim() ? raw.trim() : ''
-+        if (cleaned) {
-+          setStoreName(cleaned)
-+          try {
-+            localStorage.setItem(STORE_NAME_LS_KEY, cleaned)
-+          } catch {
-+            /* ignore */
-+          }
-+          document.title = `${baseTitle} — ${cleaned}`
-+          return
++          if (candidate && isReasonableStoreName(candidate)) return candidate.trim()
 +        }
 +      }
-+    } catch {
-+      // ignore
++
++      if (v && typeof v === 'object' && !seen.has(v)) q.push(v)
 +    }
++  }
 +
-+    // 2) Fallback: localStorage (если storeName не сохраняется в secrets)
-+    try {
-+      const raw = localStorage.getItem(STORE_NAME_LS_KEY) ?? ''
-+      const cleaned = raw.trim()
-+      if (cleaned) {
-         setStoreName(cleaned)
--        document.title = cleaned ? `${baseTitle} — ${cleaned}` : baseTitle
-+        document.title = `${baseTitle} — ${cleaned}`
-+        return
-       }
-     } catch {
-       // ignore
-     }
++  return null
++}
 +
-+    setStoreName('')
-+    document.title = baseTitle
-   }
- 
-   useEffect(() => {
-@@ -141,11 +175,13 @@
-     <div className="appShell">
-       <div className="topbar">
-         <div className="topbarInner">
--          {storeName && (
--            <div className="appTitle" title={`Подключен магазин: ${storeName}`}>
--              <div className="appStoreName">{storeName}</div>
--            </div>
--          )}
-+          <div
-+            className="appTitle"
-+            title={storeName ? `Подключённый магазин: ${storeName}` : 'Название магазина появится после проверки доступа'}
-+          >
-+            <div className="appName">Озонатор</div>
-+            <div className={`appStoreName ${storeName ? '' : 'muted'}`}>{storeName || 'Название магазина'}</div>
-+          </div>
- 
-           <div className="topbarSlot">
-             <div className="segmented" aria-label="Навигация">
-@@ -212,37 +248,21 @@
-       </div>
- 
-       <div className="pageArea">
--        <div className={isProducts ? "container containerWide" : "container"}>
-+        <div className={isProducts ? 'container containerWide' : 'container'}>
-           {lastError && <div className="notice error">{lastError}</div>}
- 
--          <Routes>
--            <Route
--              path="/"
--              element={
--                <ProductsPage
--                  query={productsQuery}
--                  onStats={(s) => {
--                    setProductsTotal(s.total)
--                    setProductsFiltered(s.filtered)
--                  }}
--                />
--              }
--            />
--            <Route
--              path="/products"
--              element={
--                <ProductsPage
--                  query={productsQuery}
--                  onStats={(s) => {
--                    setProductsTotal(s.total)
--                    setProductsFiltered(s.filtered)
--                  }}
--                />
--              }
--            />
--            <Route path="/logs" element={<LogsPage />} />
--            <Route path="/settings" element={<SettingsPage />} />
--          </Routes>
-+          {/* Страницы держим смонтированными — переключение без перезагрузки тяжёлой таблицы */}
-+          <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
-+            <ProductsPageMemo query={productsQuery} onStats={onProductStats} />
-+          </div>
 +
-+          <div style={{ display: pathname.startsWith('/logs') ? 'block' : 'none', height: '100%' }}>
-+            <LogsPage />
-+          </div>
+ // ---------------- Public API ----------------
+ 
+ export async function ozonTestAuth(secrets: Secrets) {
+@@ -288,6 +352,27 @@
+         j?.companyName,
+       )
+       if (name) return name
 +
-+          <div style={{ display: pathname.startsWith('/settings') ? 'block' : 'none', height: '100%' }}>
-+            <SettingsPage />
-+          </div>
- 
-           {/* пока не показываем filtered рядом, но оставили стейт под быстрые итерации */}
-           {productsFiltered /* noop */ && false}
-diff -ruN orig/src/renderer/src/ui/pages/ProductsPage.tsx work/src/renderer/src/ui/pages/ProductsPage.tsx
---- orig/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-19 10:20:25.637037365 +0000
-+++ work/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-19 10:46:28.341517603 +0000
-@@ -140,9 +140,27 @@
- 
-   const [draggingId, setDraggingId] = useState<string | null>(null)
++      // На части кабинетов нужное поле лежит глубже (например result.company.name).
++      // Поэтому делаем «глубокий» поиск по дереву ответа, но с защитой от мусорных длинных строк.
++      const deep = deepPickFirstString(r, [
++        'name',
++        'company_name',
++        'companyName',
++        'seller_name',
++        'sellerName',
++        'shop_name',
++        'shopName'
++      ]) ?? deepPickFirstString(j, [
++        'name',
++        'company_name',
++        'companyName',
++        'seller_name',
++        'sellerName',
++        'shop_name',
++        'shopName'
++      ])
++      if (deep) return deep
+     } catch (e: any) {
+       const st = e?.details?.status
+       if (st && st !== 404) {
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -142,9 +142,15 @@
    const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
--  const [resizeX, setResizeX] = useState<number | null>(null)
  
--  const resizingRef = useRef<{ id: string; startX: number; startW: number; startRight: number } | null>(null)
-+  const [collapsedOpen, setCollapsedOpen] = useState(false)
-+  const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
-+  const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
+   const [collapsedOpen, setCollapsedOpen] = useState(false)
++  const [bodyScrollTop, setBodyScrollTop] = useState(0)
++  const [bodyViewportH, setBodyViewportH] = useState(600)
 +
-+  const resizingRef = useRef<{
-+    id: string
-+    startX: number
-+    startW: number
-+    startRight: number
-+    startTableW: number
-+    colIdx: number
-+    headCol?: HTMLTableColElement | null
-+    bodyCol?: HTMLTableColElement | null
-+  } | null>(null)
+   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
+   const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
+ 
++  const scrollTopRafRef = useRef<number | null>(null)
++  const lastScrollTopRef = useRef(0)
 +
-+  const headInnerRef = useRef<HTMLDivElement | null>(null)
-+  const bodyInnerRef = useRef<HTMLDivElement | null>(null)
-+  const headTableRef = useRef<HTMLTableElement | null>(null)
-+  const bodyTableRef = useRef<HTMLTableElement | null>(null)
-+  const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
-   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
-   const didAutoInitRef = useRef(false)
+   const resizingRef = useRef<{
+     id: string
+     startX: number
+@@ -602,48 +608,106 @@
+     }
+   }, [visibleCols.length])
  
-@@ -173,6 +191,33 @@
-   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
-   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
- 
++
++  // Виртуализация строк: резко снижает лаги при переключении вкладок и при ресайзе колонок
 +  useEffect(() => {
-+    if (!collapsedOpen) return
++    const body = bodyScrollRef.current
++    if (!body) return
 +
-+    const onDown = (ev: MouseEvent) => {
-+      const t = ev.target as Node | null
-+      if (!t) return
-+      if (collapsedMenuRef.current?.contains(t)) return
-+      if (collapsedBtnRef.current?.contains(t)) return
-+      setCollapsedOpen(false)
++    const updateViewport = () => setBodyViewportH(body.clientHeight || 0)
++    updateViewport()
++
++    // eslint-disable-next-line no-undef
++    const ro = new ResizeObserver(() => updateViewport())
++    ro.observe(body)
++    return () => ro.disconnect()
++  }, [])
++
++  useEffect(() => {
++    const body = bodyScrollRef.current
++    if (!body) return
++
++    const onScroll = () => {
++      lastScrollTopRef.current = body.scrollTop
++      if (scrollTopRafRef.current != null) return
++
++      scrollTopRafRef.current = window.requestAnimationFrame(() => {
++        scrollTopRafRef.current = null
++        setBodyScrollTop(lastScrollTopRef.current)
++      })
 +    }
 +
-+    const onKey = (ev: KeyboardEvent) => {
-+      if (ev.key === 'Escape') setCollapsedOpen(false)
-+    }
++    body.addEventListener('scroll', onScroll, { passive: true })
++    onScroll()
 +
-+    window.addEventListener('mousedown', onDown)
-+    window.addEventListener('keydown', onKey)
 +    return () => {
-+      window.removeEventListener('mousedown', onDown)
-+      window.removeEventListener('keydown', onKey)
++      body.removeEventListener('scroll', onScroll)
++      if (scrollTopRafRef.current != null) {
++        window.cancelAnimationFrame(scrollTopRafRef.current)
++        scrollTopRafRef.current = null
++      }
 +    }
-+  }, [collapsedOpen])
++  }, [])
 +
-+  useEffect(() => {
-+    if (collapsedOpen && hiddenCols.length === 0) setCollapsedOpen(false)
-+  }, [collapsedOpen, hiddenCols.length])
++  const ROW_H = 28
++  const OVERSCAN = 12
 +
-   // Для поиска не учитываем ширины столбцов (чтобы ресайз не тормозил)
-   const visibleSearchKey = useMemo(
-     () => cols.map(c => `${c.id}:${c.visible ? 1 : 0}`).join('|'),
-@@ -323,7 +368,6 @@
-     setDraggingId(null)
-     setDropHint(null)
-   }
--
-   function startResize(e: React.MouseEvent, colId: string) {
-     e.preventDefault()
-     e.stopPropagation()
-@@ -334,12 +378,39 @@
-     const head = headScrollRef.current
-     const row = headerRowRef.current
-     const cell = row?.querySelector<HTMLElement>(`th[data-col-id="${colId}"]`)
--    const startRight = cell ? (cell.offsetLeft + cell.offsetWidth) : 0
-+    if (!head || !cell) return
- 
--    const scrollLeft = head?.scrollLeft ?? 0
--    setResizeX(Math.round(startRight - scrollLeft))
-+    const colIdx = visibleCols.findIndex(c => String(c.id) === colId)
-+    if (colIdx < 0) return
- 
--    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w, startRight }
-+    const startRight = cell.offsetLeft + cell.offsetWidth
++  const totalRows = filtered.length
++  const viewH = bodyViewportH || 600
++  const startRow = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN)
++  const endRow = Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2))
 +
-+    const headCols = headTableRef.current?.querySelectorAll('colgroup col') ?? []
-+    const bodyCols = bodyTableRef.current?.querySelectorAll('colgroup col') ?? []
-+    const headCol = (headCols[colIdx] as any) as HTMLTableColElement | null
-+    const bodyCol = (bodyCols[colIdx] as any) as HTMLTableColElement | null
++  const visibleRows = useMemo(() => filtered.slice(startRow, endRow), [filtered, startRow, endRow])
++  const topSpace = startRow * ROW_H
++  const bottomSpace = Math.max(0, (totalRows - endRow) * ROW_H)
 +
-+    resizingRef.current = {
-+      id: colId,
-+      startX: e.clientX,
-+      startW: col.w,
-+      startRight,
-+      startTableW: tableWidth,
-+      colIdx,
-+      headCol,
-+      bodyCol,
-+    }
-+
-+    const indicator = resizeIndicatorRef.current
-+    if (indicator) {
-+      indicator.style.display = 'block'
-+      indicator.style.left = `${Math.round(startRight - (head.scrollLeft ?? 0))}px`
-+    }
-+
-+    const prevCursor = document.body.style.cursor
-+    const prevSelect = document.body.style.userSelect
-+    document.body.style.cursor = 'col-resize'
-+    document.body.style.userSelect = 'none'
- 
-     let raf: number | null = null
-     let pendingDx = 0
-@@ -350,15 +421,23 @@
-       const r = resizingRef.current
-       if (!r) return
- 
--      const dx = pendingDx
--      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
-+      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + pendingDx))
-+      const delta = w - r.startW
-+      const newTableW = Math.max(1, Math.round(r.startTableW + delta))
-+
-       if (w !== lastW) {
-         lastW = w
--        setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
-+        if (r.headCol) (r.headCol as any).style.width = `${w}px`
-+        if (r.bodyCol) (r.bodyCol as any).style.width = `${w}px`
-+
-+        if (headInnerRef.current) headInnerRef.current.style.width = `${newTableW}px`
-+        if (bodyInnerRef.current) bodyInnerRef.current.style.width = `${newTableW}px`
-+        if (headTableRef.current) headTableRef.current.style.width = `${newTableW}px`
-+        if (bodyTableRef.current) bodyTableRef.current.style.width = `${newTableW}px`
-       }
- 
-       const sl = headScrollRef.current?.scrollLeft ?? 0
--      setResizeX(Math.round(r.startRight + dx - sl))
-+      if (indicator) indicator.style.left = `${Math.round(r.startRight + delta - sl)}px`
-     }
- 
-     const schedule = () => {
-@@ -378,10 +457,21 @@
-         window.cancelAnimationFrame(raf)
-         raf = null
-       }
-+
-+      const r = resizingRef.current
-       resizingRef.current = null
--      setResizeX(null)
-+
-+      document.body.style.cursor = prevCursor
-+      document.body.style.userSelect = prevSelect
-+
-+      if (indicator) indicator.style.display = 'none'
-+
-       window.removeEventListener('mousemove', onMove)
-       window.removeEventListener('mouseup', onUp)
-+
-+      if (!r) return
-+      const finalW = Math.max(AUTO_MIN_W, Math.round(r.startW + pendingDx))
-+      setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w: finalW } : c))
-     }
- 
-     window.addEventListener('mousemove', onMove)
-@@ -515,24 +605,49 @@
    return (
      <div className="card productsCard">
-       {hiddenCols.length > 0 && (
--        <div className="collapsedBar">
--          <span className="small">Скрытые столбцы:</span>
--          {hiddenCols.map(c => (
--            <span key={String(c.id)} className="chip">
--              {c.title}{' '}
--              <button className="colToggle" onClick={() => showCol(String(c.id))} title="Показать">+</button>
--            </span>
--          ))}
-+        <div className="collapsedDropdownRow">
-+          <button
-+            type="button"
-+            className="collapsedPlusBtn"
-+            ref={collapsedBtnRef}
-+            title="Показать скрытый столбец"
-+            aria-haspopup="menu"
-+            aria-expanded={collapsedOpen}
-+            onMouseDown={(e) => e.preventDefault()}
-+            onClick={() => setCollapsedOpen(v => !v)}
-+          >
-+            +
-+          </button>
-+
-+          {collapsedOpen && (
-+            <div className="collapsedMenu" ref={collapsedMenuRef} role="menu">
-+              {hiddenCols.map(c => (
-+                <button
-+                  type="button"
-+                  key={String(c.id)}
-+                  className="collapsedMenuItem"
-+                  role="menuitem"
-+                  onMouseDown={(e) => e.preventDefault()}
-+                  onClick={() => {
-+                    showCol(String(c.id))
-+                    setCollapsedOpen(false)
-+                  }}
-+                >
-+                  {c.title}
-+                </button>
-+              ))}
-+            </div>
-+          )}
-         </div>
-       )}
- 
-       <div className="productsTableArea">
-         <div className="tableWrap" style={{ marginTop: 12 }}>
--          {resizeX != null && <div className="resizeIndicator" style={{ left: resizeX }} />}
+-      {hiddenCols.length > 0 && (
+-        <div className="collapsedDropdownRow">
+-          <button
+-            type="button"
+-            className="collapsedPlusBtn"
+-            ref={collapsedBtnRef}
+-            title="Показать скрытый столбец"
+-            aria-haspopup="menu"
+-            aria-expanded={collapsedOpen}
+-            onMouseDown={(e) => e.preventDefault()}
+-            onClick={() => setCollapsedOpen(v => !v)}
+-          >
+-            +
+-          </button>
+-
+-          {collapsedOpen && (
+-            <div className="collapsedMenu" ref={collapsedMenuRef} role="menu">
+-              {hiddenCols.map(c => (
+-                <button
+-                  type="button"
+-                  key={String(c.id)}
+-                  className="collapsedMenuItem"
+-                  role="menuitem"
+-                  onMouseDown={(e) => e.preventDefault()}
+-                  onClick={() => {
+-                    showCol(String(c.id))
+-                    setCollapsedOpen(false)
+-                  }}
++      <div className="productsTableArea">
++        <div className="tableWrap" style={{ marginTop: 4, position: 'relative' }}>
 +          <div className="resizeIndicator" ref={resizeIndicatorRef} style={{ display: 'none' }} />
++          {hiddenCols.length > 0 && (
++            <div className="collapsedCorner" style={{ position: 'absolute', top: 6, right: 6, zIndex: 5 }}>
++              <button
++                type="button"
++                className="colToggle colTogglePlus"
++                ref={collapsedBtnRef}
++                title="Показать скрытый столбец"
++                aria-haspopup="menu"
++                aria-expanded={collapsedOpen}
++                onMouseDown={(e) => e.preventDefault()}
++                onClick={() => setCollapsedOpen(v => !v)}
++              >
++                +
++              </button>
++
++              {collapsedOpen && (
++                <div
++                  className="collapsedMenu"
++                  ref={collapsedMenuRef}
++                  role="menu"
++                  style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 6 }}
+                 >
+-                  {c.title}
+-                </button>
+-              ))}
++                  {hiddenCols.map(c => (
++                    <button
++                      type="button"
++                      key={String(c.id)}
++                      className="collapsedMenuItem"
++                      role="menuitem"
++                      style={{ padding: '6px 10px', lineHeight: 1.1 }}
++                      onMouseDown={(e) => e.preventDefault()}
++                      onClick={() => {
++                        showCol(String(c.id))
++                        setCollapsedOpen(false)
++                      }}
++                    >
++                      {c.title}
++                    </button>
++                  ))}
++                </div>
++              )}
+             </div>
+           )}
+-        </div>
+-      )}
+-
+-      <div className="productsTableArea">
+-        <div className="tableWrap" style={{ marginTop: 12 }}>
+-          <div className="resizeIndicator" ref={resizeIndicatorRef} style={{ display: 'none' }} />
            <div className="tableHeadX" ref={headScrollRef}>
--            <div className="tableWrapY tableHeadInner" style={{ width: tableWidth }}>
-+            <div className="tableWrapY tableHeadInner" ref={headInnerRef} style={{ width: tableWidth }}>
+             <div className="tableWrapY tableHeadInner" ref={headInnerRef} style={{ width: tableWidth }}>
                {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
--              <table className="table tableFixed tableHead" style={{ width: tableWidth }}>
-+              <table ref={headTableRef} className="table tableFixed tableHead" style={{ width: tableWidth }}>
-                 <colgroup>
-                   {visibleCols.map(c => (
-                     <col key={String(c.id)} style={{ width: c.w }} />
-@@ -575,8 +690,8 @@
-           </div>
- 
-           <div className="tableWrapX" ref={bodyScrollRef}>
--            <div className="tableWrapY" style={{ width: tableWidth }}>
--              <table className="table tableFixed tableBody" style={{ width: tableWidth }}>
-+            <div className="tableWrapY" ref={bodyInnerRef} style={{ width: tableWidth }}>
-+              <table ref={bodyTableRef} className="table tableFixed tableBody" style={{ width: tableWidth }}>
-                 <colgroup>
-                   {visibleCols.map(c => (
-                     <col key={String(c.id)} style={{ width: c.w }} />
-diff -ruN orig/src/renderer/src/ui/pages/SettingsPage.tsx work/src/renderer/src/ui/pages/SettingsPage.tsx
---- orig/src/renderer/src/ui/pages/SettingsPage.tsx	2026-02-19 10:20:25.649474783 +0000
-+++ work/src/renderer/src/ui/pages/SettingsPage.tsx	2026-02-19 10:40:28.464319977 +0000
-@@ -1,5 +1,7 @@
- import React, { useEffect, useState } from 'react'
- 
-+const STORE_NAME_LS_KEY = 'ozonator_store_name'
+@@ -698,7 +762,13 @@
+                   ))}
+                 </colgroup>
+                 <tbody>
+-                  {filtered.map(p => (
++                  {topSpace > 0 && (
++                    <tr className="spacerRow">
++                      <td colSpan={visibleCols.length} style={{ height: topSpace, padding: 0, border: 'none' }} />
++                    </tr>
++                  )}
 +
- export default function SettingsPage() {
-   const [clientId, setClientId] = useState('')
-   const [apiKey, setApiKey] = useState('')
-@@ -16,8 +18,18 @@
-         setApiKey(resp.secrets.apiKey ?? '')
-         {
-           const name = (resp.secrets as any).storeName
--          const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : ''
--          if (cleaned) setStoreName(cleaned)
-+          const cleaned = typeof name === 'string' && name.trim() ? name.trim() : ''
-+          if (cleaned) {
-+            setStoreName(cleaned)
-+          } else {
-+            // fallback: localStorage (если storeName не сохраняется в secrets)
-+            try {
-+              const ls = (localStorage.getItem(STORE_NAME_LS_KEY) ?? '').trim()
-+              if (ls) setStoreName(ls)
-+            } catch {
-+              // ignore
-+            }
-+          }
-         }
-       }
-     } catch {
-@@ -38,7 +50,15 @@
-       const resp = await window.api.testAuth()
++                  {visibleRows.map(p => (
+                     <tr key={p.offer_id}>
+                       {visibleCols.map(c => {
+                         const id = String(c.id)
+@@ -712,6 +782,13 @@
+                     </tr>
+                   ))}
  
-       if (resp.ok) {
--        if (typeof resp.storeName === 'string' && resp.storeName.trim()) setStoreName(resp.storeName.trim())
-+        if (typeof resp.storeName === 'string' && resp.storeName.trim()) {
-+          const cleaned = resp.storeName.trim()
-+          setStoreName(cleaned)
-+          try {
-+            localStorage.setItem(STORE_NAME_LS_KEY, cleaned)
-+          } catch {
-+            // ignore
-+          }
-+        }
- 
-         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
-         load()
-@@ -64,6 +84,11 @@
-       setApiKey('')
-       setStoreName('')
-       setStatus('Ключи удалены.')
-+      try {
-+        localStorage.removeItem(STORE_NAME_LS_KEY)
-+      } catch {
-+        // ignore
-+      }
-       window.dispatchEvent(new Event('ozon:store-updated'))
-     } catch (e: any) {
-       setErr(e?.message ?? String(e))
-@@ -89,20 +114,26 @@
-       <div className="row" style={{ marginTop: 12 }}>
-         <div className="col field">
-           <label>Client-Id</label>
--          <input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="например 55201" />
-+          <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="например 55201" />
-         </div>
-         <div className="col field">
-           <label>Api-Key</label>
--          <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="например 9c70..." />
-+          <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="например 9c70..." />
-         </div>
-       </div>
- 
-       <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
--        <button className="primary" onClick={onSaveAndTest}>Сохранить и проверить</button>
-+        <button className="primary" onClick={onSaveAndTest}>
-+          Сохранить и проверить
-+        </button>
-         <button onClick={onDelete}>Стереть ключи</button>
-       </div>
- 
--      {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
-+      {status && (
-+        <div className="notice" style={{ marginTop: 12 }}>
-+          {status}
-+        </div>
-+      )}
-     </div>
-   )
- }
-diff -ruN orig/src/renderer/src/ui/styles.css work/src/renderer/src/ui/styles.css
---- orig/src/renderer/src/ui/styles.css	2026-02-19 10:20:25.661212807 +0000
-+++ work/src/renderer/src/ui/styles.css	2026-02-19 10:48:19.338121164 +0000
-@@ -81,28 +81,28 @@
- .topbarInner{
-   max-width: none;
-   margin: 0 auto;
--  padding: 12px 18px;
-+  padding: 8px 14px;
-   display: flex;
-   align-items: center;
--  gap: 14px;
-+  gap: 12px;
- }
- 
- .appTitle{
-   display: inline-flex;
-   align-items: baseline;
-   gap: 10px;
--  padding: 6px 10px;
-+  padding: 4px 8px;
-   border-radius: 12px;
- }
- 
- .appName{
--  font-size: 20px;
-+  font-size: 18px;
-   font-weight: 820;
-   letter-spacing: -0.02em;
- }
- 
- .appStoreName{
--  font-size: 13px;
-+  font-size: 12px;
-   font-weight: 650;
-   color: rgba(60,60,67,.78);
-   letter-spacing: 0;
-@@ -125,10 +125,10 @@
- }
- 
- .appNameLink{
--  font-size: 20px;
-+  font-size: 18px;
-   font-weight: 820;
-   letter-spacing: -0.02em;
--  padding: 6px 10px;
-+  padding: 4px 8px;
-   border-radius: 12px;
-   transition: background .16s ease, transform .12s ease;
- }
-@@ -172,8 +172,8 @@
- 
- .iconLink,
- .iconBtn{
--  width: 36px;
--  height: 36px;
-+  width: 32px;
-+  height: 32px;
-   display: inline-flex;
-   align-items: center;
-   justify-content: center;
-@@ -233,9 +233,9 @@
- }
- 
- .segmented a{
--  min-width: 110px;
-+  min-width: 104px;
-   text-align: center;
--  padding: 8px 12px;
-+  padding: 6px 10px;
-   border-radius: 999px;
-   font-weight: 600;
-   color: rgba(28,28,30,.84);
-@@ -268,7 +268,7 @@
- }
- 
- .h1{
--  font-size: 20px;
-+  font-size: 18px;
-   font-weight: 760;
-   letter-spacing: -0.02em;
- }
-@@ -612,6 +612,75 @@
- .colToggle:active{ transform: translateY(0) scale(.99); }
- 
- /* Collapsed columns bar */
++                  {bottomSpace > 0 && (
++                    <tr className="spacerRow">
++                      <td colSpan={visibleCols.length} style={{ height: bottomSpace, padding: 0, border: 'none' }} />
++                    </tr>
++                  )}
 +
-+.collapsedDropdownRow{
-+  position: relative;
-+  display: flex;
-+  align-items: center;
-+  gap: 10px;
-+  margin-top: 10px;
-+  margin-bottom: 0;
-+}
 +
-+.collapsedPlusBtn{
-+  width: 28px;
-+  height: 28px;
-+  padding: 0;
-+  border-radius: 999px;
-+  border: 1px solid var(--hairline);
-+  background: rgba(255,255,255,.75);
-+  box-shadow: var(--shadowSoft);
-+  font-size: 18px;
-+  line-height: 26px;
-+  cursor: pointer;
-+  transition: transform .12s ease, background .16s ease;
-+}
-+
-+.collapsedPlusBtn:hover{
-+  background: rgba(255,255,255,1);
-+  transform: translateY(-1px);
-+}
-+
-+.collapsedPlusBtn:active{
-+  transform: translateY(0) scale(.99);
-+}
-+
-+.collapsedMenu{
-+  position: absolute;
-+  top: 34px;
-+  left: 0;
-+  min-width: 240px;
-+  max-width: 320px;
-+  max-height: 320px;
-+  overflow: auto;
-+  padding: 6px;
-+  border-radius: 14px;
-+  border: 1px solid var(--hairline);
-+  background: rgba(255,255,255,.94);
-+  box-shadow: 0 12px 40px rgba(0,0,0,.12);
-+  z-index: 40;
-+  backdrop-filter: blur(10px);
-+}
-+
-+.collapsedMenuItem{
-+  width: 100%;
-+  border: none;
-+  background: transparent;
-+  text-align: left;
-+  padding: 8px 10px;
-+  border-radius: 10px;
-+  cursor: pointer;
-+  font-size: 13px;
-+}
-+
-+.collapsedMenuItem:hover{
-+  background: rgba(0,122,255,.10);
-+}
-+
-+.collapsedMenuItem:active{
-+  background: rgba(0,122,255,.16);
-+}
-+
- .collapsedBar{
-   display: flex;
-   align-items: center;
-@@ -682,6 +751,7 @@
- }
- 
- .resizeIndicator{
-+  display: none;
-   position: absolute;
-   top: 0;
-   bottom: 0;
+                   {filtered.length === 0 && (
+                     <tr>
+                       <td colSpan={visibleCols.length} className="empty">Ничего не найдено.</td>
