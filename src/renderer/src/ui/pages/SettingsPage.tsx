@@ -17,7 +17,7 @@ export default function SettingsPage() {
         {
           const name = (resp.secrets as any).storeName
           const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : ''
-          setStoreName(cleaned)
+          if (cleaned) setStoreName(cleaned)
         }
       }
     } catch {
