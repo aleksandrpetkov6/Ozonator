@@ -104,8 +104,38 @@ function visibilityText(p: Product): string {
   return 'Неизвестно'
 }
 
+let PRODUCTS_CACHE: Product[] | null = null
+let PRODUCTS_CACHE_AT = 0
+let PRODUCTS_INFLIGHT: Promise<Product[] | null> | null = null
+const PRODUCTS_CACHE_TTL_MS = 60_000
+
+async function fetchProductsCached(force = false): Promise<Product[] | null> {
+  const now = Date.now()
+  if (!force && PRODUCTS_CACHE && (now - PRODUCTS_CACHE_AT) < PRODUCTS_CACHE_TTL_MS) return PRODUCTS_CACHE
+  if (PRODUCTS_INFLIGHT) return PRODUCTS_INFLIGHT
+
+  PRODUCTS_INFLIGHT = (async () => {
+    try {
+      const resp = await window.api.getProducts()
+      if (resp.ok) {
+        const list = (resp.products as any) as Product[]
+        PRODUCTS_CACHE = list
+        PRODUCTS_CACHE_AT = Date.now()
+        return list
+      }
+      return PRODUCTS_CACHE
+    } catch {
+      return PRODUCTS_CACHE
+    } finally {
+      PRODUCTS_INFLIGHT = null
+    }
+  })()
+
+  return PRODUCTS_INFLIGHT
+}
+
 export default function ProductsPage({ query = '', onStats }: Props) {
-  const [products, setProducts] = useState<Product[]>([])
+  const [products, setProducts] = useState<Product[]>(() => PRODUCTS_CACHE ?? [])
   const [cols, setCols] = useState<ColDef[]>(readCols)
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -120,9 +150,9 @@ export default function ProductsPage({ query = '', onStats }: Props) {
     try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
   }, [])
 
-  async function load() {
-    const resp = await window.api.getProducts()
-    if (resp.ok) setProducts(resp.products as any)
+  async function load(force = false) {
+    const list = await fetchProductsCached(force)
+    if (Array.isArray(list)) setProducts(list)
   }
 
   useEffect(() => {
@@ -130,37 +160,50 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   }, [])
 
   useEffect(() => {
-    const onUpdated = () => load()
+    const onUpdated = () => load(true)
     window.addEventListener('ozon:products-updated', onUpdated)
     return () => window.removeEventListener('ozon:products-updated', onUpdated)
   }, [])
 
   useEffect(() => {
-    saveCols(cols)
+    const id = window.setTimeout(() => saveCols(cols), 250)
+    return () => window.clearTimeout(id)
   }, [cols])
 
   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
+
+  // Для поиска не учитываем ширины столбцов (чтобы ресайз не тормозил)
+  const visibleSearchKey = useMemo(
+    () => cols.map(c => `${c.id}:${c.visible ? 1 : 0}`).join('|'),
+    [cols]
+  )
+
+  const visibleSearchCols = useMemo(
+    () => cols.filter(c => c.visible).map(c => c.id),
+    [visibleSearchKey]
+  )
 
   const filtered = useMemo(() => {
     const q = String(query ?? '').trim().toLowerCase()
     if (!q) return products
 
     return products.filter((p) => {
-      const hay = visibleCols
-        .map((c) => {
-          if (c.id === 'archived') return ''
-          if (c.id === 'is_visible') return visibilityText(p)
-          if (c.id === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
-          if (c.id === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
-          return toText((p as any)[c.id])
+      const hay = visibleSearchCols
+        .map((colId) => {
+          if (colId === 'archived') return ''
+          if (colId === 'is_visible') return visibilityText(p)
+          if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
+          if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+          return toText((p as any)[colId])
         })
         .join(' ')
         .toLowerCase()
 
       return hay.includes(q)
     })
-  }, [products, query, visibleCols])
+  }, [products, query, visibleSearchKey])
+
 
   useEffect(() => {
     onStats?.({ total: products.length, filtered: filtered.length })
@@ -298,18 +341,43 @@ function onDragOverHeader(e: React.DragEvent) {
 
     resizingRef.current = { id: colId, startX: e.clientX, startW: col.w, startRight }
 
-    const onMove = (ev: MouseEvent) => {
+    let raf: number | null = null
+    let pendingDx = 0
+    let lastW = col.w
+
+    const flush = () => {
+      raf = null
       const r = resizingRef.current
       if (!r) return
-      const dx = ev.clientX - r.startX
+
+      const dx = pendingDx
       const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
-      setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
+      if (w !== lastW) {
+        lastW = w
+        setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
+      }
 
       const sl = headScrollRef.current?.scrollLeft ?? 0
       setResizeX(Math.round(r.startRight + dx - sl))
     }
 
+    const schedule = () => {
+      if (raf != null) return
+      raf = window.requestAnimationFrame(flush)
+    }
+
+    const onMove = (ev: MouseEvent) => {
+      const r = resizingRef.current
+      if (!r) return
+      pendingDx = ev.clientX - r.startX
+      schedule()
+    }
+
     const onUp = () => {
+      if (raf != null) {
+        window.cancelAnimationFrame(raf)
+        raf = null
+      }
       resizingRef.current = null
       setResizeX(null)
       window.removeEventListener('mousemove', onMove)

@@ -107,15 +107,17 @@ export default function LogsPage() {
         <tbody>
           {logs.map(l => (
             <tr key={l.id}>
-              <td>{l.id}</td>
-              <td>{typeRu(l.type)}</td>
+              <td><div className="cellText" title={String(l.id)}>{l.id}</div></td>
+              <td><div className="cellText" title={typeRu(l.type)}>{typeRu(l.type)}</div></td>
               <td>
-                <span className={`statusText ${l.status ?? ''}`.trim()}>{statusRu(l.status)}</span>
+                <div className="cellText" title={statusRu(l.status)}>
+                  <span className={`statusText ${l.status ?? ''}`.trim()}>{statusRu(l.status)}</span>
+                </div>
               </td>
-              <td className="small">{fmtDt(l.started_at)}</td>
-              <td className="small">{fmtDt(l.finished_at)}</td>
-              <td className="small">{detailsRu(l.meta)}</td>
-              <td className="small">{l.error_message ?? '-'}</td>
+              <td className="small"><div className="cellText" title={fmtDt(l.started_at)}>{fmtDt(l.started_at)}</div></td>
+              <td className="small"><div className="cellText" title={fmtDt(l.finished_at)}>{fmtDt(l.finished_at)}</div></td>
+              <td className="small"><div className="cellText" title={detailsRu(l.meta)}>{detailsRu(l.meta)}</div></td>
+              <td className="small"><div className="cellText" title={l.error_message ?? '-'}>{l.error_message ?? '-'}</div></td>
             </tr>
           ))}
           {logs.length === 0 && <tr><td colSpan={7} className="small">Пока нет записей.</td></tr>}
