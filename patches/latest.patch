@@ -1,192 +1,64 @@
 --- a/src/renderer/src/ui/App.tsx
 +++ b/src/renderer/src/ui/App.tsx
-@@ -50,7 +50,7 @@
+@@ -44,13 +44,16 @@
+   const isProducts = pathname === '/' || pathname.startsWith('/products')
+ 
+   async function refreshStoreName() {
++    const baseTitle = 'Озонатор'
++    document.title = baseTitle
++
+     try {
+       const resp = await window.api.loadSecrets()
+       if (resp?.ok) {
          const name = (resp.secrets as any)?.storeName
          const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
          setStoreName(cleaned)
--        document.title = cleaned ? `Озонатор — ${cleaned}` : 'Озонатор'
-+        document.title = cleaned ? cleaned : 'Ozon Seller OS'
+-        document.title = cleaned ? cleaned : 'Ozon Seller OS'
++        document.title = cleaned ? `${baseTitle} — ${cleaned}` : baseTitle
        }
      } catch {
        // ignore
-@@ -139,8 +139,7 @@
+@@ -139,7 +142,8 @@
        <div className="topbar">
          <div className="topbarInner">
            <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
--            <div className="appName">Озонатор</div>
--            {storeName && <div className="appStoreName">{storeName}</div>}
-+            {storeName && <div className="appName">{storeName}</div>}
+-            {storeName && <div className="appName">{storeName}</div>}
++            <div className="appName">Озонатор</div>
++            {storeName && <div className="appStoreName">{storeName}</div>}
            </div>
  
            <div className="topbarSlot">
-@@ -153,12 +152,33 @@
- 
-             {isProducts && (
-               <div className="topbarSearch">
--                <input
--                  className="searchInput search"
--                  value={productsQuery}
--                  onChange={(e) => setProductsQuery(e.target.value)}
--                  placeholder="Поиск по таблице…"
--                />
-+                <div className="searchWrap">
-+                  <input
-+                    className="searchInput search"
-+                    value={productsQuery}
-+                    onChange={(e) => setProductsQuery(e.target.value)}
-+                    onKeyDown={(e) => {
-+                      if (e.key === 'Escape') {
-+                        e.preventDefault()
-+                        e.stopPropagation()
-+                        setProductsQuery('')
-+                      }
-+                    }}
-+                    placeholder="Поиск по таблице…"
-+                  />
-+                  {productsQuery && (
-+                    <button
-+                      type="button"
-+                      className="searchClearBtn"
-+                      title="Очистить"
-+                      aria-label="Очистить"
-+                      onMouseDown={(e) => e.preventDefault()}
-+                      onClick={() => setProductsQuery('')}
-+                    >
-+                      ×
-+                    </button>
-+                  )}
-+                </div>
-               </div>
-             )}
-           </div>
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -110,8 +110,9 @@
+@@ -406,7 +406,7 @@
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [products.length])
  
-   const [draggingId, setDraggingId] = useState<string | null>(null)
-   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
-+  const [resizeX, setResizeX] = useState<number | null>(null)
+-  const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
++  const tableWidth = useMemo(() => Math.max(1, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
  
--  const resizingRef = useRef<{ id: string; startX: number; startW: number } | null>(null)
-+  const resizingRef = useRef<{ id: string; startX: number; startW: number; startRight: number } | null>(null)
-   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
-   const didAutoInitRef = useRef(false)
- 
-@@ -287,7 +288,15 @@
-     const col = cols.find(c => String(c.id) === colId)
-     if (!col) return
- 
--    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w }
-+    const head = headScrollRef.current
-+    const row = headerRowRef.current
-+    const cell = row?.querySelector<HTMLElement>(`th[data-col-id="${colId}"]`)
-+    const startRight = cell ? (cell.offsetLeft + cell.offsetWidth) : 0
-+
-+    const scrollLeft = head?.scrollLeft ?? 0
-+    setResizeX(Math.round(startRight - scrollLeft))
-+
-+    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w, startRight }
- 
-     const onMove = (ev: MouseEvent) => {
-       const r = resizingRef.current
-@@ -295,10 +304,14 @@
-       const dx = ev.clientX - r.startX
-       const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
-       setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
-+
-+      const sl = headScrollRef.current?.scrollLeft ?? 0
-+      setResizeX(Math.round(r.startRight + dx - sl))
-     }
- 
-     const onUp = () => {
-       resizingRef.current = null
-+      setResizeX(null)
-       window.removeEventListener('mousemove', onMove)
-       window.removeEventListener('mouseup', onUp)
-     }
-@@ -447,6 +460,7 @@
- 
-       <div className="productsTableArea">
+   const headScrollRef = useRef<HTMLDivElement | null>(null)
+   const bodyScrollRef = useRef<HTMLDivElement | null>(null)
+@@ -462,9 +462,9 @@
          <div className="tableWrap" style={{ marginTop: 12 }}>
-+          {resizeX != null && <div className="resizeIndicator" style={{ left: resizeX }} />}
+           {resizeX != null && <div className="resizeIndicator" style={{ left: resizeX }} />}
            <div className="tableHeadX" ref={headScrollRef}>
-             <div className="tableWrapY tableHeadInner" style={{ minWidth: tableMinWidth }}>
+-            <div className="tableWrapY tableHeadInner" style={{ minWidth: tableMinWidth }}>
++            <div className="tableWrapY tableHeadInner" style={{ width: tableWidth }}>
                {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
-@@ -463,6 +477,7 @@
-                       return (
-                         <th
-                           key={id}
-+                          data-col-id={id}
-                           draggable
-                           onDragStart={(e) => onDragStart(e, id)}
-                           onDragEnd={onDragEnd}
---- a/src/renderer/src/ui/styles.css
-+++ b/src/renderer/src/ui/styles.css
-@@ -379,7 +379,41 @@
- }
- .productsTableArea{ display:flex; flex-direction:column; flex:1; min-height:0; }
- .search{ min-width: 310px; }
--.searchInput{ padding-left: 12px; }
-+.searchInput{ padding-left: 12px; padding-right: 36px; }
-+
-+.searchWrap{
-+  position: relative;
-+  display: inline-flex;
-+  align-items: center;
-+}
-+
-+.searchClearBtn{
-+  position: absolute;
-+  right: 10px;
-+  width: 22px;
-+  height: 22px;
-+  border-radius: 999px;
-+  border: 1px solid rgba(60,60,67,.18);
-+  background: rgba(255,255,255,.92);
-+  color: rgba(28,28,30,.75);
-+  display: inline-flex;
-+  align-items: center;
-+  justify-content: center;
-+  padding: 0;
-+  font-size: 16px;
-+  line-height: 22px;
-+  cursor: pointer;
-+  box-shadow: 0 1px 0 rgba(255,255,255,.65) inset;
-+}
-+
-+.searchClearBtn:hover{
-+  background: rgba(255,255,255,1);
-+  border-color: rgba(60,60,67,.26);
-+}
-+
-+.searchClearBtn:active{
-+  transform: scale(.98);
-+}
+-              <table className="table tableFixed tableHead" style={{ minWidth: tableMinWidth }}>
++              <table className="table tableFixed tableHead" style={{ width: tableWidth }}>
+                 <colgroup>
+                   {visibleCols.map(c => (
+                     <col key={String(c.id)} style={{ width: c.w }} />
+@@ -507,8 +507,8 @@
+           </div>
  
- /* Products table density (вкладка «Товары») */
- .productsCard .table th,
-@@ -451,6 +485,7 @@
- 
- /* Tables */
- .tableWrap{
-+  position: relative;
-   margin-top: 14px;
-   display: flex;
-   flex-direction: column;
-@@ -634,6 +669,16 @@
-   z-index: 6;
- }
- 
-+.resizeIndicator{
-+  position: absolute;
-+  top: 0;
-+  bottom: 0;
-+  width: 1px;
-+  background: rgba(60,60,67,.40);
-+  pointer-events: none;
-+  z-index: 20;
-+}
-+
- .thDropLeft::before,
- .thDropRight::before{
-   content: '';
+           <div className="tableWrapX" ref={bodyScrollRef}>
+-            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
+-              <table className="table tableFixed tableBody" style={{ minWidth: tableMinWidth }}>
++            <div className="tableWrapY" style={{ width: tableWidth }}>
++              <table className="table tableFixed tableBody" style={{ width: tableWidth }}>
+                 <colgroup>
+                   {visibleCols.map(c => (
+                     <col key={String(c.id)} style={{ width: c.w }} />
