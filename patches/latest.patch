@@ -1,107 +1,204 @@
---- a/src/renderer/src/ui/App.tsx
-+++ b/src/renderer/src/ui/App.tsx
-@@ -141,10 +141,11 @@
-     <div className="appShell">
-       <div className="topbar">
-         <div className="topbarInner">
--          <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
--            <div className="appName">Озонатор</div>
--            {storeName && <div className="appStoreName">{storeName}</div>}
--          </div>
-+          {storeName && (
-+            <div className="appTitle" title={`Подключен магазин: ${storeName}`}>
-+              <div className="appStoreName">{storeName}</div>
-+            </div>
-+          )}
- 
-           <div className="topbarSlot">
-             <div className="segmented" aria-label="Навигация">
---- a/src/renderer/src/ui/pages/SettingsPage.tsx
-+++ b/src/renderer/src/ui/pages/SettingsPage.tsx
-@@ -14,7 +14,11 @@
-       if (resp.ok) {
-         setClientId(resp.secrets.clientId ?? '')
-         setApiKey(resp.secrets.apiKey ?? '')
--        setStoreName((resp.secrets as any).storeName ?? '')
-+        {
-+          const name = (resp.secrets as any).storeName
-+          const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : ''
-+          setStoreName(cleaned)
-+        }
-       }
-     } catch {
-       // ignore
-@@ -34,8 +38,7 @@
-       const resp = await window.api.testAuth()
- 
-       if (resp.ok) {
--        if (resp.storeName) setStoreName(resp.storeName)
--        setStatus('Доступ подтверждён.')
-+        if (typeof resp.storeName === 'string' && resp.storeName.trim()) setStoreName(resp.storeName.trim())
- 
-         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
-         load()
-@@ -71,14 +74,15 @@
-     <div className="card">
-       <div className="h1">Настройки</div>
- 
--      <div className="row" style={{ marginTop: 16 }}>
--        <div className="col field">
--          <label>Название магазина</label>
--          <input
--            value={storeName}
--            placeholder="Появится после проверки доступа"
--            readOnly
--          />
-+      <div className="row" style={{ marginTop: 12 }}>
-+        <div className="col">
-+          {err ? (
-+            <span className="pill pillError">{err}</span>
-+          ) : storeName ? (
-+            <span className="pill" title="Название магазина">Магазин: {storeName}</span>
-+          ) : (
-+            <span className="small muted">Название магазина появится после проверки доступа</span>
-+          )}
-         </div>
-       </div>
- 
-@@ -99,7 +103,6 @@
-       </div>
- 
-       {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
--      {err && <div className="notice error" style={{ marginTop: 12 }}>{err}</div>}
-     </div>
-   )
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -104,8 +104,38 @@
+   return 'Неизвестно'
  }
---- a/src/renderer/src/ui/pages/LogsPage.tsx
-+++ b/src/renderer/src/ui/pages/LogsPage.tsx
-@@ -91,7 +91,7 @@
+ 
++let PRODUCTS_CACHE: Product[] | null = null
++let PRODUCTS_CACHE_AT = 0
++let PRODUCTS_INFLIGHT: Promise<Product[] | null> | null = null
++const PRODUCTS_CACHE_TTL_MS = 60_000
++
++async function fetchProductsCached(force = false): Promise<Product[] | null> {
++  const now = Date.now()
++  if (!force && PRODUCTS_CACHE && (now - PRODUCTS_CACHE_AT) < PRODUCTS_CACHE_TTL_MS) return PRODUCTS_CACHE
++  if (PRODUCTS_INFLIGHT) return PRODUCTS_INFLIGHT
++
++  PRODUCTS_INFLIGHT = (async () => {
++    try {
++      const resp = await window.api.getProducts()
++      if (resp.ok) {
++        const list = (resp.products as any) as Product[]
++        PRODUCTS_CACHE = list
++        PRODUCTS_CACHE_AT = Date.now()
++        return list
++      }
++      return PRODUCTS_CACHE
++    } catch {
++      return PRODUCTS_CACHE
++    } finally {
++      PRODUCTS_INFLIGHT = null
++    }
++  })()
++
++  return PRODUCTS_INFLIGHT
++}
++
+ export default function ProductsPage({ query = '', onStats }: Props) {
+-  const [products, setProducts] = useState<Product[]>([])
++  const [products, setProducts] = useState<Product[]>(() => PRODUCTS_CACHE ?? [])
+   const [cols, setCols] = useState<ColDef[]>(readCols)
+ 
+   const [draggingId, setDraggingId] = useState<string | null>(null)
+@@ -120,9 +150,9 @@
+     try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
    }, [])
  
-   return (
--    <div className="card">
-+    <div className="card logsCard">
-       <table className="table" style={{ marginTop: 10 }}>
-         <thead>
-           <tr>
---- a/src/renderer/src/ui/styles.css
-+++ b/src/renderer/src/ui/styles.css
-@@ -421,6 +421,18 @@
-   /* Слева/справа: в 3 раза меньше, сверху/снизу: в 5 раз меньше */
-   padding: 2px 4px;
- }
+-  async function load() {
+-    const resp = await window.api.getProducts()
+-    if (resp.ok) setProducts(resp.products as any)
++  async function load(force = false) {
++    const list = await fetchProductsCached(force)
++    if (Array.isArray(list)) setProducts(list)
+   }
+ 
+   useEffect(() => {
+@@ -130,37 +160,50 @@
+   }, [])
+ 
+   useEffect(() => {
+-    const onUpdated = () => load()
++    const onUpdated = () => load(true)
+     window.addEventListener('ozon:products-updated', onUpdated)
+     return () => window.removeEventListener('ozon:products-updated', onUpdated)
+   }, [])
+ 
+   useEffect(() => {
+-    saveCols(cols)
++    const id = window.setTimeout(() => saveCols(cols), 250)
++    return () => window.clearTimeout(id)
+   }, [cols])
+ 
+   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
+   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
+ 
++  // Для поиска не учитываем ширины столбцов (чтобы ресайз не тормозил)
++  const visibleSearchKey = useMemo(
++    () => cols.map(c => `${c.id}:${c.visible ? 1 : 0}`).join('|'),
++    [cols]
++  )
 +
-+.logsCard .table th,
-+.logsCard .table td{
-+  padding: 2px 4px;
-+}
++  const visibleSearchCols = useMemo(
++    () => cols.filter(c => c.visible).map(c => c.id),
++    [visibleSearchKey]
++  )
 +
-+.pillError{
-+  border-color: rgba(255,59,48,.25);
-+  background: rgba(255,59,48,.08);
-+  color: var(--red);
-+}
+   const filtered = useMemo(() => {
+     const q = String(query ?? '').trim().toLowerCase()
+     if (!q) return products
+ 
+     return products.filter((p) => {
+-      const hay = visibleCols
+-        .map((c) => {
+-          if (c.id === 'archived') return ''
+-          if (c.id === 'is_visible') return visibilityText(p)
+-          if (c.id === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
+-          if (c.id === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+-          return toText((p as any)[c.id])
++      const hay = visibleSearchCols
++        .map((colId) => {
++          if (colId === 'archived') return ''
++          if (colId === 'is_visible') return visibilityText(p)
++          if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
++          if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
++          return toText((p as any)[colId])
+         })
+         .join(' ')
+         .toLowerCase()
+ 
+       return hay.includes(q)
+     })
+-  }, [products, query, visibleCols])
++  }, [products, query, visibleSearchKey])
 +
  
- .productsCard .thInner{
-   /* Расстояние между «свернуть» и названием — в 2 раза меньше */
+   useEffect(() => {
+     onStats?.({ total: products.length, filtered: filtered.length })
+@@ -298,18 +341,43 @@
+ 
+     resizingRef.current = { id: colId, startX: e.clientX, startW: col.w, startRight }
+ 
+-    const onMove = (ev: MouseEvent) => {
++    let raf: number | null = null
++    let pendingDx = 0
++    let lastW = col.w
++
++    const flush = () => {
++      raf = null
+       const r = resizingRef.current
+       if (!r) return
+-      const dx = ev.clientX - r.startX
++
++      const dx = pendingDx
+       const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
+-      setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
++      if (w !== lastW) {
++        lastW = w
++        setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
++      }
+ 
+       const sl = headScrollRef.current?.scrollLeft ?? 0
+       setResizeX(Math.round(r.startRight + dx - sl))
+     }
+ 
++    const schedule = () => {
++      if (raf != null) return
++      raf = window.requestAnimationFrame(flush)
++    }
++
++    const onMove = (ev: MouseEvent) => {
++      const r = resizingRef.current
++      if (!r) return
++      pendingDx = ev.clientX - r.startX
++      schedule()
++    }
++
+     const onUp = () => {
++      if (raf != null) {
++        window.cancelAnimationFrame(raf)
++        raf = null
++      }
+       resizingRef.current = null
+       setResizeX(null)
+       window.removeEventListener('mousemove', onMove)
+
+--- a/src/renderer/src/ui/pages/SettingsPage.tsx
++++ b/src/renderer/src/ui/pages/SettingsPage.tsx
+@@ -17,7 +17,7 @@
+         {
+           const name = (resp.secrets as any).storeName
+           const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : ''
+-          setStoreName(cleaned)
++          if (cleaned) setStoreName(cleaned)
+         }
+       }
+     } catch {
+
+--- a/src/renderer/src/ui/pages/LogsPage.tsx
++++ b/src/renderer/src/ui/pages/LogsPage.tsx
+@@ -107,15 +107,17 @@
+         <tbody>
+           {logs.map(l => (
+             <tr key={l.id}>
+-              <td>{l.id}</td>
+-              <td>{typeRu(l.type)}</td>
++              <td><div className="cellText" title={String(l.id)}>{l.id}</div></td>
++              <td><div className="cellText" title={typeRu(l.type)}>{typeRu(l.type)}</div></td>
+               <td>
+-                <span className={`statusText ${l.status ?? ''}`.trim()}>{statusRu(l.status)}</span>
++                <div className="cellText" title={statusRu(l.status)}>
++                  <span className={`statusText ${l.status ?? ''}`.trim()}>{statusRu(l.status)}</span>
++                </div>
+               </td>
+-              <td className="small">{fmtDt(l.started_at)}</td>
+-              <td className="small">{fmtDt(l.finished_at)}</td>
+-              <td className="small">{detailsRu(l.meta)}</td>
+-              <td className="small">{l.error_message ?? '-'}</td>
++              <td className="small"><div className="cellText" title={fmtDt(l.started_at)}>{fmtDt(l.started_at)}</div></td>
++              <td className="small"><div className="cellText" title={fmtDt(l.finished_at)}>{fmtDt(l.finished_at)}</div></td>
++              <td className="small"><div className="cellText" title={detailsRu(l.meta)}>{detailsRu(l.meta)}</div></td>
++              <td className="small"><div className="cellText" title={l.error_message ?? '-'}>{l.error_message ?? '-'}</div></td>
+             </tr>
+           ))}
+           {logs.length === 0 && <tr><td colSpan={7} className="small">Пока нет записей.</td></tr>}
+
