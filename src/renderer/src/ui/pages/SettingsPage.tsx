@@ -14,7 +14,11 @@ export default function SettingsPage() {
       if (resp.ok) {
         setClientId(resp.secrets.clientId ?? '')
         setApiKey(resp.secrets.apiKey ?? '')
-        setStoreName((resp.secrets as any).storeName ?? '')
+        {
+          const name = (resp.secrets as any).storeName
+          const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : ''
+          setStoreName(cleaned)
+        }
       }
     } catch {
       // ignore
@@ -34,8 +38,7 @@ export default function SettingsPage() {
       const resp = await window.api.testAuth()
 
       if (resp.ok) {
-        if (resp.storeName) setStoreName(resp.storeName)
-        setStatus('Доступ подтверждён.')
+        if (typeof resp.storeName === 'string' && resp.storeName.trim()) setStoreName(resp.storeName.trim())
 
         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
         load()
@@ -71,14 +74,15 @@ export default function SettingsPage() {
     <div className="card">
       <div className="h1">Настройки</div>
 
-      <div className="row" style={{ marginTop: 16 }}>
-        <div className="col field">
-          <label>Название магазина</label>
-          <input
-            value={storeName}
-            placeholder="Появится после проверки доступа"
-            readOnly
-          />
+      <div className="row" style={{ marginTop: 12 }}>
+        <div className="col">
+          {err ? (
+            <span className="pill pillError">{err}</span>
+          ) : storeName ? (
+            <span className="pill" title="Название магазина">Магазин: {storeName}</span>
+          ) : (
+            <span className="small muted">Название магазина появится после проверки доступа</span>
+          )}
         </div>
       </div>
 
@@ -99,7 +103,6 @@ export default function SettingsPage() {
       </div>
 
       {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
-      {err && <div className="notice error" style={{ marginTop: 12 }}>{err}</div>}
     </div>
   )
 }

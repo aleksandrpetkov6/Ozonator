@@ -141,10 +141,11 @@ export default function App() {
     <div className="appShell">
       <div className="topbar">
         <div className="topbarInner">
-          <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
-            <div className="appName">Озонатор</div>
-            {storeName && <div className="appStoreName">{storeName}</div>}
-          </div>
+          {storeName && (
+            <div className="appTitle" title={`Подключен магазин: ${storeName}`}>
+              <div className="appStoreName">{storeName}</div>
+            </div>
+          )}
 
           <div className="topbarSlot">
             <div className="segmented" aria-label="Навигация">
