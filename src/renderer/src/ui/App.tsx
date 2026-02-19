@@ -44,13 +44,16 @@ export default function App() {
   const isProducts = pathname === '/' || pathname.startsWith('/products')
 
   async function refreshStoreName() {
+    const baseTitle = 'Озонатор'
+    document.title = baseTitle
+
     try {
       const resp = await window.api.loadSecrets()
       if (resp?.ok) {
         const name = (resp.secrets as any)?.storeName
         const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
         setStoreName(cleaned)
-        document.title = cleaned ? cleaned : 'Ozon Seller OS'
+        document.title = cleaned ? `${baseTitle} — ${cleaned}` : baseTitle
       }
     } catch {
       // ignore
@@ -139,7 +142,8 @@ export default function App() {
       <div className="topbar">
         <div className="topbarInner">
           <div className="appTitle" title={storeName ? `Подключен магазин: ${storeName}` : undefined}>
-            {storeName && <div className="appName">{storeName}</div>}
+            <div className="appName">Озонатор</div>
+            {storeName && <div className="appStoreName">{storeName}</div>}
           </div>
 
           <div className="topbarSlot">
