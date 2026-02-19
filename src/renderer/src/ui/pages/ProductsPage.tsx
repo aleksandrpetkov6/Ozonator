@@ -406,7 +406,7 @@ function onDragOverHeader(e: React.DragEvent) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products.length])
 
-  const tableMinWidth = useMemo(() => Math.max(860, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
+  const tableWidth = useMemo(() => Math.max(1, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
 
   const headScrollRef = useRef<HTMLDivElement | null>(null)
   const bodyScrollRef = useRef<HTMLDivElement | null>(null)
@@ -462,9 +462,9 @@ function onDragOverHeader(e: React.DragEvent) {
         <div className="tableWrap" style={{ marginTop: 12 }}>
           {resizeX != null && <div className="resizeIndicator" style={{ left: resizeX }} />}
           <div className="tableHeadX" ref={headScrollRef}>
-            <div className="tableWrapY tableHeadInner" style={{ minWidth: tableMinWidth }}>
+            <div className="tableWrapY tableHeadInner" style={{ width: tableWidth }}>
               {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
-              <table className="table tableFixed tableHead" style={{ minWidth: tableMinWidth }}>
+              <table className="table tableFixed tableHead" style={{ width: tableWidth }}>
                 <colgroup>
                   {visibleCols.map(c => (
                     <col key={String(c.id)} style={{ width: c.w }} />
@@ -507,8 +507,8 @@ function onDragOverHeader(e: React.DragEvent) {
           </div>
 
           <div className="tableWrapX" ref={bodyScrollRef}>
-            <div className="tableWrapY" style={{ minWidth: tableMinWidth }}>
-              <table className="table tableFixed tableBody" style={{ minWidth: tableMinWidth }}>
+            <div className="tableWrapY" style={{ width: tableWidth }}>
+              <table className="table tableFixed tableBody" style={{ width: tableWidth }}>
                 <colgroup>
                   {visibleCols.map(c => (
                     <col key={String(c.id)} style={{ width: c.w }} />
