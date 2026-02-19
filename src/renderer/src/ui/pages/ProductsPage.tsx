@@ -142,8 +142,14 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
 
   const [collapsedOpen, setCollapsedOpen] = useState(false)
+  const [bodyScrollTop, setBodyScrollTop] = useState(0)
+  const [bodyViewportH, setBodyViewportH] = useState(600)
+
   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
   const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
+
+  const scrollTopRafRef = useRef<number | null>(null)
+  const lastScrollTopRef = useRef(0)
 
   const resizingRef = useRef<{
     id: string
@@ -602,48 +608,106 @@ function onDragOverHeader(e: React.DragEvent) {
     }
   }, [visibleCols.length])
 
+
+  // Виртуализация строк: резко снижает лаги при переключении вкладок и при ресайзе колонок
+  useEffect(() => {
+    const body = bodyScrollRef.current
+    if (!body) return
+
+    const updateViewport = () => setBodyViewportH(body.clientHeight || 0)
+    updateViewport()
+
+    // eslint-disable-next-line no-undef
+    const ro = new ResizeObserver(() => updateViewport())
+    ro.observe(body)
+    return () => ro.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const body = bodyScrollRef.current
+    if (!body) return
+
+    const onScroll = () => {
+      lastScrollTopRef.current = body.scrollTop
+      if (scrollTopRafRef.current != null) return
+
+      scrollTopRafRef.current = window.requestAnimationFrame(() => {
+        scrollTopRafRef.current = null
+        setBodyScrollTop(lastScrollTopRef.current)
+      })
+    }
+
+    body.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+
+    return () => {
+      body.removeEventListener('scroll', onScroll)
+      if (scrollTopRafRef.current != null) {
+        window.cancelAnimationFrame(scrollTopRafRef.current)
+        scrollTopRafRef.current = null
+      }
+    }
+  }, [])
+
+  const ROW_H = 28
+  const OVERSCAN = 12
+
+  const totalRows = filtered.length
+  const viewH = bodyViewportH || 600
+  const startRow = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN)
+  const endRow = Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2))
+
+  const visibleRows = useMemo(() => filtered.slice(startRow, endRow), [filtered, startRow, endRow])
+  const topSpace = startRow * ROW_H
+  const bottomSpace = Math.max(0, (totalRows - endRow) * ROW_H)
+
   return (
     <div className="card productsCard">
-      {hiddenCols.length > 0 && (
-        <div className="collapsedDropdownRow">
-          <button
-            type="button"
-            className="collapsedPlusBtn"
-            ref={collapsedBtnRef}
-            title="Показать скрытый столбец"
-            aria-haspopup="menu"
-            aria-expanded={collapsedOpen}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => setCollapsedOpen(v => !v)}
-          >
-            +
-          </button>
+      <div className="productsTableArea">
+        <div className="tableWrap" style={{ marginTop: 4, position: 'relative' }}>
+          <div className="resizeIndicator" ref={resizeIndicatorRef} style={{ display: 'none' }} />
+          {hiddenCols.length > 0 && (
+            <div className="collapsedCorner" style={{ position: 'absolute', top: 6, right: 6, zIndex: 5 }}>
+              <button
+                type="button"
+                className="colToggle colTogglePlus"
+                ref={collapsedBtnRef}
+                title="Показать скрытый столбец"
+                aria-haspopup="menu"
+                aria-expanded={collapsedOpen}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setCollapsedOpen(v => !v)}
+              >
+                +
+              </button>
 
-          {collapsedOpen && (
-            <div className="collapsedMenu" ref={collapsedMenuRef} role="menu">
-              {hiddenCols.map(c => (
-                <button
-                  type="button"
-                  key={String(c.id)}
-                  className="collapsedMenuItem"
-                  role="menuitem"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    showCol(String(c.id))
-                    setCollapsedOpen(false)
-                  }}
+              {collapsedOpen && (
+                <div
+                  className="collapsedMenu"
+                  ref={collapsedMenuRef}
+                  role="menu"
+                  style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 6 }}
                 >
-                  {c.title}
-                </button>
-              ))}
+                  {hiddenCols.map(c => (
+                    <button
+                      type="button"
+                      key={String(c.id)}
+                      className="collapsedMenuItem"
+                      role="menuitem"
+                      style={{ padding: '6px 10px', lineHeight: 1.1 }}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        showCol(String(c.id))
+                        setCollapsedOpen(false)
+                      }}
+                    >
+                      {c.title}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
-        </div>
-      )}
-
-      <div className="productsTableArea">
-        <div className="tableWrap" style={{ marginTop: 12 }}>
-          <div className="resizeIndicator" ref={resizeIndicatorRef} style={{ display: 'none' }} />
           <div className="tableHeadX" ref={headScrollRef}>
             <div className="tableWrapY tableHeadInner" ref={headInnerRef} style={{ width: tableWidth }}>
               {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
@@ -698,7 +762,13 @@ function onDragOverHeader(e: React.DragEvent) {
                   ))}
                 </colgroup>
                 <tbody>
-                  {filtered.map(p => (
+                  {topSpace > 0 && (
+                    <tr className="spacerRow">
+                      <td colSpan={visibleCols.length} style={{ height: topSpace, padding: 0, border: 'none' }} />
+                    </tr>
+                  )}
+
+                  {visibleRows.map(p => (
                     <tr key={p.offer_id}>
                       {visibleCols.map(c => {
                         const id = String(c.id)
@@ -711,6 +781,13 @@ function onDragOverHeader(e: React.DragEvent) {
                       })}
                     </tr>
                   ))}
+
+                  {bottomSpace > 0 && (
+                    <tr className="spacerRow">
+                      <td colSpan={visibleCols.length} style={{ height: bottomSpace, padding: 0, border: 'none' }} />
+                    </tr>
+                  )}
+
 
                   {filtered.length === 0 && (
                     <tr>
