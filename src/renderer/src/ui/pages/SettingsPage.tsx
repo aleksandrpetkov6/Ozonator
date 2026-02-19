@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
 
+const STORE_NAME_LS_KEY = 'ozonator_store_name'
+
 export default function SettingsPage() {
   const [clientId, setClientId] = useState('')
   const [apiKey, setApiKey] = useState('')
@@ -16,8 +18,18 @@ export default function SettingsPage() {
         setApiKey(resp.secrets.apiKey ?? '')
         {
           const name = (resp.secrets as any).storeName
-          const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : ''
-          if (cleaned) setStoreName(cleaned)
+          const cleaned = typeof name === 'string' && name.trim() ? name.trim() : ''
+          if (cleaned) {
+            setStoreName(cleaned)
+          } else {
+            // fallback: localStorage (если storeName не сохраняется в secrets)
+            try {
+              const ls = (localStorage.getItem(STORE_NAME_LS_KEY) ?? '').trim()
+              if (ls) setStoreName(ls)
+            } catch {
+              // ignore
+            }
+          }
         }
       }
     } catch {
@@ -38,7 +50,15 @@ export default function SettingsPage() {
       const resp = await window.api.testAuth()
 
       if (resp.ok) {
-        if (typeof resp.storeName === 'string' && resp.storeName.trim()) setStoreName(resp.storeName.trim())
+        if (typeof resp.storeName === 'string' && resp.storeName.trim()) {
+          const cleaned = resp.storeName.trim()
+          setStoreName(cleaned)
+          try {
+            localStorage.setItem(STORE_NAME_LS_KEY, cleaned)
+          } catch {
+            // ignore
+          }
+        }
 
         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
         load()
@@ -64,6 +84,11 @@ export default function SettingsPage() {
       setApiKey('')
       setStoreName('')
       setStatus('Ключи удалены.')
+      try {
+        localStorage.removeItem(STORE_NAME_LS_KEY)
+      } catch {
+        // ignore
+      }
       window.dispatchEvent(new Event('ozon:store-updated'))
     } catch (e: any) {
       setErr(e?.message ?? String(e))
@@ -89,20 +114,26 @@ export default function SettingsPage() {
       <div className="row" style={{ marginTop: 12 }}>
         <div className="col field">
           <label>Client-Id</label>
-          <input value={clientId} onChange={e => setClientId(e.target.value)} placeholder="например 55201" />
+          <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="например 55201" />
         </div>
         <div className="col field">
           <label>Api-Key</label>
-          <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="например 9c70..." />
+          <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="например 9c70..." />
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
-        <button className="primary" onClick={onSaveAndTest}>Сохранить и проверить</button>
+        <button className="primary" onClick={onSaveAndTest}>
+          Сохранить и проверить
+        </button>
         <button onClick={onDelete}>Стереть ключи</button>
       </div>
 
-      {status && <div className="notice" style={{ marginTop: 12 }}>{status}</div>}
+      {status && (
+        <div className="notice" style={{ marginTop: 12 }}>
+          {status}
+        </div>
+      )}
     </div>
   )
 }

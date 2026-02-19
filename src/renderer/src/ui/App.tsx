@@ -1,8 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, Route, Routes, useLocation } from 'react-router-dom'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
 import SettingsPage from './pages/SettingsPage'
 import ProductsPage from './pages/ProductsPage'
 import LogsPage from './pages/LogsPage'
+
+const baseTitle = 'Озонатор'
+const STORE_NAME_LS_KEY = 'ozonator_store_name'
+
+const ProductsPageMemo = React.memo(ProductsPage)
 
 function useOnline() {
   const [online, setOnline] = useState<boolean>(true)
@@ -31,33 +36,62 @@ export default function App() {
 
   const [running, setRunning] = useState(false)
   const runningRef = useRef(false)
-  useEffect(() => { runningRef.current = running }, [running])
+  useEffect(() => {
+    runningRef.current = running
+  }, [running])
 
   const [lastError, setLastError] = useState<string | null>(null)
 
-  const [storeName, setStoreName] = useState<string | null>(null)
+  const [storeName, setStoreName] = useState<string>('')
   const [productsQuery, setProductsQuery] = useState('')
   const [productsTotal, setProductsTotal] = useState(0)
   const [productsFiltered, setProductsFiltered] = useState(0)
 
   const pathname = location.pathname || '/'
-  const isProducts = pathname === '/' || pathname.startsWith('/products')
+  const isProducts = !pathname.startsWith('/logs') && !pathname.startsWith('/settings')
+
+  const onProductStats = useCallback((s: { total: number; filtered: number }) => {
+    setProductsTotal(s.total)
+    setProductsFiltered(s.filtered)
+  }, [])
 
   async function refreshStoreName() {
-    const baseTitle = 'Озонатор'
-    document.title = baseTitle
-
+    // 1) Пробуем secrets
     try {
       const resp = await window.api.loadSecrets()
-      if (resp?.ok) {
-        const name = (resp.secrets as any)?.storeName
-        const cleaned = (typeof name === 'string' && name.trim()) ? name.trim() : null
-        setStoreName(cleaned)
-        document.title = cleaned ? `${baseTitle} — ${cleaned}` : baseTitle
+      if (resp.ok) {
+        const raw = (resp.secrets as any).storeName
+        const cleaned = typeof raw === 'string' && raw.trim() ? raw.trim() : ''
+        if (cleaned) {
+          setStoreName(cleaned)
+          try {
+            localStorage.setItem(STORE_NAME_LS_KEY, cleaned)
+          } catch {
+            /* ignore */
+          }
+          document.title = `${baseTitle} — ${cleaned}`
+          return
+        }
       }
     } catch {
       // ignore
     }
+
+    // 2) Fallback: localStorage (если storeName не сохраняется в secrets)
+    try {
+      const raw = localStorage.getItem(STORE_NAME_LS_KEY) ?? ''
+      const cleaned = raw.trim()
+      if (cleaned) {
+        setStoreName(cleaned)
+        document.title = `${baseTitle} — ${cleaned}`
+        return
+      }
+    } catch {
+      // ignore
+    }
+
+    setStoreName('')
+    document.title = baseTitle
   }
 
   useEffect(() => {
@@ -141,11 +175,13 @@ export default function App() {
     <div className="appShell">
       <div className="topbar">
         <div className="topbarInner">
-          {storeName && (
-            <div className="appTitle" title={`Подключен магазин: ${storeName}`}>
-              <div className="appStoreName">{storeName}</div>
-            </div>
-          )}
+          <div
+            className="appTitle"
+            title={storeName ? `Подключённый магазин: ${storeName}` : 'Название магазина появится после проверки доступа'}
+          >
+            <div className="appName">Озонатор</div>
+            <div className={`appStoreName ${storeName ? '' : 'muted'}`}>{storeName || 'Название магазина'}</div>
+          </div>
 
           <div className="topbarSlot">
             <div className="segmented" aria-label="Навигация">
@@ -212,37 +248,21 @@ export default function App() {
       </div>
 
       <div className="pageArea">
-        <div className={isProducts ? "container containerWide" : "container"}>
+        <div className={isProducts ? 'container containerWide' : 'container'}>
           {lastError && <div className="notice error">{lastError}</div>}
 
-          <Routes>
-            <Route
-              path="/"
-              element={
-                <ProductsPage
-                  query={productsQuery}
-                  onStats={(s) => {
-                    setProductsTotal(s.total)
-                    setProductsFiltered(s.filtered)
-                  }}
-                />
-              }
-            />
-            <Route
-              path="/products"
-              element={
-                <ProductsPage
-                  query={productsQuery}
-                  onStats={(s) => {
-                    setProductsTotal(s.total)
-                    setProductsFiltered(s.filtered)
-                  }}
-                />
-              }
-            />
-            <Route path="/logs" element={<LogsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
+          {/* Страницы держим смонтированными — переключение без перезагрузки тяжёлой таблицы */}
+          <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
+            <ProductsPageMemo query={productsQuery} onStats={onProductStats} />
+          </div>
+
+          <div style={{ display: pathname.startsWith('/logs') ? 'block' : 'none', height: '100%' }}>
+            <LogsPage />
+          </div>
+
+          <div style={{ display: pathname.startsWith('/settings') ? 'block' : 'none', height: '100%' }}>
+            <SettingsPage />
+          </div>
 
           {/* пока не показываем filtered рядом, но оставили стейт под быстрые итерации */}
           {productsFiltered /* noop */ && false}

@@ -140,9 +140,27 @@ export default function ProductsPage({ query = '', onStats }: Props) {
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
-  const [resizeX, setResizeX] = useState<number | null>(null)
 
-  const resizingRef = useRef<{ id: string; startX: number; startW: number; startRight: number } | null>(null)
+  const [collapsedOpen, setCollapsedOpen] = useState(false)
+  const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
+  const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
+
+  const resizingRef = useRef<{
+    id: string
+    startX: number
+    startW: number
+    startRight: number
+    startTableW: number
+    colIdx: number
+    headCol?: HTMLTableColElement | null
+    bodyCol?: HTMLTableColElement | null
+  } | null>(null)
+
+  const headInnerRef = useRef<HTMLDivElement | null>(null)
+  const bodyInnerRef = useRef<HTMLDivElement | null>(null)
+  const headTableRef = useRef<HTMLTableElement | null>(null)
+  const bodyTableRef = useRef<HTMLTableElement | null>(null)
+  const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const didAutoInitRef = useRef(false)
 
@@ -172,6 +190,33 @@ export default function ProductsPage({ query = '', onStats }: Props) {
 
   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
+
+  useEffect(() => {
+    if (!collapsedOpen) return
+
+    const onDown = (ev: MouseEvent) => {
+      const t = ev.target as Node | null
+      if (!t) return
+      if (collapsedMenuRef.current?.contains(t)) return
+      if (collapsedBtnRef.current?.contains(t)) return
+      setCollapsedOpen(false)
+    }
+
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setCollapsedOpen(false)
+    }
+
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [collapsedOpen])
+
+  useEffect(() => {
+    if (collapsedOpen && hiddenCols.length === 0) setCollapsedOpen(false)
+  }, [collapsedOpen, hiddenCols.length])
 
   // Для поиска не учитываем ширины столбцов (чтобы ресайз не тормозил)
   const visibleSearchKey = useMemo(
@@ -323,7 +368,6 @@ function onDragOverHeader(e: React.DragEvent) {
     setDraggingId(null)
     setDropHint(null)
   }
-
   function startResize(e: React.MouseEvent, colId: string) {
     e.preventDefault()
     e.stopPropagation()
@@ -334,12 +378,39 @@ function onDragOverHeader(e: React.DragEvent) {
     const head = headScrollRef.current
     const row = headerRowRef.current
     const cell = row?.querySelector<HTMLElement>(`th[data-col-id="${colId}"]`)
-    const startRight = cell ? (cell.offsetLeft + cell.offsetWidth) : 0
+    if (!head || !cell) return
 
-    const scrollLeft = head?.scrollLeft ?? 0
-    setResizeX(Math.round(startRight - scrollLeft))
+    const colIdx = visibleCols.findIndex(c => String(c.id) === colId)
+    if (colIdx < 0) return
 
-    resizingRef.current = { id: colId, startX: e.clientX, startW: col.w, startRight }
+    const startRight = cell.offsetLeft + cell.offsetWidth
+
+    const headCols = headTableRef.current?.querySelectorAll('colgroup col') ?? []
+    const bodyCols = bodyTableRef.current?.querySelectorAll('colgroup col') ?? []
+    const headCol = (headCols[colIdx] as any) as HTMLTableColElement | null
+    const bodyCol = (bodyCols[colIdx] as any) as HTMLTableColElement | null
+
+    resizingRef.current = {
+      id: colId,
+      startX: e.clientX,
+      startW: col.w,
+      startRight,
+      startTableW: tableWidth,
+      colIdx,
+      headCol,
+      bodyCol,
+    }
+
+    const indicator = resizeIndicatorRef.current
+    if (indicator) {
+      indicator.style.display = 'block'
+      indicator.style.left = `${Math.round(startRight - (head.scrollLeft ?? 0))}px`
+    }
+
+    const prevCursor = document.body.style.cursor
+    const prevSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
 
     let raf: number | null = null
     let pendingDx = 0
@@ -350,15 +421,23 @@ function onDragOverHeader(e: React.DragEvent) {
       const r = resizingRef.current
       if (!r) return
 
-      const dx = pendingDx
-      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + dx))
+      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + pendingDx))
+      const delta = w - r.startW
+      const newTableW = Math.max(1, Math.round(r.startTableW + delta))
+
       if (w !== lastW) {
         lastW = w
-        setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w } : c))
+        if (r.headCol) (r.headCol as any).style.width = `${w}px`
+        if (r.bodyCol) (r.bodyCol as any).style.width = `${w}px`
+
+        if (headInnerRef.current) headInnerRef.current.style.width = `${newTableW}px`
+        if (bodyInnerRef.current) bodyInnerRef.current.style.width = `${newTableW}px`
+        if (headTableRef.current) headTableRef.current.style.width = `${newTableW}px`
+        if (bodyTableRef.current) bodyTableRef.current.style.width = `${newTableW}px`
       }
 
       const sl = headScrollRef.current?.scrollLeft ?? 0
-      setResizeX(Math.round(r.startRight + dx - sl))
+      if (indicator) indicator.style.left = `${Math.round(r.startRight + delta - sl)}px`
     }
 
     const schedule = () => {
@@ -378,10 +457,21 @@ function onDragOverHeader(e: React.DragEvent) {
         window.cancelAnimationFrame(raf)
         raf = null
       }
+
+      const r = resizingRef.current
       resizingRef.current = null
-      setResizeX(null)
+
+      document.body.style.cursor = prevCursor
+      document.body.style.userSelect = prevSelect
+
+      if (indicator) indicator.style.display = 'none'
+
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+
+      if (!r) return
+      const finalW = Math.max(AUTO_MIN_W, Math.round(r.startW + pendingDx))
+      setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w: finalW } : c))
     }
 
     window.addEventListener('mousemove', onMove)
@@ -515,24 +605,49 @@ function onDragOverHeader(e: React.DragEvent) {
   return (
     <div className="card productsCard">
       {hiddenCols.length > 0 && (
-        <div className="collapsedBar">
-          <span className="small">Скрытые столбцы:</span>
-          {hiddenCols.map(c => (
-            <span key={String(c.id)} className="chip">
-              {c.title}{' '}
-              <button className="colToggle" onClick={() => showCol(String(c.id))} title="Показать">+</button>
-            </span>
-          ))}
+        <div className="collapsedDropdownRow">
+          <button
+            type="button"
+            className="collapsedPlusBtn"
+            ref={collapsedBtnRef}
+            title="Показать скрытый столбец"
+            aria-haspopup="menu"
+            aria-expanded={collapsedOpen}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setCollapsedOpen(v => !v)}
+          >
+            +
+          </button>
+
+          {collapsedOpen && (
+            <div className="collapsedMenu" ref={collapsedMenuRef} role="menu">
+              {hiddenCols.map(c => (
+                <button
+                  type="button"
+                  key={String(c.id)}
+                  className="collapsedMenuItem"
+                  role="menuitem"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    showCol(String(c.id))
+                    setCollapsedOpen(false)
+                  }}
+                >
+                  {c.title}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
       <div className="productsTableArea">
         <div className="tableWrap" style={{ marginTop: 12 }}>
-          {resizeX != null && <div className="resizeIndicator" style={{ left: resizeX }} />}
+          <div className="resizeIndicator" ref={resizeIndicatorRef} style={{ display: 'none' }} />
           <div className="tableHeadX" ref={headScrollRef}>
-            <div className="tableWrapY tableHeadInner" style={{ width: tableWidth }}>
+            <div className="tableWrapY tableHeadInner" ref={headInnerRef} style={{ width: tableWidth }}>
               {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
-              <table className="table tableFixed tableHead" style={{ width: tableWidth }}>
+              <table ref={headTableRef} className="table tableFixed tableHead" style={{ width: tableWidth }}>
                 <colgroup>
                   {visibleCols.map(c => (
                     <col key={String(c.id)} style={{ width: c.w }} />
@@ -575,8 +690,8 @@ function onDragOverHeader(e: React.DragEvent) {
           </div>
 
           <div className="tableWrapX" ref={bodyScrollRef}>
-            <div className="tableWrapY" style={{ width: tableWidth }}>
-              <table className="table tableFixed tableBody" style={{ width: tableWidth }}>
+            <div className="tableWrapY" ref={bodyInnerRef} style={{ width: tableWidth }}>
+              <table ref={bodyTableRef} className="table tableFixed tableBody" style={{ width: tableWidth }}>
                 <colgroup>
                   {visibleCols.map(c => (
                     <col key={String(c.id)} style={{ width: c.w }} />
