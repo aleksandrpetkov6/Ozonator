@@ -254,6 +254,70 @@ function pickFirstString(...vals: any[]): string | null {
   return null
 }
 
+function isReasonableStoreName(s: string): boolean {
+  const t = s.trim()
+  if (!t) return false
+  // Название магазина обычно короткое. Длинные строки часто оказываются "мусором" (токены/идентификаторы).
+  if (t.length > 120) return false
+  // Похоже на base64/hex/токен — не принимаем как имя магазина.
+  if (/^[A-Za-z0-9+/_-]{40,}$/.test(t)) return false
+  return true
+}
+
+function deepPickFirstString(root: any, keys: string[]): string | null {
+  const want = new Set(keys.map(k => k.toLowerCase()))
+  const seen = new Set<any>()
+  const q: any[] = [root]
+  let guard = 0
+
+  while (q.length && guard < 5000) {
+    const cur = q.shift()
+    guard++
+
+    if (cur == null) continue
+
+    if (typeof cur !== 'object') continue
+
+    if (seen.has(cur)) continue
+    seen.add(cur)
+
+    if (Array.isArray(cur)) {
+      for (const it of cur) {
+        if (it && typeof it === 'object') q.push(it)
+      }
+      continue
+    }
+
+    for (const [kRaw, v] of Object.entries(cur)) {
+      const k = String(kRaw).toLowerCase()
+
+      if (want.has(k)) {
+        if (typeof v === 'string' && isReasonableStoreName(v)) return v.trim()
+
+        if (v && typeof v === 'object') {
+          const candidate = pickFirstString(
+            (v as any).name,
+            (v as any).title,
+            (v as any).value,
+            (v as any).company_name,
+            (v as any).companyName,
+            (v as any).seller_name,
+            (v as any).sellerName,
+            (v as any).shop_name,
+            (v as any).shopName,
+          )
+          if (candidate && isReasonableStoreName(candidate)) return candidate.trim()
+        }
+      }
+
+      if (v && typeof v === 'object' && !seen.has(v)) q.push(v)
+    }
+  }
+
+  return null
+}
+
+
 // ---------------- Public API ----------------
 
 export async function ozonTestAuth(secrets: Secrets) {
@@ -288,6 +352,27 @@ export async function ozonGetStoreName(secrets: Secrets): Promise<string | null>
         j?.companyName,
       )
       if (name) return name
+
+      // На части кабинетов нужное поле лежит глубже (например result.company.name).
+      // Поэтому делаем «глубокий» поиск по дереву ответа, но с защитой от мусорных длинных строк.
+      const deep = deepPickFirstString(r, [
+        'name',
+        'company_name',
+        'companyName',
+        'seller_name',
+        'sellerName',
+        'shop_name',
+        'shopName'
+      ]) ?? deepPickFirstString(j, [
+        'name',
+        'company_name',
+        'companyName',
+        'seller_name',
+        'sellerName',
+        'shop_name',
+        'shopName'
+      ])
+      if (deep) return deep
     } catch (e: any) {
       const st = e?.details?.status
       if (st && st !== 404) {
