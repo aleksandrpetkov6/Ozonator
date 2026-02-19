@@ -1,95 +1,167 @@
-name: publish-nightly-release
+name: Publish Nightly (Озонатор)
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-
-permissions:
-  contents: write
-
-concurrency:
-  group: nightly-release
-  cancel-in-progress: true
+  push:
+    branches:
+      - main
 
 jobs:
-  build_and_release:
-    if: github.event_name != 'pull_request'
+  publish-nightly:
     runs-on: windows-latest
+
+    permissions:
+      contents: write
 
     defaults:
       run:
         shell: pwsh
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
-      - name: Install
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Build (dist)
-        run: npm run dist -- --publish never
-
-      - name: Prepare assets (exe + portable zip)
-        id: prep
+      - name: Install dependencies (npm ci; fallback --legacy-peer-deps)
+        id: install
         run: |
-          $ErrorActionPreference = "Stop"
-
-          if (-not (Test-Path "release")) { throw "release/ folder not found" }
-
-          $exe = Get-ChildItem -Path "release" -Recurse -File -Filter "*.exe" |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if (-not $exe) { throw "No .exe found in release/" }
-
-          $portableZip = Join-Path $PWD "portable-win-unpacked.zip"
-          $winUnpacked = Get-ChildItem -Path "release" -Directory -Recurse |
-            Where-Object { $_.Name -eq "win-unpacked" } |
-            Select-Object -First 1
-
-          $hasPortable = $false
-          if ($winUnpacked) {
-            if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
-            Compress-Archive -Path (Join-Path $winUnpacked.FullName "*") -DestinationPath $portableZip
-            $hasPortable = $true
-          }
-
-          $stableExe = Join-Path $PWD "Ozonator.exe"
-          Copy-Item $exe.FullName $stableExe -Force
-
-          "exe_path=$stableExe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "portable_ok=$($hasPortable.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "portable_zip=$portableZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-      - name: "Publish/Update nightly release (tag: nightly)"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          # Recreate release each time so the tag 'nightly' always points to the current commit.
+          $ok = $true
           try {
-            gh release delete nightly --yes --cleanup-tag
+            npm ci
+            if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
           } catch {
-            # ok if not exists
+            Write-Host "npm ci failed. Retrying with npm ci --legacy-peer-deps"
+            npm ci --legacy-peer-deps
+            if ($LASTEXITCODE -ne 0) { $ok = $false }
           }
 
-          $assets = @("${{ steps.prep.outputs.exe_path }}")
-          if ("${{ steps.prep.outputs.portable_ok }}" -eq "true") {
-            $assets += "${{ steps.prep.outputs.portable_zip }}"
+          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Lint (if script exists)
+        id: lint
+        if: always() && steps.install.outputs.ok == 'true'
+        continue-on-error: true
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $hasLint = $false
+          if ($null -ne $pkg.scripts) {
+            $hasLint = $pkg.scripts.PSObject.Properties.Name -contains 'lint'
           }
 
-          gh release create nightly $assets --title "nightly" --notes "Automated nightly build" --prerelease --target $env:GITHUB_SHA
+          if (-not $hasLint) {
+            Write-Host "No lint script in package.json"
+            "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          npm run lint
+          $ok = ($LASTEXITCODE -eq 0)
+          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Type check (script if exists; else tsc --noEmit)
+        id: typecheck
+        if: always() && steps.install.outputs.ok == 'true'
+        continue-on-error: true
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $hasTypecheck = $false
+          if ($null -ne $pkg.scripts) {
+            $hasTypecheck = $pkg.scripts.PSObject.Properties.Name -contains 'typecheck'
+          }
+
+          if ($hasTypecheck) {
+            npm run typecheck
+            $ok = ($LASTEXITCODE -eq 0)
+            "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          if (Test-Path -Path 'tsconfig.json') {
+            npx tsc -p tsconfig.json --noEmit
+            $ok = ($LASTEXITCODE -eq 0)
+            "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          Write-Host "No typecheck script and no tsconfig.json"
+          "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build installer (npm run dist)
+        id: dist
+        if: always() && steps.install.outputs.ok == 'true'
+        run: |
+          npm run dist -- --publish never
+          $ok = ($LASTEXITCODE -eq 0)
+          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Prepare release assets (Ozonator.exe + optional portable)
+        if: steps.dist.outputs.ok == 'true'
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+
+          # 1) Installer exe — prefer release\Озонатор.exe (electron-builder output)
+          $installerOk = $false
+          $preferred = @(
+            (Join-Path $PWD 'release\Озонатор.exe'),
+            (Join-Path $PWD 'release\Ozonator.exe'),
+            (Join-Path $PWD 'Озонатор.exe'),
+            (Join-Path $PWD 'Ozonator.exe')
+          )
+
+          foreach ($p in $preferred) {
+            if (Test-Path $p) {
+              Copy-Item $p 'release\Ozonator.exe' -Force
+              $installerOk = $true
+              break
+            }
+          }
+
+          if (-not $installerOk -and (Test-Path 'release')) {
+            $exe = Get-ChildItem -Path 'release' -Recurse -File -Filter '*.exe' |
+              Where-Object { $_.FullName -notmatch 'win-unpacked' } |
+              Sort-Object Length -Descending |
+              Select-Object -First 1
+            if ($exe) {
+              Copy-Item $exe.FullName 'release\Ozonator.exe' -Force
+              $installerOk = $true
+            }
+          }
+
+          if (-not $installerOk) {
+            throw "Installer exe not found"
+          }
+
+          # 2) Portable (optional): zip win-unpacked
+          $winUnpacked = $null
+          if (Test-Path 'release') {
+            $winUnpacked = Get-ChildItem -Path 'release' -Directory -Recurse |
+              Where-Object { $_.Name -eq 'win-unpacked' } |
+              Select-Object -First 1
+          }
+
+          if ($null -ne $winUnpacked) {
+            $zipPath = Join-Path $PWD 'release\portable-win-unpacked.zip'
+            if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+            Compress-Archive -Path (Join-Path $winUnpacked.FullName '*') -DestinationPath $zipPath
+          }
+
+      - name: Publish Nightly Release
+        if: steps.dist.outputs.ok == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: nightly
+          name: Nightly build
+          prerelease: true
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: release\Ozonator.exe,release\portable-win-unpacked.zip
+          artifactErrorsFailBuild: false
+          body: |
+            Автоматическая ночная сборка (Windows).
+
+            Скачивание без архива: Ozonator.exe

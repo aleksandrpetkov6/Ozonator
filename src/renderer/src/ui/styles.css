@@ -81,28 +81,28 @@ a{ color: inherit; text-decoration: none; }
 .topbarInner{
   max-width: none;
   margin: 0 auto;
-  padding: 12px 18px;
+  padding: 8px 14px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
 }
 
 .appTitle{
   display: inline-flex;
   align-items: baseline;
   gap: 10px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
 }
 
 .appName{
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 820;
   letter-spacing: -0.02em;
 }
 
 .appStoreName{
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 650;
   color: rgba(60,60,67,.78);
   letter-spacing: 0;
@@ -125,10 +125,10 @@ a{ color: inherit; text-decoration: none; }
 }
 
 .appNameLink{
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 820;
   letter-spacing: -0.02em;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border-radius: 12px;
   transition: background .16s ease, transform .12s ease;
 }
@@ -172,8 +172,8 @@ a{ color: inherit; text-decoration: none; }
 
 .iconLink,
 .iconBtn{
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -233,9 +233,9 @@ a{ color: inherit; text-decoration: none; }
 }
 
 .segmented a{
-  min-width: 110px;
+  min-width: 104px;
   text-align: center;
-  padding: 8px 12px;
+  padding: 6px 10px;
   border-radius: 999px;
   font-weight: 600;
   color: rgba(28,28,30,.84);
@@ -268,7 +268,7 @@ a{ color: inherit; text-decoration: none; }
 }
 
 .h1{
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 760;
   letter-spacing: -0.02em;
 }
@@ -612,6 +612,75 @@ button:disabled{
 .colToggle:active{ transform: translateY(0) scale(.99); }
 
 /* Collapsed columns bar */
+
+.collapsedDropdownRow{
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.collapsedPlusBtn{
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: rgba(255,255,255,.75);
+  box-shadow: var(--shadowSoft);
+  font-size: 18px;
+  line-height: 26px;
+  cursor: pointer;
+  transition: transform .12s ease, background .16s ease;
+}
+
+.collapsedPlusBtn:hover{
+  background: rgba(255,255,255,1);
+  transform: translateY(-1px);
+}
+
+.collapsedPlusBtn:active{
+  transform: translateY(0) scale(.99);
+}
+
+.collapsedMenu{
+  position: absolute;
+  top: 34px;
+  left: 0;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid var(--hairline);
+  background: rgba(255,255,255,.94);
+  box-shadow: 0 12px 40px rgba(0,0,0,.12);
+  z-index: 40;
+  backdrop-filter: blur(10px);
+}
+
+.collapsedMenuItem{
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.collapsedMenuItem:hover{
+  background: rgba(0,122,255,.10);
+}
+
+.collapsedMenuItem:active{
+  background: rgba(0,122,255,.16);
+}
+
 .collapsedBar{
   display: flex;
   align-items: center;
@@ -682,6 +751,7 @@ button:disabled{
 }
 
 .resizeIndicator{
+  display: none;
   position: absolute;
   top: 0;
   bottom: 0;
