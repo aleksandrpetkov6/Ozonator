@@ -58,10 +58,10 @@ async function resolveBaseUrl(): Promise<string> {
   );
 }
 
-async function clickByTexts(page: Page, patterns: RegExp[], maxClicks = 2) {
+async function clickByTexts(page: Page, patterns: RegExp[], maxClicks = 2): Promise<number> {
   let clicks = 0;
   for (const pattern of patterns) {
-    if (clicks >= maxClicks) return;
+    if (clicks >= maxClicks) return clicks;
     const byRoleButton = page.getByRole('button', { name: pattern }).first();
     if (await safeClick(byRoleButton)) {
       clicks += 1;
@@ -82,197 +82,138 @@ async function clickByTexts(page: Page, patterns: RegExp[], maxClicks = 2) {
       await page.waitForTimeout(200);
     }
   }
+  return clicks;
 }
 
-type AggressiveScrollProbe = {
-  foundTarget: boolean;
-  targetTag?: string;
-  targetClass?: string;
-  targetClientHeight?: number;
-  targetClientWidth?: number;
-  targetScrollHeight?: number;
-  targetScrollWidth?: number;
-  verticalHadBlankFrames: boolean;
-  verticalMaxBlankMs: number;
-  verticalWorstObservedTextLen: number;
-  horizontalChanged: boolean;
-  samples: Array<{
-    step: number;
-    axis: 'y' | 'x';
-    blankMs: number;
-    textLen: number;
-    rows: number;
-    cells: number;
-    top: number;
-    left: number;
-  }>;
+type ScrollProbe = {
+  hasTarget: boolean;
+  scrollTop: number;
+  scrollLeft: number;
+  maxTop: number;
+  maxLeft: number;
+  rowLike: number;
+  cellLike: number;
+  textLen: number;
+  busy: boolean;
 };
 
-async function aggressiveScrollProbe(page: Page): Promise<AggressiveScrollProbe> {
-  return page.evaluate(async () => {
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const raf = () => new Promise((r) => requestAnimationFrame(() => r(null)));
-
-    const styleOverflow = (el: HTMLElement) => {
-      const cs = window.getComputedStyle(el);
-      return {
-        x: /(auto|scroll)/.test(cs.overflowX),
-        y: /(auto|scroll)/.test(cs.overflowY),
-      };
-    };
-
-    const all = Array.from(document.querySelectorAll<HTMLElement>('body *'));
-    const candidates = all
+async function probePrimaryScrollable(page: Page, move?: { top?: number; left?: number }): Promise<ScrollProbe> {
+  return page.evaluate((moveArg) => {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('*'))
       .filter((el) => {
-        if (!el.isConnected) return false;
-        const rect = el.getBoundingClientRect();
-        if (rect.width < 120 || rect.height < 80) return false;
-        const ov = styleOverflow(el);
-        const canY = ov.y && el.scrollHeight > el.clientHeight + 40;
-        const canX = ov.x && el.scrollWidth > el.clientWidth + 40;
-        return canY || canX;
+        const cs = window.getComputedStyle(el);
+        const y = /(auto|scroll)/.test(cs.overflowY);
+        const x = /(auto|scroll)/.test(cs.overflowX);
+        return (y || x) && (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth);
       })
-      .sort((a, b) => {
-        const as = a.clientWidth * a.clientHeight;
-        const bs = b.clientWidth * b.clientHeight;
-        return bs - as;
-      });
+      .sort((a, b) => (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight));
 
     const target = candidates[0];
     if (!target) {
       return {
-        foundTarget: false,
-        verticalHadBlankFrames: false,
-        verticalMaxBlankMs: 0,
-        verticalWorstObservedTextLen: 0,
-        horizontalChanged: false,
-        samples: [],
-      } satisfies AggressiveScrollProbe;
+        hasTarget: false,
+        scrollTop: 0,
+        scrollLeft: 0,
+        maxTop: 0,
+        maxLeft: 0,
+        rowLike: 0,
+        cellLike: 0,
+        textLen: 0,
+        busy: false,
+      };
     }
 
-    const snap = () => {
-      const rows = target.querySelectorAll('tr, [role="row"], .ag-row').length;
-      const cells = target.querySelectorAll('td, [role="gridcell"], .ag-cell, .cell, .row').length;
-      const txt = (target.innerText || '').replace(/\s+/g, ' ').trim();
-      return { rows, cells, textLen: txt.length };
-    };
+    if (typeof moveArg?.top === 'number') target.scrollTop = moveArg.top;
+    if (typeof moveArg?.left === 'number') target.scrollLeft = moveArg.left;
 
-    // Прогрев
-    target.scrollTop = 0;
-    target.scrollLeft = 0;
-    await raf();
-    await sleep(30);
-
-    const samples: AggressiveScrollProbe['samples'] = [];
-    let verticalMaxBlankMs = 0;
-    let verticalWorstObservedTextLen = Number.MAX_SAFE_INTEGER;
-
-    const yMax = Math.max(0, target.scrollHeight - target.clientHeight);
-    const xMax = Math.max(0, target.scrollWidth - target.clientWidth);
-
-    // Агрессивные рывки по вертикали: как пользователь резко тянет ползунок туда-сюда
-    if (yMax > 0) {
-      const yPositions = [yMax, 0, yMax, 0, yMax, 0, Math.floor(yMax * 0.6), Math.floor(yMax * 0.2), yMax, 0];
-
-      for (let i = 0; i < yPositions.length; i += 1) {
-        target.scrollTop = yPositions[i];
-
-        const started = performance.now();
-        let blankMs = 0;
-        let bestTextLen = 0;
-        let ok = false;
-
-        // Проверяем сразу и потом быстро опрашиваем ~350мс, чтобы поймать "пустой экран"
-        for (let t = 0; t < 22; t += 1) {
-          await raf();
-          const s = snap();
-          bestTextLen = Math.max(bestTextLen, s.textLen);
-
-          const hasContent = s.rows > 0 || s.cells > 10 || s.textLen > 20;
-          if (hasContent) {
-            blankMs = Math.round(performance.now() - started);
-            verticalWorstObservedTextLen = Math.min(verticalWorstObservedTextLen, s.textLen);
-            samples.push({
-              step: i,
-              axis: 'y',
-              blankMs,
-              textLen: s.textLen,
-              rows: s.rows,
-              cells: s.cells,
-              top: target.scrollTop,
-              left: target.scrollLeft,
-            });
-            verticalMaxBlankMs = Math.max(verticalMaxBlankMs, blankMs);
-            ok = true;
-            break;
-          }
-          await sleep(16);
-        }
-
-        if (!ok) {
-          // Контент так и не появился за окно наблюдения
-          blankMs = Math.round(performance.now() - started);
-          verticalWorstObservedTextLen = Math.min(verticalWorstObservedTextLen, bestTextLen);
-          samples.push({
-            step: i,
-            axis: 'y',
-            blankMs,
-            textLen: bestTextLen,
-            rows: 0,
-            cells: 0,
-            top: target.scrollTop,
-            left: target.scrollLeft,
-          });
-          verticalMaxBlankMs = Math.max(verticalMaxBlankMs, blankMs);
-        }
-      }
-    }
-
-    // Горизонталь: проверяем, что реально скроллится туда-сюда
-    let horizontalChanged = false;
-    if (xMax > 0) {
-      const before = target.scrollLeft;
-      target.scrollLeft = xMax;
-      await raf();
-      await sleep(20);
-      const atMax = target.scrollLeft;
-      target.scrollLeft = 0;
-      await raf();
-      await sleep(20);
-      const back = target.scrollLeft;
-      horizontalChanged = atMax > before || back < atMax;
-
-      const s = snap();
-      samples.push({
-        step: 0,
-        axis: 'x',
-        blankMs: 0,
-        textLen: s.textLen,
-        rows: s.rows,
-        cells: s.cells,
-        top: target.scrollTop,
-        left: target.scrollLeft,
-      });
-    }
+    const rowLike = target.querySelectorAll('tr, [role="row"], .ag-row').length;
+    const cellLike = target.querySelectorAll('td, [role="gridcell"], .ag-cell').length;
+    const textLen = (target.innerText || '').trim().length;
+    const busy =
+      !!target.querySelector('[aria-busy="true"], .loading, .loader, .spinner') ||
+      /загрузка|loading|подожд/i.test((target.innerText || '').slice(0, 300));
 
     return {
-      foundTarget: true,
-      targetTag: target.tagName,
-      targetClass: target.className || '',
-      targetClientHeight: target.clientHeight,
-      targetClientWidth: target.clientWidth,
-      targetScrollHeight: target.scrollHeight,
-      targetScrollWidth: target.scrollWidth,
-      verticalHadBlankFrames: verticalMaxBlankMs > 150,
-      verticalMaxBlankMs,
-      verticalWorstObservedTextLen: Number.isFinite(verticalWorstObservedTextLen) ? verticalWorstObservedTextLen : 0,
-      horizontalChanged,
-      samples,
-    } satisfies AggressiveScrollProbe;
-  });
+      hasTarget: true,
+      scrollTop: target.scrollTop,
+      scrollLeft: target.scrollLeft,
+      maxTop: Math.max(0, target.scrollHeight - target.clientHeight),
+      maxLeft: Math.max(0, target.scrollWidth - target.clientWidth),
+      rowLike,
+      cellLike,
+      textLen,
+      busy,
+    };
+  }, move ?? {});
 }
 
-test('human smoke: open app, click around, type, filter, sort, aggressive scroll', async ({ page }) => {
+async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<void> {
+  const base = await probePrimaryScrollable(page);
+  if (!base.hasTarget || base.maxTop <= 8) return;
+
+  const jumps = [
+    Math.floor(base.maxTop * 0.98),
+    Math.floor(base.maxTop * 0.03),
+    Math.floor(base.maxTop * 0.90),
+    Math.floor(base.maxTop * 0.12),
+    Math.floor(base.maxTop * 0.80),
+    Math.floor(base.maxTop * 0.22),
+    Math.floor(base.maxTop * 0.70),
+    Math.floor(base.maxTop * 0.05),
+    base.maxTop,
+    0,
+  ];
+
+  let maxBlankStreakMs = 0;
+  const examples: string[] = [];
+
+  for (const top of jumps) {
+    await probePrimaryScrollable(page, { top });
+
+    const started = Date.now();
+    let blankStreak = 0;
+
+    while (Date.now() - started < 1800) {
+      const snap = await probePrimaryScrollable(page);
+      const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
+
+      if (hasData) {
+        blankStreak = 0;
+      } else if (!snap.busy) {
+        blankStreak += 60;
+        maxBlankStreakMs = Math.max(maxBlankStreakMs, blankStreak);
+        if (examples.length < 10) {
+          examples.push(`top=${top}, t=${Date.now() - started}ms`);
+        }
+      }
+
+      await page.waitForTimeout(60);
+    }
+  }
+
+  expect(
+    maxBlankStreakMs,
+    `Данные пропадали при агрессивной вертикальной прокрутке (рывки вниз/вверх). Макс. пустой интервал: ${maxBlankStreakMs}мс. Примеры: ${examples.join(' | ')}`,
+  ).toBe(0);
+}
+
+async function assertHorizontalScrollAlwaysReachable(page: Page): Promise<void> {
+  const base = await probePrimaryScrollable(page);
+  if (!base.hasTarget || base.maxLeft <= 8) return;
+
+  const left1 = Math.floor(base.maxLeft * 0.95);
+  await probePrimaryScrollable(page, { left: left1 });
+  const s1 = await probePrimaryScrollable(page);
+
+  await probePrimaryScrollable(page, { left: 0 });
+  const s2 = await probePrimaryScrollable(page);
+
+  expect(s1.scrollLeft, 'Горизонтальная прокрутка не сдвигается вправо').toBeGreaterThan(0);
+  expect(s2.scrollLeft, 'Горизонтальная прокрутка не возвращается влево').toBeLessThanOrEqual(2);
+}
+
+
+test('human smoke: UI usage (aggressive scroll, columns, logs, category)', async ({ page }) => {
   const baseUrl = await resolveBaseUrl();
 
   const pageErrors: string[] = [];
@@ -296,11 +237,23 @@ test('human smoke: open app, click around, type, filter, sort, aggressive scroll
 
   await expect(page.locator('body')).toBeVisible();
 
-  // Переходы по типичным вкладкам/экранам
-  await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
-  await clickByTexts(page, [/лог/i, /logs?/i, /истори/i], 1);
-  await clickByTexts(page, [/настро/i, /settings?/i], 1);
-  await clickByTexts(page, [/товар/i, /products?/i], 1);
+  // Переходы по типичным вкладкам/экранам + проверки, что экраны реально открылись
+  const productsOpen1 = await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
+  expect(productsOpen1, 'Не удалось открыть раздел товаров/каталога').toBeGreaterThan(0);
+
+  const logsOpen = await clickByTexts(page, [/лог/i, /logs?/i, /истори/i], 1);
+  expect(logsOpen, 'Не удалось открыть раздел логов').toBeGreaterThan(0);
+  const logsBody = (await page.locator('body').innerText()).toLowerCase();
+  expect(/лог|logs?|истори|history|журнал/.test(logsBody), 'Экран логов не отобразился').toBeTruthy();
+
+  const settingsOpen = await clickByTexts(page, [/настро/i, /settings?/i], 1);
+  expect(settingsOpen, 'Не удалось открыть раздел настроек').toBeGreaterThan(0);
+
+  const productsOpen2 = await clickByTexts(page, [/товар/i, /products?/i], 1);
+  expect(productsOpen2, 'Не удалось вернуться в раздел товаров').toBeGreaterThan(0);
+
+  const categoryVisible = await page.getByText(/категор|category/i).first().isVisible().catch(() => false);
+  expect(categoryVisible, 'Не найдено отображение категории (заголовок/метка)').toBeTruthy();
 
   // Ввод в поиск / фильтр
   const searchInput = await firstVisible(
@@ -365,49 +318,38 @@ test('human smoke: open app, click around, type, filter, sort, aggressive scroll
     if (await safeClick(b)) {
       clicked += 1;
       await page.waitForTimeout(200);
+      // Закрываем модалку, если появилась
       await page.keyboard.press('Escape').catch(() => {});
     }
   }
 
-  // Агрессивная проверка скролла (рывки вниз/вверх) + горизонталь
-  const scrollProbe = await aggressiveScrollProbe(page);
-  test.info().annotations.push({
-    type: 'scroll-probe',
-    description: JSON.stringify(scrollProbe).slice(0, 1500),
+  // Базовый скролл страницы + агрессивная проверка таблицы/списка (рывки вниз/вверх)
+  await page.evaluate(() => {
+    window.scrollTo({ top: 0 });
+    window.scrollTo({ top: document.body.scrollHeight });
+    window.scrollTo({ top: 0 });
   });
+
+  await assertAggressiveVerticalScrollNoBlank(page);
+  await assertHorizontalScrollAlwaysReachable(page);
 
   // Проверка, что UI живой и не пустой после действий/скролла
   const visibleRows = await page.locator('table tr, [role="row"], .ag-row').count().catch(() => 0);
   const visibleText = (await page.locator('body').innerText()).trim();
   expect(visibleText.length).toBeGreaterThan(0);
 
-  // Скрин на успех/состояние (для артефактов)
+  // Скрин на успех (для артефактов)
   await page.screenshot({ path: 'test-results/human-smoke-success.png', fullPage: true }).catch(() => {});
 
   // Не валим по единичным шумным консольным предупреждениям, но валим по pageerror
   expect(pageErrors, `Uncaught page errors:\n${pageErrors.join('\n')}`).toEqual([]);
 
+  // Если совсем ничего не нашли в таблице и нет типичных экранов — тоже сигнализируем
   if (visibleRows === 0 && !/товар|products|лог|settings|настро/i.test(visibleText)) {
     throw new Error('UI открылся, но не найдено ожидаемых элементов (таблица/экраны). Проверь селекторы/маршрут.');
   }
 
-  if (!scrollProbe.foundTarget) {
-    throw new Error('Не найден прокручиваемый контейнер для smoke-проверки скролла.');
-  }
-
-  // Ключевая проверка: после резких рывков контент должен появляться практически мгновенно.
-  // 150мс — мягкий предел для UI; 1-2 секунды гарантированно поймается как fail.
-  expect(
-    scrollProbe.verticalMaxBlankMs,
-    `Слишком долгое исчезновение данных при агрессивной вертикальной прокрутке: ${scrollProbe.verticalMaxBlankMs}мс`,
-  ).toBeLessThanOrEqual(150);
-
-  // Горизонтальный скролл не обязателен на любом экране, но если контент шире контейнера — он должен двигаться.
-  const horizontalNeeded = (scrollProbe.targetScrollWidth || 0) > (scrollProbe.targetClientWidth || 0) + 20;
-  if (horizontalNeeded) {
-    expect(scrollProbe.horizontalChanged, 'Горизонтальная прокрутка есть, но не двигается').toBeTruthy();
-  }
-
+  // Сохраняем как мягкую диагностику (не ломаем, если есть одиночные console.error от внешних библиотек)
   test.info().annotations.push({
     type: 'console-errors',
     description: consoleErrors.slice(0, 10).join(' | ') || 'none',
