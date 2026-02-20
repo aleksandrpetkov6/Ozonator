@@ -1,87 +1,231 @@
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@
- export const ProductsPage: React.FC = () => {
-   // component implementation
-   return (
-     <div>
-       {/* Products page content */}
-     </div>
-   );
- };
-+
-+// Ensure the component is exported as the default export for compatibility with tests
-+export default ProductsPage;
---- a/src/renderer/src/ui/pages/SettingsPage.tsx
-+++ b/src/renderer/src/ui/pages/SettingsPage.tsx
-@@
- export const SettingsPage: React.FC = () => {
-   // component implementation
-   return (
-     <div>
-       {/* Settings page content */}
-     </div>
-   );
- };
-+
-+// Ensure the component is exported as the default export for compatibility with tests
-+export default SettingsPage;
---- a/src/renderer/src/ui/pages/LogsPage.tsx
-+++ b/src/renderer/src/ui/pages/LogsPage.tsx
-@@
- export const LogsPage: React.FC = () => {
-   // component implementation
-   return (
-     <div>
-       {/* Logs page content */}
-     </div>
-   );
- };
-+
-+// Ensure the component is exported as the default export for compatibility with tests
-+export default LogsPage;
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@
--const ProductsPage: React.FC = () => {
-+const ProductsPage: React.FC = () => {
-   // component implementation
-   return (
-     <div>
-       {/* Products page content */}
-     </div>
-   );
- };
-+
-+// Ensure the component is exported as the default export for compatibility with tests
-+export default ProductsPage;
---- a/src/renderer/src/ui/pages/SettingsPage.tsx
-+++ b/src/renderer/src/ui/pages/SettingsPage.tsx
-@@
--const SettingsPage: React.FC = () => {
-+const SettingsPage: React.FC = () => {
-   // component implementation
-   return (
-     <div>
-       {/* Settings page content */}
-     </div>
-   );
- };
-+
-+// Ensure the component is exported as the default export for compatibility with tests
-+export default SettingsPage;
---- a/src/renderer/src/ui/pages/LogsPage.tsx
-+++ b/src/renderer/src/ui/pages/LogsPage.tsx
-@@
--const LogsPage: React.FC = () => {
-+const LogsPage: React.FC = () => {
-   // component implementation
-   return (
-     <div>
-       {/* Logs page content */}
-     </div>
-   );
- };
-+
-+// Ensure the component is exported as the default export for compatibility with tests
-+export default LogsPage;
+# latest.patch (ШАБЛОН ПАТЧА, НЕ ПРОГОНЯЛСЯ git apply --check)
+# Причина: в текущей сессии недоступен web-доступ к GitHub (web.run падает с AttributeError),
+# поэтому я не смог открыть актуальный tests/e2e/human-smoke.spec.ts и собрать apply-ready unified diff.
+#
+# Ниже — готовые изменения для вставки в tests/e2e/human-smoke.spec.ts (логика усиления e2e-теста).
+# Как только откроешь файл — вставь/замени по месту. Смысл: агрессивный drag вертикального thumb + артефакты.
+#
+# ==============================
+# 1) ДОБАВИТЬ helper-функции (рядом с остальными helpers)
+# ==============================
+
+/* BEGIN: aggressive vertical scroll helpers */
+
+async function waitMs(ms: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms))
+}
+
+async function findGridAndScrollbars(page: any) {
+  const gridCandidates = [
+    '[data-testid="products-grid"]',
+    '[data-testid="table-viewport"]',
+    '.ag-root-wrapper',
+    '.ag-center-cols-viewport',
+    'table',
+  ]
+
+  let grid: any = null
+  for (const sel of gridCandidates) {
+    const el = page.locator(sel).first()
+    if ((await el.count()) > 0) {
+      grid = el
+      break
+    }
+  }
+
+  if (!grid) throw new Error('Grid/table viewport not found')
+
+  const vThumbCandidates = [
+    '.ag-body-vertical-scroll-viewport',
+    '.ag-body-vertical-scroll',
+    '[data-testid="vertical-scrollbar-thumb"]',
+  ]
+  const hBarCandidates = [
+    '.ag-body-horizontal-scroll-viewport',
+    '.ag-body-horizontal-scroll',
+    '[data-testid="horizontal-scrollbar"]',
+  ]
+
+  let vThumb: any = null
+  for (const sel of vThumbCandidates) {
+    const el = page.locator(sel).first()
+    if ((await el.count()) > 0) {
+      vThumb = el
+      break
+    }
+  }
+
+  let hBar: any = null
+  for (const sel of hBarCandidates) {
+    const el = page.locator(sel).first()
+    if ((await el.count()) > 0) {
+      hBar = el
+      break
+    }
+  }
+
+  return { grid, vThumb, hBar }
+}
+
+async function assertGridHasVisibleData(page: any, grid: any) {
+  const rowCandidates = [
+    '.ag-row',
+    '[role="row"]',
+    'tbody tr',
+  ]
+  let visibleRows = 0
+
+  for (const sel of rowCandidates) {
+    const rows = grid.locator(sel)
+    const count = await rows.count()
+    if (count > 0) {
+      visibleRows = count
+      break
+    }
+  }
+
+  // Доп. страховка: не пустой viewport
+  const box = await grid.boundingBox()
+  if (!box || box.width < 50 || box.height < 50) {
+    throw new Error('Grid viewport is missing or collapsed')
+  }
+
+  if (visibleRows === 0) {
+    // иногда grid-строки рендерятся div-ячейками без row-обертки — проверяем любой видимый текст
+    const text = ((await grid.innerText()) || '').trim()
+    if (!text) {
+      throw new Error('Grid became empty (no visible rows/cells text)')
+    }
+  }
+
+  // Проверка "полностью пустого" белого экрана/скелета
+  const screenshotState = await page.evaluate((el: HTMLElement) => {
+    const style = getComputedStyle(el)
+    return {
+      display: style.display,
+      visibility: style.visibility,
+      opacity: style.opacity,
+      childCount: el.children.length,
+      textLen: (el.innerText || '').trim().length,
+      rect: el.getBoundingClientRect().toJSON?.() ?? null,
+    }
+  }, await grid.elementHandle())
+
+  if (screenshotState.visibility === 'hidden' || screenshotState.display === 'none') {
+    throw new Error('Grid hidden during scroll')
+  }
+}
+
+async function aggressiveVerticalThumbDrag(page: any, vThumb: any, grid: any, testInfo: any) {
+  const thumbBox = await vThumb.boundingBox()
+  const gridBox = await grid.boundingBox()
+
+  if (!thumbBox || !gridBox) {
+    throw new Error('Failed to get scrollbar/grid bounding boxes')
+  }
+
+  // Если thumb почти не виден, все равно пробуем drag по зоне вертикального скролла
+  const startX = Math.round(thumbBox.x + Math.max(4, Math.min(thumbBox.width - 2, thumbBox.width / 2)))
+  let startY = Math.round(thumbBox.y + Math.max(4, Math.min(thumbBox.height - 2, thumbBox.height / 2)))
+
+  const topY = Math.round(gridBox.y + 18)
+  const bottomY = Math.round(gridBox.y + gridBox.height - 18)
+
+  for (let cycle = 1; cycle <= 4; cycle++) {
+    // вниз (резкий рывок)
+    await page.mouse.move(startX, startY)
+    await page.mouse.down()
+    await page.mouse.move(startX, bottomY, { steps: 2 })
+    await assertGridHasVisibleData(page, grid)
+    await waitMs(40)
+
+    // немного дергаем туда-сюда у нижней границы
+    await page.mouse.move(startX, bottomY - 80, { steps: 1 })
+    await assertGridHasVisibleData(page, grid)
+    await page.mouse.move(startX, bottomY - 10, { steps: 1 })
+    await assertGridHasVisibleData(page, grid)
+
+    // вверх (резкий рывок)
+    await page.mouse.move(startX, topY, { steps: 2 })
+    await assertGridHasVisibleData(page, grid)
+    await waitMs(30)
+
+    // микро-рывок вниз/вверх
+    await page.mouse.move(startX, topY + 90, { steps: 1 })
+    await assertGridHasVisibleData(page, grid)
+    await page.mouse.move(startX, topY + 10, { steps: 1 })
+    await assertGridHasVisibleData(page, grid)
+
+    await page.mouse.up()
+
+    await page.screenshot({
+      path: testInfo.outputPath(`vertical-scroll-aggressive-cycle-${cycle}.png`),
+      fullPage: false,
+    })
+
+    await waitMs(40)
+    startY = topY + 20
+  }
+}
+
+/* END: aggressive vertical scroll helpers */
+
+# ==============================
+# 2) В human-smoke.spec.ts ЗАМЕНИТЬ мягкую проверку вертикальной прокрутки
+#    на test.step(...) ниже
+# ==============================
+
+await test.step('проверка вертикальной прокрутки (aggressive thumb drag)', async () => {
+  const { grid, vThumb } = await findGridAndScrollbars(page)
+
+  if (!vThumb) {
+    throw new Error('Vertical scrollbar/thumb not found — cannot run aggressive scroll scenario')
+  }
+
+  await assertGridHasVisibleData(page, grid)
+
+  await page.screenshot({
+    path: testInfo.outputPath('vertical-scroll-before.png'),
+    fullPage: false,
+  })
+
+  await aggressiveVerticalThumbDrag(page, vThumb, grid, testInfo)
+
+  await assertGridHasVisibleData(page, grid)
+
+  await page.screenshot({
+    path: testInfo.outputPath('vertical-scroll-after.png'),
+    fullPage: false,
+  })
+})
+
+# ==============================
+# 3) ДОБАВИТЬ шаг для наглядности артефактов (если его нет)
+# ==============================
+# В начале теста (или beforeEach) желательно:
+#
+# test.use({
+#   trace: 'retain-on-failure',
+#   video: 'retain-on-failure',
+#   screenshot: 'only-on-failure',
+# })
+
+# ==============================
+# 4) ГОРИЗОНТАЛЬНЫЙ СКРОЛЛ — усиление проверки (если уже есть, просто добавь шаг)
+# ==============================
+
+await test.step('проверка горизонтальной прокрутки (скроллбар доступен)', async () => {
+  const { hBar } = await findGridAndScrollbars(page)
+  if (!hBar) throw new Error('Horizontal scrollbar not found')
+  const box = await hBar.boundingBox()
+  if (!box || box.width < 40) throw new Error('Horizontal scrollbar is not visible/usable')
+})
+
+# ==============================
+# 5) ВАЖНО ПО СЕЛЕКТОРАМ
+# ==============================
+# Если у тебя в проекте не AG Grid — подправь массивы селекторов:
+# - gridCandidates
+# - vThumbCandidates
+# - hBarCandidates
+# но сам сценарий (резкие drag вниз/вверх + assert после каждого рывка) оставь без смягчения.
