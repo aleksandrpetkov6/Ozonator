@@ -142,7 +142,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
 
   const [collapsedOpen, setCollapsedOpen] = useState(false)
-  const [bodyScrollTop, setBodyScrollTop] = useState(0)
+  const [bodyWindowAnchorRow, setBodyWindowAnchorRow] = useState(0)
   const [bodyViewportH, setBodyViewportH] = useState(600)
 
   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
@@ -620,13 +620,21 @@ function onDragOverHeader(e: React.DragEvent) {
     return () => ro.disconnect()
   }, [])
 
+  const ROW_H = 28
+
   useEffect(() => {
     const body = bodyScrollRef.current
     if (!body) return
 
+    const viewH = bodyViewportH || 600
+    const viewportRows = Math.max(1, Math.ceil(viewH / ROW_H))
+    const windowStepRows = Math.max(12, Math.ceil(viewportRows / 2))
+
     const onScroll = () => {
-      const nextTop = body.scrollTop
-      setBodyScrollTop((prev) => (prev === nextTop ? prev : nextTop))
+      const nextTop = Math.max(0, body.scrollTop || 0)
+      const anchorRow = Math.floor(nextTop / ROW_H)
+      const nextWindowAnchorRow = Math.floor(anchorRow / windowStepRows) * windowStepRows
+      setBodyWindowAnchorRow((prev) => (prev === nextWindowAnchorRow ? prev : nextWindowAnchorRow))
     }
 
     body.addEventListener('scroll', onScroll, { passive: true })
@@ -635,15 +643,15 @@ function onDragOverHeader(e: React.DragEvent) {
     return () => {
       body.removeEventListener('scroll', onScroll)
     }
-  }, [])
-
-  const ROW_H = 28
+  }, [bodyViewportH])
 
   const totalRows = filtered.length
   const viewH = bodyViewportH || 600
-  const OVERSCAN = Math.max(24, Math.ceil(viewH / ROW_H))
-  const startRow = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN)
-  const endRow = Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2))
+  const viewportRows = Math.max(1, Math.ceil(viewH / ROW_H))
+  const OVERSCAN = Math.max(64, viewportRows * 3)
+  const WINDOW_STEP_ROWS = Math.max(12, Math.ceil(viewportRows / 2))
+  const startRow = Math.max(0, bodyWindowAnchorRow - OVERSCAN)
+  const endRow = Math.min(totalRows, bodyWindowAnchorRow + viewportRows + (OVERSCAN * 2) + WINDOW_STEP_ROWS)
 
   const visibleRows = useMemo(() => filtered.slice(startRow, endRow), [filtered, startRow, endRow])
   const topSpace = startRow * ROW_H
