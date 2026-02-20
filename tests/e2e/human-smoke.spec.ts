@@ -1,7 +1,8 @@
 import { test, expect, Page, Locator } from '@playwright/test';
 import * as fs from 'node:fs';
+import * as http from 'node:http';
 import * as path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const NON_DESTRUCTIVE_BUTTON_BLACKLIST = /(удал|delete|remove|reset|сброс|drop|clear all|очист|logout|выйти|exit|close app|quit)/i;
 
@@ -130,6 +131,189 @@ async function resolveUiEntry(): Promise<UiEntry> {
 }
 
 
+
+type LocalUiServer = {
+  url: string;
+  close: () => Promise<void>;
+};
+
+function contentTypeFor(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.html') return 'text/html; charset=utf-8';
+  if (ext === '.js' || ext === '.mjs' || ext === '.cjs') return 'application/javascript; charset=utf-8';
+  if (ext === '.css') return 'text/css; charset=utf-8';
+  if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.woff') return 'font/woff';
+  if (ext === '.woff2') return 'font/woff2';
+  if (ext === '.ttf') return 'font/ttf';
+  return 'application/octet-stream';
+}
+
+async function startLocalUiServer(indexFilePath: string): Promise<LocalUiServer> {
+  const rootDir = path.dirname(indexFilePath);
+
+  const server = http.createServer((req, res) => {
+    const reqUrl = req.url || '/';
+    const urlPath = reqUrl.split('?')[0].split('#')[0] || '/';
+    const normalized = decodeURIComponent(urlPath === '/' ? '/index.html' : urlPath);
+    const candidate = path.resolve(rootDir, `.${normalized}`);
+
+    if (!candidate.startsWith(rootDir)) {
+      res.statusCode = 403;
+      res.end('forbidden');
+      return;
+    }
+
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+      res.statusCode = 404;
+      res.end('not found');
+      return;
+    }
+
+    res.setHeader('Content-Type', contentTypeFor(candidate));
+    fs.createReadStream(candidate).pipe(res);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 41731;
+
+  return {
+    url: `http://127.0.0.1:${port}/index.html`,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+async function installE2EMockApi(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as any;
+    if (w.__ozonatorE2EApiStubInstalled) return;
+    w.__ozonatorE2EApiStubInstalled = true;
+
+    const products = Array.from({ length: 700 }, (_, i) => ({
+      id: i + 1,
+      product_id: 100000 + i,
+      sku: 200000 + i,
+      offer_id: `e2e_offer_${i + 1}`,
+      name: `E2E Product ${i + 1}`,
+      category: `Категория ${(i % 12) + 1}`,
+      brand: `Brand ${(i % 9) + 1}`,
+      type: `Type ${(i % 5) + 1}`,
+      barcode: `460000000${String(i).padStart(4, '0')}`,
+      is_visible: true,
+      price: 100 + (i % 50),
+      stock: 10 + (i % 40),
+    }));
+
+    const logs = Array.from({ length: 120 }, (_, i) => ({
+      id: i + 1,
+      action: i % 2 ? 'sync_products' : 'check_auth',
+      status: i % 7 ? 'ok' : 'warn',
+      started_at: new Date(Date.now() - i * 60_000).toISOString(),
+      finished_at: new Date(Date.now() - i * 60_000 + 15_000).toISOString(),
+      count: (i % 15) + 1,
+      message: `E2E log row ${i + 1}`,
+    }));
+
+    const secrets = { clientId: 'e2e-client', apiKey: 'e2e-key', storeName: 'E2E Store' };
+
+    const fallbackApi: Record<string, any> = {
+      getProducts: async () => products,
+      listProducts: async () => products,
+      getSyncLog: async () => logs,
+      listLogs: async () => logs,
+      getLogs: async () => logs,
+      loadSecrets: async () => secrets,
+      getSecrets: async () => secrets,
+      saveSecrets: async () => ({ ok: true }),
+      testAuth: async () => ({ ok: true, storeName: 'E2E Store' }),
+      checkAuth: async () => ({ ok: true }),
+      syncProducts: async () => ({ ok: true, count: products.length }),
+      netCheck: async () => ({ online: true }),
+      'net:check': async () => ({ online: true }),
+    };
+
+    const noopUnsub = () => () => {};
+    const genericAsync = async (..._args: any[]) => null;
+
+    const existing = (w.api && typeof w.api === 'object') ? w.api : {};
+    w.api = new Proxy(existing, {
+      get(target, prop, receiver) {
+        const current = Reflect.get(target, prop, receiver);
+        if (typeof current !== 'undefined') return current;
+        const key = String(prop);
+        if (Object.prototype.hasOwnProperty.call(fallbackApi, key)) return fallbackApi[key];
+        if (/^on[A-Z]/.test(key) || /^subscribe/i.test(key)) return noopUnsub;
+        return genericAsync;
+      },
+    });
+  });
+}
+
+type UiBootProbe = {
+  bodyVisible: boolean;
+  bodyTextLen: number;
+  rowLike: number;
+  cellLike: number;
+  rootCount: number;
+  navLike: boolean;
+  bodyState: string;
+};
+
+async function waitForUiReady(page: Page, timeoutMs = 18_000): Promise<UiBootProbe> {
+  const started = Date.now();
+  let last: UiBootProbe = {
+    bodyVisible: false,
+    bodyTextLen: 0,
+    rowLike: 0,
+    cellLike: 0,
+    rootCount: 0,
+    navLike: false,
+    bodyState: 'n/a',
+  };
+
+  while (Date.now() - started < timeoutMs) {
+    last = await page.evaluate(() => {
+      const body = document.body;
+      const cs = body ? window.getComputedStyle(body) : null;
+      const bodyVisible = !!body && !!cs && cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity || '1') > 0;
+      const text = (body?.innerText || '').trim();
+      const rowLike = document.querySelectorAll('tr, [role="row"], .ag-row').length;
+      const cellLike = document.querySelectorAll('td, [role="gridcell"], .ag-cell').length;
+      const rootCount = document.querySelectorAll('#root, #app, [data-testid], nav, header, main').length;
+      const navLike = /товар|products|лог|history|журнал|настро/i.test(text.slice(0, 4000));
+      return {
+        bodyVisible,
+        bodyTextLen: text.length,
+        rowLike,
+        cellLike,
+        rootCount,
+        navLike,
+        bodyState: body ? `display=${cs?.display};visibility=${cs?.visibility};opacity=${cs?.opacity}` : 'body-missing',
+      };
+    });
+
+    const hasSurface = last.rootCount > 0 || last.rowLike > 0 || last.cellLike > 0 || last.navLike || last.bodyTextLen > 40;
+    if (last.bodyVisible && hasSurface) return last;
+
+    await page.waitForTimeout(250);
+  }
+
+  throw new Error(
+    `UI не стал интерактивным за ${timeoutMs}мс: bodyVisible=${last.bodyVisible}; bodyTextLen=${last.bodyTextLen}; rowLike=${last.rowLike}; cellLike=${last.cellLike}; rootCount=${last.rootCount}; bodyState=${last.bodyState}`,
+  );
+}
+
+
 async function clickByTexts(page: Page, patterns: RegExp[], maxClicks = 2): Promise<number> {
   let clicks = 0;
   for (const pattern of patterns) {
@@ -219,6 +403,54 @@ async function probePrimaryScrollable(page: Page, move?: { top?: number; left?: 
   }, move ?? {});
 }
 
+
+type ScrollbarGeometry = {
+  ok: boolean;
+  reason?: string;
+  x: number;
+  trackTop: number;
+  trackHeight: number;
+  thumbHeight: number;
+  maxTop: number;
+};
+
+async function getVerticalScrollbarGeometry(page: Page): Promise<ScrollbarGeometry> {
+  return page.evaluate(() => {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('*'))
+      .filter((el) => {
+        const cs = window.getComputedStyle(el);
+        const y = /(auto|scroll)/.test(cs.overflowY);
+        return y && el.scrollHeight > el.clientHeight && el.clientHeight > 40;
+      })
+      .sort((a, b) => (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight));
+
+    const target = candidates[0];
+    if (!target) {
+      return { ok: false, reason: 'no-scroll-target', x: 0, trackTop: 0, trackHeight: 0, thumbHeight: 0, maxTop: 0 };
+    }
+
+    const rect = target.getBoundingClientRect();
+    const scrollbarWidth = target.offsetWidth - target.clientWidth;
+    if (scrollbarWidth < 6) {
+      return { ok: false, reason: 'scrollbar-overlay-or-hidden', x: 0, trackTop: 0, trackHeight: 0, thumbHeight: 0, maxTop: Math.max(0, target.scrollHeight - target.clientHeight) };
+    }
+
+    const trackHeight = target.clientHeight;
+    const thumbHeight = Math.max(20, Math.floor((target.clientHeight / target.scrollHeight) * trackHeight));
+    const x = Math.floor(rect.right - Math.max(3, Math.floor(scrollbarWidth / 2)));
+    const trackTop = Math.floor(rect.top);
+
+    return {
+      ok: true,
+      x,
+      trackTop,
+      trackHeight,
+      thumbHeight,
+      maxTop: Math.max(0, target.scrollHeight - target.clientHeight),
+    };
+  });
+}
+
 type ScrollDebug = {
   base: ScrollProbe;
   jumps: number[];
@@ -263,49 +495,69 @@ async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<Scroll
   let maxBlankStreakMs = 0;
   const examples: string[] = [];
 
+  const sampleFor = async (label: string, durationMs: number, tickMs: number): Promise<void> => {
+    const started = Date.now();
+    let blankStreak = 0;
+
+    while (Date.now() - started < durationMs) {
+      const snap = await probePrimaryScrollable(page);
+      const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
+
+      if (hasData) {
+        blankStreak = 0;
+      } else if (!snap.busy) {
+        blankStreak += tickMs;
+        maxBlankStreakMs = Math.max(maxBlankStreakMs, blankStreak);
+        if (examples.length < 24) {
+          examples.push(`${label}, t=${Date.now() - started}ms`);
+        }
+      }
+
+      await page.waitForTimeout(tickMs);
+    }
+  };
+
+  // 1) Резкие прыжки scrollTop (жестко, без плавности)
   for (const top of jumps) {
     await probePrimaryScrollable(page, { top });
-
-    const started = Date.now();
-    let blankStreak = 0;
-
-    while (Date.now() - started < 1800) {
-      const snap = await probePrimaryScrollable(page);
-      const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
-
-      if (hasData) {
-        blankStreak = 0;
-      } else if (!snap.busy) {
-        blankStreak += 60;
-        maxBlankStreakMs = Math.max(maxBlankStreakMs, blankStreak);
-        if (examples.length < 12) {
-          examples.push(`jump top=${top}, t=${Date.now() - started}ms`);
-        }
-      }
-
-      await page.waitForTimeout(60);
-    }
+    await sampleFor(`jump top=${top}`, 1800, 50);
   }
 
-  const wheelBursts = [2200, -1800, 2600, -2400, 3200, -3000];
+  // 2) Попытка имитации реального перетаскивания ползунка (thumb drag)
+  const geom = await getVerticalScrollbarGeometry(page);
+  if (geom.ok && geom.maxTop > 8) {
+    const dragTargets = [
+      Math.floor(geom.maxTop * 0.97),
+      Math.floor(geom.maxTop * 0.05),
+      Math.floor(geom.maxTop * 0.92),
+      Math.floor(geom.maxTop * 0.15),
+      Math.floor(geom.maxTop * 0.85),
+      Math.floor(geom.maxTop * 0.02),
+    ];
+
+    for (const top of dragTargets) {
+      const ratio = geom.maxTop > 0 ? Math.max(0, Math.min(1, top / geom.maxTop)) : 0;
+      const y = Math.floor(
+        geom.trackTop +
+        Math.max(2, Math.min(geom.trackHeight - 2, (geom.thumbHeight / 2) + ratio * Math.max(1, geom.trackHeight - geom.thumbHeight))),
+      );
+
+      const startY = Math.floor(geom.trackTop + Math.min(geom.trackHeight - 3, Math.max(3, geom.thumbHeight / 2)));
+      await page.mouse.move(geom.x, startY).catch(() => {});
+      await page.mouse.down().catch(() => {});
+      await page.mouse.move(geom.x, y, { steps: 2 }).catch(() => {});
+      await page.mouse.up().catch(() => {});
+      await sampleFor(`thumb-drag top=${top}`, 900, 45);
+    }
+  } else {
+    debug.notes.push(`thumb-drag-skip:${geom.reason || 'unknown'}`);
+  }
+
+  // 3) Большие wheel-рывки (доп.покрытие поведения пользователя)
+  const wheelBursts = [2200, -1800, 2600, -2400, 3200, -3000, 3600, -3400];
   for (const delta of wheelBursts) {
     await page.mouse.wheel(0, delta).catch(() => {});
-    const started = Date.now();
-    let blankStreak = 0;
-    while (Date.now() - started < 700) {
-      const snap = await probePrimaryScrollable(page);
-      const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
-      if (hasData) {
-        blankStreak = 0;
-      } else if (!snap.busy) {
-        blankStreak += 50;
-        maxBlankStreakMs = Math.max(maxBlankStreakMs, blankStreak);
-        if (examples.length < 20) {
-          examples.push(`wheel dY=${delta}, t=${Date.now() - started}ms`);
-        }
-      }
-      await page.waitForTimeout(50);
-    }
+    await sampleFor(`wheel dY=${delta}`, 700, 45);
   }
 
   debug.maxBlankStreakMs = maxBlankStreakMs;
@@ -313,7 +565,7 @@ async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<Scroll
 
   expect(
     maxBlankStreakMs,
-    `Данные пропадали при агрессивной вертикальной прокрутке (рывки вниз/вверх). Макс. пустой интервал: ${maxBlankStreakMs}мс. Примеры: ${examples.join(' | ')}`,
+    `Данные пропадали при агрессивной вертикальной прокрутке (рывки вниз/вверх, включая попытку thumb-drag). Макс. пустой интервал: ${maxBlankStreakMs}мс. Примеры: ${examples.join(' | ')}`,
   ).toBeLessThanOrEqual(150);
 
   return debug;
@@ -339,16 +591,23 @@ async function assertHorizontalScrollAlwaysReachable(page: Page): Promise<void> 
 test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, category)', async ({ page }) => {
   const debugOutPath = path.resolve('test-results', 'human-scroll-debug.json');
   const traceOutPath = path.resolve('test-results', 'human-scroll-trace.zip');
+  let localUiServer: LocalUiServer | null = null;
+  let tracingStartedByTest = false;
 
   try {
     const ui = await resolveUiEntry();
-    const baseUrl = ui.target;
+    if (ui.mode === 'file') {
+      localUiServer = await startLocalUiServer(fileURLToPath(ui.target));
+    }
+    const baseUrl = localUiServer?.url || ui.target;
 
     const pageErrors: string[] = [];
     const consoleErrors: string[] = [];
   fs.mkdirSync(path.dirname(debugOutPath), { recursive: true });
 
-  await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true }).catch(() => {});
+  await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true })
+    .then(() => { tracingStartedByTest = true; })
+    .catch(() => {});
 
   page.on('pageerror', (err) => {
     pageErrors.push(String(err?.message || err));
@@ -363,10 +622,11 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     }
   });
 
+  await installE2EMockApi(page);
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
 
-  await expect(page.locator('body')).toBeVisible();
+  const bootProbe = await waitForUiReady(page);
 
   // Переходы по типичным вкладкам/экранам + проверки, что экраны реально открылись
   const productsOpen1 = await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
@@ -461,8 +721,12 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     window.scrollTo({ top: 0 });
   });
 
-  const verticalDebug = await assertAggressiveVerticalScrollNoBlank(page);
-  await assertHorizontalScrollAlwaysReachable(page);
+  const verticalDebug = await test.step('aggressive vertical scroll (thumb-drag/wheel)', async () => {
+    return assertAggressiveVerticalScrollNoBlank(page);
+  });
+  await test.step('horizontal scroll is always reachable', async () => {
+    await assertHorizontalScrollAlwaysReachable(page);
+  });
 
   // Проверка, что UI живой и не пустой после действий/скролла
   const visibleRows = await page.locator('table tr, [role="row"], .ag-row').count().catch(() => 0);
@@ -472,6 +736,8 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
   const finalProbe = await probePrimaryScrollable(page);
   const debugPayload = {
     ui,
+    runtimeBaseUrl: baseUrl,
+    bootProbe,
     verticalDebug,
     finalProbe,
     pageErrors,
@@ -501,12 +767,17 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     description: consoleErrors.slice(0, 10).join(' | ') || 'none',
   });
   } finally {
-    await page.context().tracing.stop({ path: traceOutPath }).catch(() => {});
-    if (fs.existsSync(traceOutPath)) {
-      await test.info().attach('human-scroll-trace', {
-        path: traceOutPath,
-        contentType: 'application/zip',
-      });
+    if (tracingStartedByTest) {
+      await page.context().tracing.stop({ path: traceOutPath }).catch(() => {});
+      if (fs.existsSync(traceOutPath)) {
+        await test.info().attach('human-scroll-trace', {
+          path: traceOutPath,
+          contentType: 'application/zip',
+        });
+      }
+    }
+    if (localUiServer) {
+      await localUiServer.close().catch(() => {});
     }
   }
 });
