@@ -168,6 +168,74 @@ jobs:
           "installer_ok=$($installerOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "portable_ok=$($portableOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      - name: Smoke install/start (proxy for Manual #31)
+        id: smoke_install
+        if: always() && steps.install.outputs.ok == 'true'
+        continue-on-error: true
+        run: |
+          $ok = $true
+          $status = 'skipped: no runnable app found'
+          $smokeExe = $null
+          $proc = $null
+
+          try {
+            # Предпочитаем запуск portable app из win-unpacked (самый стабильный smoke без установки)
+            if (Test-Path 'release') {
+              $portableExe = Get-ChildItem -Path 'release' -Recurse -File -Filter '*.exe' |
+                Where-Object {
+                  $_.FullName -match 'win-unpacked' -and
+                  $_.Name -notmatch '(?i)(unins|setup|squirrel|update)'
+                } |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+
+              if ($portableExe) {
+                $smokeExe = $portableExe.FullName
+                $status = 'ran: portable smoke'
+              }
+            }
+
+            # Фолбэк: если portable не найден, хотя бы проверяем наличие инсталлятора
+            if (-not $smokeExe -and (Test-Path 'artifacts\Ozonator.exe')) {
+              $status = 'skipped: only installer found (portable app not found for smoke)'
+            }
+
+            if ($smokeExe) {
+              "Smoke start: $smokeExe" | Tee-Object -FilePath logs\smoke_install.log
+              $proc = Start-Process -FilePath $smokeExe -PassThru
+              Start-Sleep -Seconds 8
+
+              if ($proc.HasExited) {
+                if ($proc.ExitCode -eq 0) {
+                  $ok = $true
+                } else {
+                  $ok = $false
+                  "Process exited early with code $($proc.ExitCode)" | Tee-Object -FilePath logs\smoke_install.log -Append
+                }
+              } else {
+                # Приложение живо — для smoke это PASS
+                $ok = $true
+              }
+            } else {
+              # Не считаем это FAIL, просто пока нет portable smoke
+              $ok = $true
+            }
+          } catch {
+            $ok = $false
+            "Smoke install/start exception: $($_.Exception.Message)" | Tee-Object -FilePath logs\smoke_install.log -Append
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                "Smoke process stopped: $($proc.Id)" | Tee-Object -FilePath logs\smoke_install.log -Append
+              } catch {}
+            }
+          }
+
+          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "status=$status" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "Smoke status: $status; ok=$ok" | Tee-Object -FilePath logs\smoke_install.log -Append
+
       - name: Optional E2E (Playwright Electron)
         id: e2e
         if: always() && steps.install.outputs.ok == 'true'
@@ -204,6 +272,7 @@ jobs:
           UNIT_STATUS: ${{ steps.unit.outputs.ok == 'true' && 'PASS' || steps.unit.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           BUILD_STATUS: ${{ steps.dist.outputs.ok == 'true' && 'PASS' || steps.dist.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'true') && 'PASS' || ((steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'false') || startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
+          SMOKE_INSTALL_STATUS: ${{ (steps.smoke_install.outputs.status != '' && steps.smoke_install.outputs.ok == 'true' && startsWith(steps.smoke_install.outputs.status, 'ran')) && 'PASS' || (steps.smoke_install.outputs.ok == 'false') && 'FAIL' || 'NR' }}
           STATIC_STATUS: PASS
           REVIEW_STATUS: PASS
           TEST_CYCLES: 1
