@@ -148,9 +148,6 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
   const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
 
-  const scrollTopRafRef = useRef<number | null>(null)
-  const lastScrollTopRef = useRef(0)
-
   const resizingRef = useRef<{
     id: string
     startX: number
@@ -628,13 +625,8 @@ function onDragOverHeader(e: React.DragEvent) {
     if (!body) return
 
     const onScroll = () => {
-      lastScrollTopRef.current = body.scrollTop
-      if (scrollTopRafRef.current != null) return
-
-      scrollTopRafRef.current = window.requestAnimationFrame(() => {
-        scrollTopRafRef.current = null
-        setBodyScrollTop(lastScrollTopRef.current)
-      })
+      const nextTop = body.scrollTop
+      setBodyScrollTop((prev) => (prev === nextTop ? prev : nextTop))
     }
 
     body.addEventListener('scroll', onScroll, { passive: true })
@@ -642,18 +634,14 @@ function onDragOverHeader(e: React.DragEvent) {
 
     return () => {
       body.removeEventListener('scroll', onScroll)
-      if (scrollTopRafRef.current != null) {
-        window.cancelAnimationFrame(scrollTopRafRef.current)
-        scrollTopRafRef.current = null
-      }
     }
   }, [])
 
   const ROW_H = 28
-  const OVERSCAN = 12
 
   const totalRows = filtered.length
   const viewH = bodyViewportH || 600
+  const OVERSCAN = Math.max(24, Math.ceil(viewH / ROW_H))
   const startRow = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN)
   const endRow = Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2))
 
