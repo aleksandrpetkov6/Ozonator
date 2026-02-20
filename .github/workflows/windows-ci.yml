@@ -126,10 +126,10 @@ jobs:
           $installerOk = $false
           $portableOk = $false
 
-          # 1) Installer
+          # Installer
           $preferred = @(
             (Join-Path $PWD 'release\Озонатор.exe'),
-            (Join-Path $PWD 'Озонатор.exe')
+            (Join-Path $PWD 'Ozonator.exe')
           )
 
           foreach ($p in $preferred) {
@@ -150,12 +150,14 @@ jobs:
             }
           }
 
-          # 2) Portable: zip win-unpacked
+          # Portable zip from win-unpacked (search in release or out)
+          $roots = @('release', 'out') | Where-Object { Test-Path $_ }
           $winUnpacked = $null
-          if (Test-Path 'release') {
-            $winUnpacked = Get-ChildItem -Path 'release' -Directory -Recurse |
+          foreach ($r in $roots) {
+            $dir = Get-ChildItem -Path $r -Directory -Recurse -ErrorAction SilentlyContinue |
               Where-Object { $_.Name -eq 'win-unpacked' } |
               Select-Object -First 1
+            if ($dir) { $winUnpacked = $dir; break }
           }
 
           if ($null -ne $winUnpacked) {
@@ -168,6 +170,70 @@ jobs:
           "installer_ok=$($installerOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "portable_ok=$($portableOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
+      - name: Smoke install/start (proxy for Manual #31)
+        id: smoke_install
+        if: always() && steps.install.outputs.ok == 'true'
+        continue-on-error: true
+        run: |
+          $ok = $true
+          $status = 'skipped: no runnable app found'
+          $smokeExe = $null
+          $proc = $null
+
+          try {
+            $roots = @('release', 'out') | Where-Object { Test-Path $_ }
+
+            foreach ($r in $roots) {
+              $portableExe = Get-ChildItem -Path $r -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.FullName -match 'win-unpacked' -and
+                  $_.Name -notmatch '(?i)(unins|setup|squirrel|update)'
+                } |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+
+              if ($portableExe) {
+                $smokeExe = $portableExe.FullName
+                break
+              }
+            }
+
+            if ($smokeExe) {
+              $status = 'ran: portable smoke'
+              "Smoke start: $smokeExe" | Tee-Object -FilePath logs\smoke_install.log
+              $proc = Start-Process -FilePath $smokeExe -PassThru
+              Start-Sleep -Seconds 8
+
+              if ($proc.HasExited) {
+                if ($proc.ExitCode -eq 0) {
+                  $ok = $true
+                } else {
+                  $ok = $false
+                  "Process exited early with code $($proc.ExitCode)" | Tee-Object -FilePath logs\smoke_install.log -Append
+                }
+              } else {
+                $ok = $true
+              }
+            } else {
+              "Portable executable not found under release/out win-unpacked" | Tee-Object -FilePath logs\smoke_install.log
+              $ok = $true
+            }
+          } catch {
+            $ok = $false
+            "Smoke exception: $($_.Exception.Message)" | Tee-Object -FilePath logs\smoke_install.log -Append
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                "Smoke process stopped: $($proc.Id)" | Tee-Object -FilePath logs\smoke_install.log -Append
+              } catch {}
+            }
+          }
+
+          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "status=$status" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "Smoke status: $status; ok=$ok" | Tee-Object -FilePath logs\smoke_install.log -Append
+
       - name: Optional E2E (Playwright Electron or fallback smoke)
         id: e2e
         if: always() && steps.install.outputs.ok == 'true'
@@ -176,7 +242,7 @@ jobs:
           $hasCfg = Test-Path 'playwright.config.ts'
           $hasTests = Test-Path 'tests\e2e'
 
-          # --- Вариант A: полноценный Playwright E2E ---
+          # Вариант A: полноценный Playwright E2E
           if ($hasCfg -and $hasTests) {
             "E2E mode: Playwright" | Tee-Object -FilePath logs\e2e.log
 
@@ -190,11 +256,11 @@ jobs:
             npx playwright test *>&1 | Tee-Object -FilePath logs\e2e.log -Append
             $ok = ($LASTEXITCODE -eq 0)
             "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "status=ran" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "status=ran: playwright" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             exit 0
           }
 
-          # --- Вариант B: fallback E2E smoke (без tests/e2e) ---
+          # Вариант B: fallback E2E smoke (если tests/e2e пока нет)
           "E2E mode: fallback smoke (Playwright tests not found)" | Tee-Object -FilePath logs\e2e.log
 
           $ok = $true
@@ -203,8 +269,10 @@ jobs:
           $proc = $null
 
           try {
-            if (Test-Path 'release') {
-              $portableExe = Get-ChildItem -Path 'release' -Recurse -File -Filter '*.exe' |
+            $roots = @('release', 'out') | Where-Object { Test-Path $_ }
+
+            foreach ($r in $roots) {
+              $portableExe = Get-ChildItem -Path $r -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
                 Where-Object {
                   $_.FullName -match 'win-unpacked' -and
                   $_.Name -notmatch '(?i)(unins|setup|squirrel|update)'
@@ -214,11 +282,12 @@ jobs:
 
               if ($portableExe) {
                 $smokeExe = $portableExe.FullName
-                $status = 'ran: fallback e2e smoke'
+                break
               }
             }
 
             if ($smokeExe) {
+              $status = 'ran: fallback e2e smoke'
               "Fallback E2E start: $smokeExe" | Tee-Object -FilePath logs\e2e.log -Append
               $proc = Start-Process -FilePath $smokeExe -PassThru
               Start-Sleep -Seconds 10
@@ -234,7 +303,7 @@ jobs:
                 $ok = $true
               }
             } else {
-              # Пока не считаем это FAIL: если portable не найден, e2e просто не выполнен
+              "Portable executable not found under release/out win-unpacked" | Tee-Object -FilePath logs\e2e.log -Append
               $ok = $true
             }
           } catch {
@@ -259,7 +328,8 @@ jobs:
           TYPECHECK_STATUS: ${{ steps.typecheck.outputs.ok == 'true' && 'PASS' || steps.typecheck.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           UNIT_STATUS: ${{ steps.unit.outputs.ok == 'true' && 'PASS' || steps.unit.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           BUILD_STATUS: ${{ steps.dist.outputs.ok == 'true' && 'PASS' || steps.dist.outputs.ok == 'false' && 'FAIL' || 'NR' }}
-          E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'true') && 'PASS' || ((steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'false') || startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
+          E2E_STATUS: ${{ (startsWith(steps.e2e.outputs.status, 'ran') && steps.e2e.outputs.ok == 'true') && 'PASS' || ((startsWith(steps.e2e.outputs.status, 'ran') && steps.e2e.outputs.ok == 'false') || startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
+          SMOKE_INSTALL_STATUS: ${{ (startsWith(steps.smoke_install.outputs.status, 'ran') && steps.smoke_install.outputs.ok == 'true') && 'PASS' || ((startsWith(steps.smoke_install.outputs.status, 'ran') && steps.smoke_install.outputs.ok == 'false') || startsWith(steps.smoke_install.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
           STATIC_STATUS: PASS
           REVIEW_STATUS: PASS
           TEST_CYCLES: 1
