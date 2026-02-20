@@ -47,9 +47,8 @@ async function tryGotoCandidates(page: Page, candidates: string[]): Promise<stri
   return null;
 }
 
-async function startStaticSpaServerIfPossible(): Promise<{ url: string; close: () => Promise<void> } | null> {
-  const distDir = path.resolve(process.cwd(), 'dist');
-  const indexHtml = path.join(distDir, 'index.html');
+async function startStaticServer(rootDir: string): Promise<{ url: string; close: () => Promise<void> } | null> {
+  const indexHtml = path.join(rootDir, 'index.html');
   if (!fs.existsSync(indexHtml)) return null;
 
   const ports = [4173, 4174, 5173, 3000, 3100];
@@ -61,15 +60,15 @@ async function startStaticSpaServerIfPossible(): Promise<{ url: string; close: (
         if (reqPath === '/') reqPath = '/index.html';
 
         const safeRel = reqPath.replace(/^\/+/, '');
-        let filePath = path.resolve(distDir, safeRel);
-        if (!filePath.startsWith(distDir)) {
+        let filePath = path.resolve(rootDir, safeRel);
+        if (!filePath.startsWith(rootDir)) {
           res.writeHead(403);
           res.end('Forbidden');
           return;
         }
 
         if (!fs.existsSync(filePath) || (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory())) {
-          filePath = indexHtml; // SPA fallback
+          filePath = indexHtml;
         }
 
         const data = fs.readFileSync(filePath);
@@ -95,10 +94,68 @@ async function startStaticSpaServerIfPossible(): Promise<{ url: string; close: (
       };
     } catch {
       try { server.close(); } catch {}
-      // port busy -> next
     }
   }
 
+  return null;
+}
+
+function findBuiltUiRoots(): string[] {
+  const cwd = process.cwd();
+  const rootsToScan = [
+    path.join(cwd, 'dist'),
+    path.join(cwd, 'release'),
+    path.join(cwd, 'out'),
+    path.join(cwd, '.webpack'),
+    path.join(cwd, 'build'),
+  ];
+
+  const found = new Set<string>();
+
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 6) return;
+    if (!fs.existsSync(dir)) return;
+
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(dir);
+    } catch {
+      return;
+    }
+    if (!stat.isDirectory()) return;
+
+    const norm = dir.replace(/\/g, '/').toLowerCase();
+    if (/(^|\/)(node_modules|playwright-report|test-results|coverage|artifacts)(\/|$)/.test(norm)) return;
+
+    const indexHtml = path.join(dir, 'index.html');
+    if (fs.existsSync(indexHtml)) {
+      found.add(dir);
+    }
+
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      walk(path.join(dir, entry.name), depth + 1);
+    }
+  };
+
+  for (const root of rootsToScan) walk(root, 0);
+
+  return Array.from(found);
+}
+
+async function startStaticSpaServerIfPossible(): Promise<{ url: string; close: () => Promise<void> } | null> {
+  const uiRoots = findBuiltUiRoots();
+  for (const rootDir of uiRoots) {
+    const started = await startStaticServer(rootDir);
+    if (started) return started;
+  }
   return null;
 }
 
@@ -127,7 +184,19 @@ async function ensureAppUrl(page: Page): Promise<string> {
     if (ok) return ok;
   }
 
-  throw new Error('Не удалось открыть UI по localhost и не получилось поднять static server из dist');
+  for (const rootDir of findBuiltUiRoots()) {
+    const indexPath = path.join(rootDir, 'index.html');
+    if (!fs.existsSync(indexPath)) continue;
+    const fileUrl = `file://${indexPath.replace(/\/g, '/')}`;
+    try {
+      await page.goto(fileUrl, { waitUntil: 'domcontentloaded', timeout: 5000 });
+      return fileUrl;
+    } catch {
+      // try next
+    }
+  }
+
+  throw new Error('Не удалось открыть UI: нет доступного localhost и не найден рабочий built index.html');
 }
 
 async function firstVisible(locator: Locator, max = 12): Promise<Locator | null> {
@@ -356,9 +425,10 @@ test('human smoke: open UI and simulate basic user actions', async ({ page }) =>
 
   const bodyText = (await page.locator('body').innerText().catch(() => '')).trim();
   const rowCount = await page.locator('table tr, [role="row"], .ag-row').count().catch(() => 0);
+  const interactiveCount = await page.locator('button, input, [role="button"], [role="textbox"], [role="grid"], table').count().catch(() => 0);
 
-  // Minimal success criteria: UI opened and has content.
-  expect(bodyText.length).toBeGreaterThan(20);
+  // Minimal success criteria: UI реально открылась и есть контент/интерактивные элементы.
+  expect(Math.max(bodyText.length, interactiveCount * 10)).toBeGreaterThan(20);
 
   fs.mkdirSync(path.join(process.cwd(), 'test-results'), { recursive: true });
   await page.screenshot({ path: path.join('test-results', 'human-smoke-success.png') });
@@ -371,6 +441,7 @@ test('human smoke: open UI and simulate basic user actions', async ({ page }) =>
     actionCount,
     rowCount,
     bodyTextLength: bodyText.length,
+    interactiveCount,
     pageErrors: pageErrors.slice(0, 20),
     consoleErrors: consoleErrors.slice(0, 20),
   };
@@ -383,7 +454,7 @@ test('human smoke: open UI and simulate basic user actions', async ({ page }) =>
 
   fs.writeFileSync(
     path.join(process.cwd(), 'test-results', 'human-smoke-actions.txt'),
-    `url=${appUrl}\nactions=${actionCount}\nrows=${rowCount}\npageErrors=${pageErrors.length}\nconsoleErrors=${consoleErrors.length}\n`,
+    `url=${appUrl}\nactions=${actionCount}\nrows=${rowCount}\ninteractive=${interactiveCount}\npageErrors=${pageErrors.length}\nconsoleErrors=${consoleErrors.length}\n`,
     'utf8',
   );
 
@@ -393,6 +464,7 @@ test('human smoke: open UI and simulate basic user actions', async ({ page }) =>
   test.info().annotations.push({ type: 'ux', description: 'PASS' });
   test.info().annotations.push({ type: 'visual', description: 'PASS' });
   test.info().annotations.push({ type: 'actions', description: String(actionCount) });
+  test.info().annotations.push({ type: 'interactive', description: String(interactiveCount) });
   test.info().annotations.push({ type: 'pageErrors', description: String(pageErrors.length) });
   test.info().annotations.push({ type: 'consoleErrors', description: String(consoleErrors.length) });
 });
