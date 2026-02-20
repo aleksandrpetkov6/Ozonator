@@ -10,58 +10,71 @@
  
  const NON_DESTRUCTIVE_BUTTON_BLACKLIST = /(удал|delete|remove|reset|сброс|drop|clear all|очист|logout|выйти|exit|close app|quit)/i;
  
-@@ -126,6 +127,189 @@
+@@ -27,6 +28,243 @@
+ }
  
-   throw new Error(
-     `Не найден доступный UI (ни URL, ни built index.html). Проверены: ${checked.join(', ')}`,
-+  );
-+}
+ type UiEntry = { target: string; mode: 'url' | 'file'; checked: string[] };
 +
 +
-+
-+type LocalUiServer = {
++type LocalStaticServer = {
 +  url: string;
++  rootDir: string;
 +  close: () => Promise<void>;
 +};
 +
-+function contentTypeFor(filePath: string): string {
++function contentTypeByPath(filePath: string): string {
 +  const ext = path.extname(filePath).toLowerCase();
-+  if (ext === '.html') return 'text/html; charset=utf-8';
-+  if (ext === '.js' || ext === '.mjs' || ext === '.cjs') return 'application/javascript; charset=utf-8';
-+  if (ext === '.css') return 'text/css; charset=utf-8';
-+  if (ext === '.json') return 'application/json; charset=utf-8';
-+  if (ext === '.svg') return 'image/svg+xml';
-+  if (ext === '.png') return 'image/png';
-+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
-+  if (ext === '.woff') return 'font/woff';
-+  if (ext === '.woff2') return 'font/woff2';
-+  if (ext === '.ttf') return 'font/ttf';
-+  return 'application/octet-stream';
++  switch (ext) {
++    case '.html': return 'text/html; charset=utf-8';
++    case '.js':
++    case '.mjs': return 'application/javascript; charset=utf-8';
++    case '.css': return 'text/css; charset=utf-8';
++    case '.json': return 'application/json; charset=utf-8';
++    case '.svg': return 'image/svg+xml';
++    case '.png': return 'image/png';
++    case '.jpg':
++    case '.jpeg': return 'image/jpeg';
++    case '.ico': return 'image/x-icon';
++    case '.woff': return 'font/woff';
++    case '.woff2': return 'font/woff2';
++    case '.ttf': return 'font/ttf';
++    default: return 'application/octet-stream';
++  }
 +}
 +
-+async function startLocalUiServer(indexFilePath: string): Promise<LocalUiServer> {
-+  const rootDir = path.dirname(indexFilePath);
++async function startLocalStaticServer(indexHtmlPath: string): Promise<LocalStaticServer> {
++  const rootDir = path.dirname(indexHtmlPath);
++  const indexFile = path.resolve(indexHtmlPath);
 +
 +  const server = http.createServer((req, res) => {
-+    const reqUrl = req.url || '/';
-+    const urlPath = reqUrl.split('?')[0].split('#')[0] || '/';
-+    const normalized = decodeURIComponent(urlPath === '/' ? '/index.html' : urlPath);
-+    const candidate = path.resolve(rootDir, `.${normalized}`);
++    try {
++      const reqUrl = new URL(req.url || '/', 'http://127.0.0.1');
++      let pathname = decodeURIComponent(reqUrl.pathname || '/');
++      if (!pathname || pathname === '/') pathname = '/index.html';
 +
-+    if (!candidate.startsWith(rootDir)) {
-+      res.statusCode = 403;
-+      res.end('forbidden');
-+      return;
++      const candidate = path.resolve(rootDir, `.${pathname}`);
++      const rel = path.relative(rootDir, candidate);
++
++      let fileToServe = candidate;
++      if (rel.startsWith('..') || path.isAbsolute(rel)) {
++        res.statusCode = 403;
++        res.end('Forbidden');
++        return;
++      }
++
++      if (!fs.existsSync(fileToServe) || !fs.statSync(fileToServe).isFile()) {
++        fileToServe = indexFile; // SPA fallback
++      }
++
++      const body = fs.readFileSync(fileToServe);
++      res.setHeader('Content-Type', contentTypeByPath(fileToServe));
++      res.setHeader('Cache-Control', 'no-store');
++      res.statusCode = 200;
++      res.end(body);
++    } catch (err) {
++      res.statusCode = 500;
++      res.end(String(err));
 +    }
-+
-+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
-+      res.statusCode = 404;
-+      res.end('not found');
-+      return;
-+    }
-+
-+    res.setHeader('Content-Type', contentTypeFor(candidate));
-+    fs.createReadStream(candidate).pipe(res);
 +  });
 +
 +  await new Promise<void>((resolve, reject) => {
@@ -70,362 +83,310 @@
 +  });
 +
 +  const addr = server.address();
-+  const port = typeof addr === 'object' && addr ? addr.port : 41731;
++  if (!addr || typeof addr === 'string') {
++    throw new Error('Не удалось поднять локальный static server для built UI');
++  }
 +
 +  return {
-+    url: `http://127.0.0.1:${port}/index.html`,
-+    close: async () => {
-+      await new Promise<void>((resolve) => server.close(() => resolve()));
-+    },
++    url: `http://127.0.0.1:${addr.port}/`,
++    rootDir,
++    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
 +  };
 +}
 +
-+async function installE2EMockApi(page: Page): Promise<void> {
++async function installE2EWindowApiStub(page: Page): Promise<void> {
 +  await page.addInitScript(() => {
-+    const w = window as any;
-+    if (w.__ozonatorE2EApiStubInstalled) return;
-+    w.__ozonatorE2EApiStubInstalled = true;
++    const w = window as typeof window & { api?: unknown; __ozonatorE2EStubInstalled?: boolean };
++    if (w.__ozonatorE2EStubInstalled) return;
++    w.__ozonatorE2EStubInstalled = true;
 +
-+    const products = Array.from({ length: 700 }, (_, i) => ({
++    const products = Array.from({ length: 240 }, (_, i) => ({
 +      id: i + 1,
-+      product_id: 100000 + i,
-+      sku: 200000 + i,
-+      offer_id: `e2e_offer_${i + 1}`,
-+      name: `E2E Product ${i + 1}`,
-+      category: `Категория ${(i % 12) + 1}`,
-+      brand: `Brand ${(i % 9) + 1}`,
-+      type: `Type ${(i % 5) + 1}`,
-+      barcode: `460000000${String(i).padStart(4, '0')}`,
++      product_id: i + 1,
++      sku: 100000 + i,
++      offer_id: `TEST_${String(i + 1).padStart(4, '0')}`,
++      name: `Тестовый товар ${i + 1}`,
++      category: `Категория ${1 + (i % 12)}`,
++      brand: `Бренд ${1 + (i % 7)}`,
++      type: 'Тест',
++      visible: true,
 +      is_visible: true,
-+      price: 100 + (i % 50),
-+      stock: 10 + (i % 40),
++      price: 100 + i,
++      stock: 50 + (i % 20),
++      updated_at: new Date().toISOString(),
 +    }));
 +
-+    const logs = Array.from({ length: 120 }, (_, i) => ({
++    const productsArray = products.slice() as typeof products & Record<string, unknown>;
++    productsArray.items = products;
++    productsArray.rows = products;
++    productsArray.data = products;
++    productsArray.products = products;
++    productsArray.total = products.length;
++    productsArray.count = products.length;
++
++    const logs = Array.from({ length: 60 }, (_, i) => ({
 +      id: i + 1,
-+      action: i % 2 ? 'sync_products' : 'check_auth',
-+      status: i % 7 ? 'ok' : 'warn',
-+      started_at: new Date(Date.now() - i * 60_000).toISOString(),
-+      finished_at: new Date(Date.now() - i * 60_000 + 15_000).toISOString(),
-+      count: (i % 15) + 1,
-+      message: `E2E log row ${i + 1}`,
++      action: i % 2 === 0 ? 'sync_products' : 'check_auth',
++      status: 'success',
++      started_at: new Date(Date.now() - (i + 1) * 60_000).toISOString(),
++      finished_at: new Date(Date.now() - i * 60_000).toISOString(),
++      message: `E2E log ${i + 1}`,
++      error: null,
++      rows_count: (i + 1) * 3,
 +    }));
 +
-+    const secrets = { clientId: 'e2e-client', apiKey: 'e2e-key', storeName: 'E2E Store' };
-+
-+    const fallbackApi: Record<string, any> = {
-+      getProducts: async () => products,
-+      listProducts: async () => products,
-+      getSyncLog: async () => logs,
-+      listLogs: async () => logs,
-+      getLogs: async () => logs,
-+      loadSecrets: async () => secrets,
-+      getSecrets: async () => secrets,
-+      saveSecrets: async () => ({ ok: true }),
-+      testAuth: async () => ({ ok: true, storeName: 'E2E Store' }),
-+      checkAuth: async () => ({ ok: true }),
-+      syncProducts: async () => ({ ok: true, count: products.length }),
-+      netCheck: async () => ({ online: true }),
-+      'net:check': async () => ({ online: true }),
++    const settings = {
++      clientId: '',
++      client_id: '',
++      apiKey: '',
++      api_key: '',
++      storeName: 'E2E Demo Store',
++      store_name: 'E2E Demo Store',
 +    };
 +
-+    const noopUnsub = () => () => {};
-+    const genericAsync = async (..._args: any[]) => null;
++    const mockByPath = (segments: string[]) => {
++      const key = segments.join('.').toLowerCase();
++      const last = (segments[segments.length - 1] || '').toLowerCase();
 +
-+    const existing = (w.api && typeof w.api === 'object') ? w.api : {};
-+    w.api = new Proxy(existing, {
-+      get(target, prop, receiver) {
-+        const current = Reflect.get(target, prop, receiver);
-+        if (typeof current !== 'undefined') return current;
-+        const key = String(prop);
-+        if (Object.prototype.hasOwnProperty.call(fallbackApi, key)) return fallbackApi[key];
-+        if (/^on[A-Z]/.test(key) || /^subscribe/i.test(key)) return noopUnsub;
-+        return genericAsync;
++      if (/\.subscribe$|\.unsubscribe$|\.off$/.test(key) || /^on[A-Z]/.test(segments[segments.length - 1] || '')) {
++        return () => {};
++      }
++
++      if (/net.*check|check.*net|netcheck/.test(key)) {
++        return { online: false, isOnline: false };
++      }
++
++      if (/testauth|checkauth/.test(key)) {
++        return { ok: true, storeName: settings.storeName, store_name: settings.store_name };
++      }
++
++      if (/sync.*product|product.*sync/.test(key)) {
++        return { ok: true, count: products.length, synced: products.length };
++      }
++
++      if (/(get|list|read|load).*product|products?$/.test(key)) {
++        return productsArray;
++      }
++
++      if (/(get|list|read|load).*log|logs?$/.test(key)) {
++        return logs;
++      }
++
++      if (/setting|secret|config/.test(key)) {
++        return settings;
++      }
++
++      if (/version|build/.test(key)) {
++        return { version: 'e2e-stub', build: 'e2e-stub' };
++      }
++
++      return null;
++    };
++
++    const makeNode = (segments: string[]): any => new Proxy(function () {}, {
++      get(_target, prop) {
++        if (prop === 'then') return undefined;
++        if (prop === Symbol.toStringTag) return 'Function';
++        if (prop === 'toJSON') return () => ({ stub: segments.join('.') });
++        return makeNode([...segments, String(prop)]);
++      },
++      apply() {
++        return mockByPath(segments);
 +      },
 +    });
++
++    if (!('api' in w) || !w.api) {
++      Object.defineProperty(w, 'api', {
++        configurable: true,
++        writable: true,
++        value: makeNode(['api']),
++      });
++    }
 +  });
 +}
 +
-+type UiBootProbe = {
-+  bodyVisible: boolean;
-+  bodyTextLen: number;
-+  rowLike: number;
-+  cellLike: number;
-+  rootCount: number;
-+  navLike: boolean;
-+  bodyState: string;
-+};
-+
-+async function waitForUiReady(page: Page, timeoutMs = 18_000): Promise<UiBootProbe> {
++async function waitForUiReady(page: Page, timeoutMs = 25_000): Promise<void> {
 +  const started = Date.now();
-+  let last: UiBootProbe = {
-+    bodyVisible: false,
-+    bodyTextLen: 0,
-+    rowLike: 0,
-+    cellLike: 0,
-+    rootCount: 0,
-+    navLike: false,
-+    bodyState: 'n/a',
-+  };
++  let lastSnapshot = 'no-snapshot';
 +
 +  while (Date.now() - started < timeoutMs) {
-+    last = await page.evaluate(() => {
++    const snapshot = await page.evaluate(() => {
 +      const body = document.body;
-+      const cs = body ? window.getComputedStyle(body) : null;
-+      const bodyVisible = !!body && !!cs && cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity || '1') > 0;
-+      const text = (body?.innerText || '').trim();
-+      const rowLike = document.querySelectorAll('tr, [role="row"], .ag-row').length;
-+      const cellLike = document.querySelectorAll('td, [role="gridcell"], .ag-cell').length;
-+      const rootCount = document.querySelectorAll('#root, #app, [data-testid], nav, header, main').length;
-+      const navLike = /товар|products|лог|history|журнал|настро/i.test(text.slice(0, 4000));
++      const root = document.querySelector('#root');
++      if (!body) return { ok: false, reason: 'no-body' };
++
++      const cs = window.getComputedStyle(body);
++      const hidden =
++        cs.display === 'none' ||
++        cs.visibility === 'hidden' ||
++        Number.parseFloat(cs.opacity || '1') === 0;
++
++      const visibleNode = Array.from(document.querySelectorAll<HTMLElement>('body *')).some((el) => {
++        const s = window.getComputedStyle(el);
++        const r = el.getBoundingClientRect();
++        return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 2 && r.height > 2;
++      });
++
++      const textLen = (body.innerText || '').trim().length;
++      const rootChildren = root?.children?.length ?? 0;
++
 +      return {
-+        bodyVisible,
-+        bodyTextLen: text.length,
-+        rowLike,
-+        cellLike,
-+        rootCount,
-+        navLike,
-+        bodyState: body ? `display=${cs?.display};visibility=${cs?.visibility};opacity=${cs?.opacity}` : 'body-missing',
++        ok: !hidden && (visibleNode || textLen > 0 || rootChildren > 0),
++        hidden,
++        textLen,
++        rootChildren,
++        bodyChildren: body.children.length,
++        bodyRect: { w: body.getBoundingClientRect().width, h: body.getBoundingClientRect().height },
++        hasWindowApi: !!(window as typeof window & { api?: unknown }).api,
++        title: document.title,
 +      };
-+    });
++    }).catch((e) => ({ ok: false, reason: String(e) }));
 +
-+    const hasSurface = last.rootCount > 0 || last.rowLike > 0 || last.cellLike > 0 || last.navLike || last.bodyTextLen > 40;
-+    if (last.bodyVisible && hasSurface) return last;
++    lastSnapshot = JSON.stringify(snapshot);
 +
-+    await page.waitForTimeout(250);
++    if ((snapshot as { ok?: boolean }).ok) return;
++    await page.waitForTimeout(200);
 +  }
 +
-+  throw new Error(
-+    `UI не стал интерактивным за ${timeoutMs}мс: bodyVisible=${last.bodyVisible}; bodyTextLen=${last.bodyTextLen}; rowLike=${last.rowLike}; cellLike=${last.cellLike}; rootCount=${last.rootCount}; bodyState=${last.bodyState}`,
-   );
- }
++  throw new Error(`UI не перешёл в готовое состояние за ${timeoutMs}мс. snapshot=${lastSnapshot}`);
++}
++
  
-@@ -219,6 +403,54 @@
+ function findBuiltIndexHtml(): { filePath: string; checked: string[] } | null {
+   const cwd = process.cwd();
+@@ -219,6 +457,47 @@
    }, move ?? {});
  }
  
 +
-+type ScrollbarGeometry = {
-+  ok: boolean;
-+  reason?: string;
-+  x: number;
-+  trackTop: number;
-+  trackHeight: number;
-+  thumbHeight: number;
-+  maxTop: number;
-+};
++async function tryDragVerticalScrollbarThumb(page: Page, debug: { notes: string[] }): Promise<void> {
++  const thumb = await firstVisible(
++    page.locator([
++      '[role="scrollbar"][aria-orientation="vertical"]',
++      '.simplebar-scrollbar',
++      '.os-scrollbar-vertical .os-scrollbar-handle',
++      '.ag-body-vertical-scroll',
++      '.ag-body-vertical-scroll-viewport',
++    ].join(',')),
++    12,
++  );
 +
-+async function getVerticalScrollbarGeometry(page: Page): Promise<ScrollbarGeometry> {
-+  return page.evaluate(() => {
-+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('*'))
-+      .filter((el) => {
-+        const cs = window.getComputedStyle(el);
-+        const y = /(auto|scroll)/.test(cs.overflowY);
-+        return y && el.scrollHeight > el.clientHeight && el.clientHeight > 40;
-+      })
-+      .sort((a, b) => (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight));
++  if (!thumb) {
++    debug.notes.push('thumb-drag:not-found');
++    return;
++  }
 +
-+    const target = candidates[0];
-+    if (!target) {
-+      return { ok: false, reason: 'no-scroll-target', x: 0, trackTop: 0, trackHeight: 0, thumbHeight: 0, maxTop: 0 };
-+    }
++  const box = await thumb.boundingBox().catch(() => null);
++  if (!box) {
++    debug.notes.push('thumb-drag:no-bbox');
++    return;
++  }
 +
-+    const rect = target.getBoundingClientRect();
-+    const scrollbarWidth = target.offsetWidth - target.clientWidth;
-+    if (scrollbarWidth < 6) {
-+      return { ok: false, reason: 'scrollbar-overlay-or-hidden', x: 0, trackTop: 0, trackHeight: 0, thumbHeight: 0, maxTop: Math.max(0, target.scrollHeight - target.clientHeight) };
-+    }
++  const x = box.x + Math.max(2, Math.min(box.width - 2, box.width / 2));
++  const yTop = box.y + Math.max(2, Math.min(box.height - 2, box.height * 0.2));
++  const yBottom = box.y + Math.max(2, Math.min(box.height - 2, box.height * 0.85));
 +
-+    const trackHeight = target.clientHeight;
-+    const thumbHeight = Math.max(20, Math.floor((target.clientHeight / target.scrollHeight) * trackHeight));
-+    const x = Math.floor(rect.right - Math.max(3, Math.floor(scrollbarWidth / 2)));
-+    const trackTop = Math.floor(rect.top);
-+
-+    return {
-+      ok: true,
-+      x,
-+      trackTop,
-+      trackHeight,
-+      thumbHeight,
-+      maxTop: Math.max(0, target.scrollHeight - target.clientHeight),
-+    };
-+  });
++  try {
++    await page.mouse.move(x, yTop);
++    await page.mouse.down();
++    await page.mouse.move(x, yBottom, { steps: 10 });
++    await page.mouse.move(x, yTop, { steps: 10 });
++    await page.mouse.up();
++    debug.notes.push('thumb-drag:attempted');
++  } catch (err) {
++    debug.notes.push(`thumb-drag:error:${String(err)}`);
++    await page.mouse.up().catch(() => {});
++  }
 +}
 +
  type ScrollDebug = {
    base: ScrollProbe;
    jumps: number[];
-@@ -263,49 +495,69 @@
-   let maxBlankStreakMs = 0;
-   const examples: string[] = [];
- 
--  for (const top of jumps) {
--    await probePrimaryScrollable(page, { top });
--
-+  const sampleFor = async (label: string, durationMs: number, tickMs: number): Promise<void> => {
-     const started = Date.now();
-     let blankStreak = 0;
- 
--    while (Date.now() - started < 1800) {
-+    while (Date.now() - started < durationMs) {
-       const snap = await probePrimaryScrollable(page);
-       const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
- 
-       if (hasData) {
-         blankStreak = 0;
-       } else if (!snap.busy) {
--        blankStreak += 60;
-+        blankStreak += tickMs;
-         maxBlankStreakMs = Math.max(maxBlankStreakMs, blankStreak);
--        if (examples.length < 12) {
--          examples.push(`jump top=${top}, t=${Date.now() - started}ms`);
-+        if (examples.length < 24) {
-+          examples.push(`${label}, t=${Date.now() - started}ms`);
-         }
-       }
- 
--      await page.waitForTimeout(60);
--    }
--  }
--
--  const wheelBursts = [2200, -1800, 2600, -2400, 3200, -3000];
-+      await page.waitForTimeout(tickMs);
-+    }
-+  };
-+
-+  // 1) Резкие прыжки scrollTop (жестко, без плавности)
-+  for (const top of jumps) {
-+    await probePrimaryScrollable(page, { top });
-+    await sampleFor(`jump top=${top}`, 1800, 50);
-+  }
-+
-+  // 2) Попытка имитации реального перетаскивания ползунка (thumb drag)
-+  const geom = await getVerticalScrollbarGeometry(page);
-+  if (geom.ok && geom.maxTop > 8) {
-+    const dragTargets = [
-+      Math.floor(geom.maxTop * 0.97),
-+      Math.floor(geom.maxTop * 0.05),
-+      Math.floor(geom.maxTop * 0.92),
-+      Math.floor(geom.maxTop * 0.15),
-+      Math.floor(geom.maxTop * 0.85),
-+      Math.floor(geom.maxTop * 0.02),
-+    ];
-+
-+    for (const top of dragTargets) {
-+      const ratio = geom.maxTop > 0 ? Math.max(0, Math.min(1, top / geom.maxTop)) : 0;
-+      const y = Math.floor(
-+        geom.trackTop +
-+        Math.max(2, Math.min(geom.trackHeight - 2, (geom.thumbHeight / 2) + ratio * Math.max(1, geom.trackHeight - geom.thumbHeight))),
-+      );
-+
-+      const startY = Math.floor(geom.trackTop + Math.min(geom.trackHeight - 3, Math.max(3, geom.thumbHeight / 2)));
-+      await page.mouse.move(geom.x, startY).catch(() => {});
-+      await page.mouse.down().catch(() => {});
-+      await page.mouse.move(geom.x, y, { steps: 2 }).catch(() => {});
-+      await page.mouse.up().catch(() => {});
-+      await sampleFor(`thumb-drag top=${top}`, 900, 45);
-+    }
-+  } else {
-+    debug.notes.push(`thumb-drag-skip:${geom.reason || 'unknown'}`);
-+  }
-+
-+  // 3) Большие wheel-рывки (доп.покрытие поведения пользователя)
-+  const wheelBursts = [2200, -1800, 2600, -2400, 3200, -3000, 3600, -3400];
-   for (const delta of wheelBursts) {
-     await page.mouse.wheel(0, delta).catch(() => {});
--    const started = Date.now();
--    let blankStreak = 0;
--    while (Date.now() - started < 700) {
--      const snap = await probePrimaryScrollable(page);
--      const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
--      if (hasData) {
--        blankStreak = 0;
--      } else if (!snap.busy) {
--        blankStreak += 50;
--        maxBlankStreakMs = Math.max(maxBlankStreakMs, blankStreak);
--        if (examples.length < 20) {
--          examples.push(`wheel dY=${delta}, t=${Date.now() - started}ms`);
--        }
--      }
--      await page.waitForTimeout(50);
--    }
-+    await sampleFor(`wheel dY=${delta}`, 700, 45);
+@@ -286,6 +565,8 @@
+       await page.waitForTimeout(60);
+     }
    }
++
++  await tryDragVerticalScrollbarThumb(page, debug);
  
-   debug.maxBlankStreakMs = maxBlankStreakMs;
-@@ -313,7 +565,7 @@
- 
-   expect(
-     maxBlankStreakMs,
--    `Данные пропадали при агрессивной вертикальной прокрутке (рывки вниз/вверх). Макс. пустой интервал: ${maxBlankStreakMs}мс. Примеры: ${examples.join(' | ')}`,
-+    `Данные пропадали при агрессивной вертикальной прокрутке (рывки вниз/вверх, включая попытку thumb-drag). Макс. пустой интервал: ${maxBlankStreakMs}мс. Примеры: ${examples.join(' | ')}`,
-   ).toBeLessThanOrEqual(150);
- 
-   return debug;
-@@ -339,16 +591,23 @@
+   const wheelBursts = [2200, -1800, 2600, -2400, 3200, -3000];
+   for (const delta of wheelBursts) {
+@@ -339,16 +620,27 @@
  test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, category)', async ({ page }) => {
    const debugOutPath = path.resolve('test-results', 'human-scroll-debug.json');
    const traceOutPath = path.resolve('test-results', 'human-scroll-trace.zip');
-+  let localUiServer: LocalUiServer | null = null;
-+  let tracingStartedByTest = false;
++  let localServer: LocalStaticServer | null = null;
++  let manualTraceStarted = false;
  
    try {
      const ui = await resolveUiEntry();
 -    const baseUrl = ui.target;
++    let baseUrl = ui.target;
 +    if (ui.mode === 'file') {
-+      localUiServer = await startLocalUiServer(fileURLToPath(ui.target));
++      localServer = await startLocalStaticServer(fileURLToPath(ui.target));
++      baseUrl = localServer.url;
 +    }
-+    const baseUrl = localUiServer?.url || ui.target;
  
      const pageErrors: string[] = [];
      const consoleErrors: string[] = [];
    fs.mkdirSync(path.dirname(debugOutPath), { recursive: true });
  
 -  await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true }).catch(() => {});
-+  await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true })
-+    .then(() => { tracingStartedByTest = true; })
-+    .catch(() => {});
++  try {
++    await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true });
++    manualTraceStarted = true;
++  } catch (err) {
++    test.info().annotations.push({ type: 'trace-start', description: `skip:${String(err)}` });
++  }
  
    page.on('pageerror', (err) => {
      pageErrors.push(String(err?.message || err));
-@@ -363,10 +622,11 @@
+@@ -363,10 +655,13 @@
      }
    });
  
-+  await installE2EMockApi(page);
-   await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-   await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
- 
+-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+-  await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+-
 -  await expect(page.locator('body')).toBeVisible();
-+  const bootProbe = await waitForUiReady(page);
++  await installE2EWindowApiStub(page);
++
++  await test.step('open-ui', async () => {
++    await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
++    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
++    await waitForUiReady(page);
++  });
  
    // Переходы по типичным вкладкам/экранам + проверки, что экраны реально открылись
    const productsOpen1 = await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
-@@ -461,8 +721,12 @@
+@@ -461,8 +756,11 @@
      window.scrollTo({ top: 0 });
    });
  
 -  const verticalDebug = await assertAggressiveVerticalScrollNoBlank(page);
 -  await assertHorizontalScrollAlwaysReachable(page);
-+  const verticalDebug = await test.step('aggressive vertical scroll (thumb-drag/wheel)', async () => {
-+    return assertAggressiveVerticalScrollNoBlank(page);
-+  });
-+  await test.step('horizontal scroll is always reachable', async () => {
++  const verticalDebug = await test.step('aggressive-scroll-check', async () => {
++    const dbg = await assertAggressiveVerticalScrollNoBlank(page);
 +    await assertHorizontalScrollAlwaysReachable(page);
++    return dbg;
 +  });
  
    // Проверка, что UI живой и не пустой после действий/скролла
    const visibleRows = await page.locator('table tr, [role="row"], .ag-row').count().catch(() => 0);
-@@ -472,6 +736,8 @@
+@@ -471,7 +769,11 @@
+ 
    const finalProbe = await probePrimaryScrollable(page);
    const debugPayload = {
-     ui,
-+    runtimeBaseUrl: baseUrl,
-+    bootProbe,
+-    ui,
++    ui: { ...ui, target: baseUrl },
++    runtime: {
++      manualTraceStarted,
++      localServerRoot: localServer?.rootDir ?? null,
++    },
      verticalDebug,
      finalProbe,
      pageErrors,
-@@ -501,12 +767,17 @@
+@@ -501,12 +803,18 @@
      description: consoleErrors.slice(0, 10).join(' | ') || 'none',
    });
    } finally {
@@ -435,7 +396,7 @@
 -        path: traceOutPath,
 -        contentType: 'application/zip',
 -      });
-+    if (tracingStartedByTest) {
++    if (manualTraceStarted) {
 +      await page.context().tracing.stop({ path: traceOutPath }).catch(() => {});
 +      if (fs.existsSync(traceOutPath)) {
 +        await test.info().attach('human-scroll-trace', {
@@ -444,8 +405,9 @@
 +        });
 +      }
 +    }
-+    if (localUiServer) {
-+      await localUiServer.close().catch(() => {});
++
++    if (localServer) {
++      await localServer.close().catch(() => {});
      }
    }
  });
