@@ -1,94 +1,15 @@
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -1,4 +1,5 @@
- import React, { useEffect, useMemo, useRef, useState } from 'react'
-+import { flushSync } from 'react-dom'
- 
- type Product = {
-   offer_id: string
-@@ -142,8 +143,8 @@
-   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
- 
-   const [collapsedOpen, setCollapsedOpen] = useState(false)
--  const [bodyScrollTop, setBodyScrollTop] = useState(0)
-   const [bodyViewportH, setBodyViewportH] = useState(600)
-+  const [renderStartRow, setRenderStartRow] = useState(0)
- 
-   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
-   const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
-@@ -620,30 +621,65 @@
-     return () => ro.disconnect()
-   }, [])
- 
-+  const ROW_H = 28
-+
-+  const totalRows = filtered.length
-+  const viewH = bodyViewportH || 600
-+  const rowsInView = Math.max(1, Math.ceil(viewH / ROW_H))
-+  const CHUNK_ROWS = Math.max(240, rowsInView * 12)
-+  const CHUNK_ALIGN = Math.max(40, rowsInView * 2)
-+  const SAFE_MARGIN = Math.max(24, rowsInView * 2)
-+
-   useEffect(() => {
-     const body = bodyScrollRef.current
-     if (!body) return
- 
-+    const clampStart = (row: number) => {
-+      const maxStart = Math.max(0, totalRows - CHUNK_ROWS)
-+      return Math.max(0, Math.min(maxStart, row))
-+    }
-+
-+    const alignStart = (row: number) => Math.floor(row / CHUNK_ALIGN) * CHUNK_ALIGN
-+
-+    const ensureWindowCoversScroll = (nextTop: number) => {
-+      const scrollRow = Math.max(0, Math.floor(nextTop / ROW_H))
-+      const currentStart = renderStartRow
-+      const currentEnd = Math.min(totalRows, currentStart + CHUNK_ROWS)
-+      const windowTop = currentStart + SAFE_MARGIN
-+      const windowBottom = Math.max(windowTop, currentEnd - SAFE_MARGIN - rowsInView)
-+
-+      if (scrollRow >= windowTop && scrollRow <= windowBottom) return
-+
-+      const centered = scrollRow - Math.floor((CHUNK_ROWS - rowsInView) / 2)
-+      const nextStart = clampStart(alignStart(centered))
-+      if (nextStart === currentStart) return
-+
-+      flushSync(() => {
-+        setRenderStartRow((prev) => (prev === nextStart ? prev : nextStart))
-+      })
-+    }
-+
-     const onScroll = () => {
--      const nextTop = body.scrollTop
--      setBodyScrollTop((prev) => (prev === nextTop ? prev : nextTop))
-+      ensureWindowCoversScroll(body.scrollTop)
-     }
- 
-     body.addEventListener('scroll', onScroll, { passive: true })
--    onScroll()
-+    ensureWindowCoversScroll(body.scrollTop)
- 
-     return () => {
-       body.removeEventListener('scroll', onScroll)
-     }
--  }, [])
-+  }, [totalRows, CHUNK_ROWS, CHUNK_ALIGN, SAFE_MARGIN, rowsInView, renderStartRow])
- 
--  const ROW_H = 28
-+  useEffect(() => {
-+    const maxStart = Math.max(0, totalRows - CHUNK_ROWS)
-+    if (renderStartRow > maxStart) {
-+      setRenderStartRow(maxStart)
-+    }
-+  }, [totalRows, CHUNK_ROWS, renderStartRow])
- 
--  const totalRows = filtered.length
--  const viewH = bodyViewportH || 600
--  const OVERSCAN = Math.max(24, Math.ceil(viewH / ROW_H))
--  const startRow = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN)
--  const endRow = Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2))
-+  const startRow = Math.max(0, Math.min(renderStartRow, Math.max(0, totalRows - CHUNK_ROWS)))
-+  const endRow = Math.min(totalRows, startRow + CHUNK_ROWS)
- 
-   const visibleRows = useMemo(() => filtered.slice(startRow, endRow), [filtered, startRow, endRow])
-   const topSpace = startRow * ROW_H
+--- a/package.json
++++ b/package.json
+@@
+   "scripts": {
+     "dev": "vite",
+     "build": "vite build",
+     "preview": "vite preview",
++    "test": "echo \"No tests defined\" && exit 0",
+     "lint": "eslint . --ext .ts,.tsx"
+   },
+   "dependencies": {
+     "electron": "^25.0.0",
+     "react": "^18.2.0",
+     "react-dom": "^18.2.0"
+*** End of File ***
