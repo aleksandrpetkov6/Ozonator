@@ -5,6 +5,7 @@ on:
     # ВАЖНО: имя должно совпадать 1:1 с тем, как workflow называется в Actions слева
     workflows:
       - "Windows CI (Озонатор)"
+      - "Apply patch and open PR"
     types: [completed]
 
 concurrency:
@@ -69,7 +70,8 @@ jobs:
           node scripts/autofix_generate_patch.mjs \
             --logs-dir _ci_logs \
             --run-id "${{ github.event.workflow_run.id }}" \
-            --sha "${{ github.event.workflow_run.head_sha }}"
+            --sha "${{ github.event.workflow_run.head_sha }}" \
+            --trigger-workflow "${{ github.event.workflow_run.name }}"
 
       - name: Commit & push only patches/latest.patch (triggers existing Apply patch and open PR)
         shell: bash
