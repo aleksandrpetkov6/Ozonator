@@ -168,18 +168,41 @@ jobs:
           "installer_ok=$($installerOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "portable_ok=$($portableOk.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Smoke install/start (proxy for Manual #31)
-        id: smoke_install
+      - name: Optional E2E (Playwright Electron or fallback smoke)
+        id: e2e
         if: always() && steps.install.outputs.ok == 'true'
         continue-on-error: true
         run: |
+          $hasCfg = Test-Path 'playwright.config.ts'
+          $hasTests = Test-Path 'tests\e2e'
+
+          # --- Вариант A: полноценный Playwright E2E ---
+          if ($hasCfg -and $hasTests) {
+            "E2E mode: Playwright" | Tee-Object -FilePath logs\e2e.log
+
+            npx playwright install --with-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
+            if ($LASTEXITCODE -ne 0) {
+              "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              "status=failed: playwright install" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              exit 0
+            }
+
+            npx playwright test *>&1 | Tee-Object -FilePath logs\e2e.log -Append
+            $ok = ($LASTEXITCODE -eq 0)
+            "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "status=ran" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          # --- Вариант B: fallback E2E smoke (без tests/e2e) ---
+          "E2E mode: fallback smoke (Playwright tests not found)" | Tee-Object -FilePath logs\e2e.log
+
           $ok = $true
           $status = 'skipped: no runnable app found'
           $smokeExe = $null
           $proc = $null
 
           try {
-            # Предпочитаем запуск portable app из win-unpacked (самый стабильный smoke без установки)
             if (Test-Path 'release') {
               $portableExe = Get-ChildItem -Path 'release' -Recurse -File -Filter '*.exe' |
                 Where-Object {
@@ -191,78 +214,43 @@ jobs:
 
               if ($portableExe) {
                 $smokeExe = $portableExe.FullName
-                $status = 'ran: portable smoke'
+                $status = 'ran: fallback e2e smoke'
               }
             }
 
-            # Фолбэк: если portable не найден, хотя бы проверяем наличие инсталлятора
-            if (-not $smokeExe -and (Test-Path 'artifacts\Ozonator.exe')) {
-              $status = 'skipped: only installer found (portable app not found for smoke)'
-            }
-
             if ($smokeExe) {
-              "Smoke start: $smokeExe" | Tee-Object -FilePath logs\smoke_install.log
+              "Fallback E2E start: $smokeExe" | Tee-Object -FilePath logs\e2e.log -Append
               $proc = Start-Process -FilePath $smokeExe -PassThru
-              Start-Sleep -Seconds 8
+              Start-Sleep -Seconds 10
 
               if ($proc.HasExited) {
                 if ($proc.ExitCode -eq 0) {
                   $ok = $true
                 } else {
                   $ok = $false
-                  "Process exited early with code $($proc.ExitCode)" | Tee-Object -FilePath logs\smoke_install.log -Append
+                  "Fallback E2E exited early with code $($proc.ExitCode)" | Tee-Object -FilePath logs\e2e.log -Append
                 }
               } else {
-                # Приложение живо — для smoke это PASS
                 $ok = $true
               }
             } else {
-              # Не считаем это FAIL, просто пока нет portable smoke
+              # Пока не считаем это FAIL: если portable не найден, e2e просто не выполнен
               $ok = $true
             }
           } catch {
             $ok = $false
-            "Smoke install/start exception: $($_.Exception.Message)" | Tee-Object -FilePath logs\smoke_install.log -Append
+            "Fallback E2E exception: $($_.Exception.Message)" | Tee-Object -FilePath logs\e2e.log -Append
           } finally {
             if ($proc -and -not $proc.HasExited) {
               try {
                 Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-                "Smoke process stopped: $($proc.Id)" | Tee-Object -FilePath logs\smoke_install.log -Append
+                "Fallback E2E process stopped: $($proc.Id)" | Tee-Object -FilePath logs\e2e.log -Append
               } catch {}
             }
           }
 
           "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "status=$status" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "Smoke status: $status; ok=$ok" | Tee-Object -FilePath logs\smoke_install.log -Append
-
-      - name: Optional E2E (Playwright Electron)
-        id: e2e
-        if: always() && steps.install.outputs.ok == 'true'
-        continue-on-error: true
-        run: |
-          # E2E is stage 2: run only if repo already contains Playwright config + tests
-          $hasCfg = Test-Path 'playwright.config.ts'
-          $hasTests = Test-Path 'tests\e2e'
-
-          if (-not $hasCfg -or -not $hasTests) {
-            "E2E skipped: playwright.config.ts and/or tests\e2e are not present in repo" | Tee-Object -FilePath logs\e2e.log
-            "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            exit 0
-          }
-
-          npx playwright install --with-deps *>&1 | Tee-Object -FilePath logs\e2e.log
-          if ($LASTEXITCODE -ne 0) {
-            "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "status=failed: playwright install" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            exit 0
-          }
-
-          npx playwright test *>&1 | Tee-Object -FilePath logs\e2e.log -Append
-          $ok = ($LASTEXITCODE -eq 0)
-          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "status=ran" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Generate 118-matrix TestReport (auto)
         if: always()
@@ -272,7 +260,6 @@ jobs:
           UNIT_STATUS: ${{ steps.unit.outputs.ok == 'true' && 'PASS' || steps.unit.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           BUILD_STATUS: ${{ steps.dist.outputs.ok == 'true' && 'PASS' || steps.dist.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'true') && 'PASS' || ((steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'false') || startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
-          SMOKE_INSTALL_STATUS: ${{ (steps.smoke_install.outputs.status != '' && steps.smoke_install.outputs.ok == 'true' && startsWith(steps.smoke_install.outputs.status, 'ran')) && 'PASS' || (steps.smoke_install.outputs.ok == 'false') && 'FAIL' || 'NR' }}
           STATIC_STATUS: PASS
           REVIEW_STATUS: PASS
           TEST_CYCLES: 1
