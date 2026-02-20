@@ -6,7 +6,7 @@ export const TID = {
   screenOrders: 'screen-orders',
   screenSettings: 'screen-settings',
 
-  // Grid / table
+  // Main grid / table
   gridProducts: 'grid-products',
   gridProductsViewport: 'grid-products-viewport',
   gridProductsRow: 'grid-products-row',
@@ -22,7 +22,7 @@ export const TID = {
   btnReset: 'btn-reset',
   btnSave: 'btn-save',
 
-  // States
+  // UI states
   loaderMain: 'loader-main',
   emptyState: 'empty-state',
   toastError: 'toast-error',
