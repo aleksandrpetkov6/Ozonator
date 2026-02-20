@@ -1,46 +1,23 @@
+diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
+index 626110a..f109ef4 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -142,7 +142,7 @@
-   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
- 
-   const [collapsedOpen, setCollapsedOpen] = useState(false)
--  const [bodyScrollTop, setBodyScrollTop] = useState(0)
-+  const [bodyWindowAnchorRow, setBodyWindowAnchorRow] = useState(0)
-   const [bodyViewportH, setBodyViewportH] = useState(600)
- 
-   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
-@@ -620,13 +620,21 @@
-     return () => ro.disconnect()
-   }, [])
- 
-+  const ROW_H = 28
-+
-   useEffect(() => {
-     const body = bodyScrollRef.current
+@@ -625,8 +625,12 @@ function onDragOverHeader(e: React.DragEvent) {
      if (!body) return
  
-+    const viewH = bodyViewportH || 600
-+    const viewportRows = Math.max(1, Math.ceil(viewH / ROW_H))
-+    const windowStepRows = Math.max(12, Math.ceil(viewportRows / 2))
-+
      const onScroll = () => {
 -      const nextTop = body.scrollTop
 -      setBodyScrollTop((prev) => (prev === nextTop ? prev : nextTop))
-+      const nextTop = Math.max(0, body.scrollTop || 0)
-+      const anchorRow = Math.floor(nextTop / ROW_H)
-+      const nextWindowAnchorRow = Math.floor(anchorRow / windowStepRows) * windowStepRows
-+      setBodyWindowAnchorRow((prev) => (prev === nextWindowAnchorRow ? prev : nextWindowAnchorRow))
++      const nextTop = Math.max(0, body.scrollTop)
++      const viewportRows = Math.max(1, Math.ceil((body.clientHeight || 600) / 28))
++      const chunkRows = Math.max(8, viewportRows)
++      const anchorRow = Math.floor(nextTop / 28 / chunkRows) * chunkRows
++      const anchorTop = anchorRow * 28
++      setBodyScrollTop((prev) => (prev === anchorTop ? prev : anchorTop))
      }
  
      body.addEventListener('scroll', onScroll, { passive: true })
-@@ -635,15 +643,15 @@
-     return () => {
-       body.removeEventListener('scroll', onScroll)
-     }
--  }, [])
--
--  const ROW_H = 28
-+  }, [bodyViewportH])
+@@ -641,9 +645,13 @@ function onDragOverHeader(e: React.DragEvent) {
  
    const totalRows = filtered.length
    const viewH = bodyViewportH || 600
@@ -48,10 +25,12 @@
 -  const startRow = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN)
 -  const endRow = Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2))
 +  const viewportRows = Math.max(1, Math.ceil(viewH / ROW_H))
-+  const OVERSCAN = Math.max(64, viewportRows * 3)
-+  const WINDOW_STEP_ROWS = Math.max(12, Math.ceil(viewportRows / 2))
-+  const startRow = Math.max(0, bodyWindowAnchorRow - OVERSCAN)
-+  const endRow = Math.min(totalRows, bodyWindowAnchorRow + viewportRows + (OVERSCAN * 2) + WINDOW_STEP_ROWS)
++  const CHUNK_ROWS = Math.max(8, viewportRows)
++  const OVERSCAN = Math.max(48, viewportRows * 3)
++  const anchorRow = Math.floor(bodyScrollTop / ROW_H)
++  const startRowRaw = Math.max(0, anchorRow - OVERSCAN)
++  const startRow = Math.max(0, Math.floor(startRowRaw / CHUNK_ROWS) * CHUNK_ROWS)
++  const endRow = Math.min(totalRows, startRow + viewportRows + (OVERSCAN * 2) + CHUNK_ROWS)
  
    const visibleRows = useMemo(() => filtered.slice(startRow, endRow), [filtered, startRow, endRow])
    const topSpace = startRow * ROW_H
