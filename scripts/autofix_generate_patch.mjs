@@ -24,6 +24,7 @@ function argValue(name, fallback = "") {
 const LOGS_DIR = argValue("--logs-dir", "_ci_logs");
 const RUN_ID = argValue("--run-id", "");
 const EXPECT_SHA = argValue("--sha", "");
+const TRIGGER_WORKFLOW = argValue("--trigger-workflow", "");
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "";
@@ -282,6 +283,7 @@ function buildPrompt(params) {
     logsTail,
     filesSnippet,
     applyError,
+    existingDiff,
   } = params;
 
   return [
@@ -299,7 +301,78 @@ function buildPrompt(params) {
     `- Output tail:\n${failureOutput}`,
     logsTail ? `\nCI logs tail:\n${logsTail}` : "",
     filesSnippet ? `\nRelevant files:\n${filesSnippet}` : "",
+    existingDiff ? `\nCurrent uncommitted diff (do NOT revert; build on top of this):\n${existingDiff}` : "",
     applyError ? `\nPrevious patch apply error:\n${applyError}` : "",
+    `\nReturn ONLY the patch.`,
+  ].filter(Boolean).join("\n");
+}
+
+
+function truncateMiddle(s, maxChars = 18_000) {
+  const t = (s || "").toString();
+  if (t.length <= maxChars) return t;
+  const head = Math.floor(maxChars * 0.55);
+  const tail = maxChars - head - 40;
+  return `${t.slice(0, head)}\n\n... [truncated ${t.length - head - tail} chars] ...\n\n${t.slice(-tail)}`;
+}
+
+async function getCurrentDiff(maxChars = 18_000) {
+  const r = await run("git", ["diff"]);
+  return truncateMiddle((r.out || "").trim(), maxChars);
+}
+
+async function getFilesContextForPatch(patchText, maxFiles = 6, maxChars = 18_000) {
+  const files = extractTouchedFilesFromPatch(patchText)
+    .filter((f) => f && !f.startsWith("node_modules/") && fs.existsSync(f))
+    .slice(0, maxFiles);
+
+  let acc = "";
+  for (const fp of files) {
+    const t = await readTextFileSafe(fp, 60_000);
+    if (!t.trim()) continue;
+    acc += `\n\n===== FILE: ${fp} (current) =====\n${t}`;
+    if (acc.length > maxChars) {
+      acc = acc.slice(0, maxChars);
+      break;
+    }
+  }
+  return acc.trim();
+}
+
+function shouldRebaseLatestPatch({ triggerWorkflow, logsTail, latestPatchText }) {
+  if (!latestPatchText || !latestPatchText.trim()) return false;
+  const hay = `${triggerWorkflow || ""}\n${logsTail || ""}`.toLowerCase();
+  if (hay.includes("apply patch and open pr")) return true;
+  if (hay.includes("patch does not apply")) return true;
+  if (hay.includes("patch failed")) return true;
+  if (hay.includes("git apply")) return true;
+  return false;
+}
+
+function buildRebasePrompt(params) {
+  const {
+    headSha,
+    runId,
+    originalPatch,
+    applyError,
+    logsTail,
+    filesSnippet,
+  } = params;
+
+  return [
+    `You are a senior maintainer. Produce ONLY a unified diff patch (git apply compatible). No commentary.`,
+    `Repo: Ozonator`,
+    `Target commit (HEAD): ${headSha}`,
+    runId ? `CI run id: ${runId}` : "",
+    `Goal: update/rebase the PROVIDED patch so it applies cleanly to this HEAD, preserving its intent.`,
+    `Constraints:`,
+    `- Patch must be a unified diff starting with 'diff --git'.`,
+    `- Keep changes minimal; preserve the original intent.`,
+    `- Do NOT modify: patches/latest.patch, .github/workflows/*, scripts/autofix_generate_patch.mjs`,
+    `Original patch (may be truncated):\n${originalPatch}`,
+    applyError ? `\nCurrent git apply error:\n${applyError}` : "",
+    logsTail ? `\nCI logs tail:\n${logsTail}` : "",
+    filesSnippet ? `\nCurrent file snapshots:\n${filesSnippet}` : "",
     `\nReturn ONLY the patch.`,
   ].filter(Boolean).join("\n");
 }
@@ -310,8 +383,63 @@ async function main() {
   const headSha = await getHeadSha();
   const logsTail = await collectLogs(LOGS_DIR, 30_000);
 
+  const latestPatchPath = path.join("patches", "latest.patch");
+  const latestPatchText = await readTextFileSafe(latestPatchPath, 200_000);
+  const wantsRebase = shouldRebaseLatestPatch({
+    triggerWorkflow: TRIGGER_WORKFLOW,
+    logsTail,
+    latestPatchText,
+  });
+  let rebasePending = wantsRebase && latestPatchText.trim().length > 0;
+  let rebaseApplied = false;
+
   let applyError = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
+    if (rebasePending && !rebaseApplied) {
+      // The failing workflow likely indicates patches/latest.patch no longer applies.
+      // Try to rebase it onto the current HEAD, preserving intent.
+      if (!latestPatchText.includes("diff --git")) {
+        applyError = "patches/latest.patch is not a unified diff (missing 'diff --git').";
+      } else if (patchTouchesForbiddenPaths(latestPatchText)) {
+        throw new Error("patches/latest.patch touches forbidden paths (workflows/scripts/patches).");
+      }
+
+      const appliedOrig = await applyPatchText(latestPatchText);
+      if (!appliedOrig.ok) {
+        applyError = (appliedOrig.err || appliedOrig.out || "git apply failed").slice(-6_000);
+        const filesSnippetForRebase = await getFilesContextForPatch(latestPatchText);
+        const prompt = buildRebasePrompt({
+          headSha,
+          runId: RUN_ID,
+          originalPatch: truncateMiddle(latestPatchText.trimEnd(), 40_000),
+          applyError,
+          logsTail,
+          filesSnippet: filesSnippetForRebase,
+        });
+
+        const rebasedPatch = await openaiPatch(prompt);
+
+        if (!rebasedPatch.includes("diff --git")) {
+          applyError = "Model output is not a unified diff (missing 'diff --git').";
+          continue;
+        }
+
+        if (patchTouchesForbiddenPaths(rebasedPatch)) {
+          applyError = "Patch touches forbidden paths (.github/workflows/, scripts/autofix..., or patches/latest.patch).";
+          continue;
+        }
+
+        const appliedRebased = await applyPatchText(rebasedPatch);
+        if (!appliedRebased.ok) {
+          applyError = (appliedRebased.err || appliedRebased.out || "git apply failed").slice(-6_000);
+          continue;
+        }
+      }
+
+      rebaseApplied = true;
+      rebasePending = false;
+      applyError = "";
+    }
     const check = await runChecksOnce();
     if (check.ok) {
       const n = await writeLatestPatchFromDiff();
@@ -326,6 +454,7 @@ async function main() {
     }
 
     const filesSnippet = await getRelevantFilesSnippet(check.output);
+    const existingDiff = await getCurrentDiff(18_000);
     const prompt = buildPrompt({
       headSha,
       runId: RUN_ID,
@@ -334,6 +463,7 @@ async function main() {
       logsTail,
       filesSnippet,
       applyError,
+      existingDiff,
     });
 
     const patchText = await openaiPatch(prompt);
