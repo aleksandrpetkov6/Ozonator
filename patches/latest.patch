@@ -1,204 +1,2024 @@
-diff --git a/.github/workflows/autofix-generate-latest-patch.yml b/.github/workflows/autofix-generate-latest-patch.yml
-index 065422a..aee6327 100644
---- a/.github/workflows/autofix-generate-latest-patch.yml
-+++ b/.github/workflows/autofix-generate-latest-patch.yml
-@@ -5,6 +5,7 @@ on:
-     # ВАЖНО: имя должно совпадать 1:1 с тем, как workflow называется в Actions слева
-     workflows:
-       - "Windows CI (Озонатор)"
-+      - "Apply patch and open PR"
-     types: [completed]
- 
- concurrency:
-@@ -69,7 +70,8 @@ jobs:
-           node scripts/autofix_generate_patch.mjs \
-             --logs-dir _ci_logs \
-             --run-id "${{ github.event.workflow_run.id }}" \
--            --sha "${{ github.event.workflow_run.head_sha }}"
-+            --sha "${{ github.event.workflow_run.head_sha }}" \
-+            --trigger-workflow "${{ github.event.workflow_run.name }}"
- 
-       - name: Commit & push only patches/latest.patch (triggers existing Apply patch and open PR)
-         shell: bash
-diff --git a/scripts/autofix_generate_patch.mjs b/scripts/autofix_generate_patch.mjs
-index 2b419e5..e8f4b16 100644
---- a/scripts/autofix_generate_patch.mjs
-+++ b/scripts/autofix_generate_patch.mjs
-@@ -24,6 +24,7 @@ function argValue(name, fallback = "") {
- const LOGS_DIR = argValue("--logs-dir", "_ci_logs");
- const RUN_ID = argValue("--run-id", "");
- const EXPECT_SHA = argValue("--sha", "");
-+const TRIGGER_WORKFLOW = argValue("--trigger-workflow", "");
- 
- const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
- const OPENAI_MODEL = process.env.OPENAI_MODEL || "";
-@@ -282,6 +283,7 @@ function buildPrompt(params) {
-     logsTail,
-     filesSnippet,
-     applyError,
-+    existingDiff,
-   } = params;
- 
-   return [
-@@ -299,19 +301,145 @@ function buildPrompt(params) {
-     `- Output tail:\n${failureOutput}`,
-     logsTail ? `\nCI logs tail:\n${logsTail}` : "",
-     filesSnippet ? `\nRelevant files:\n${filesSnippet}` : "",
-+    existingDiff ? `\nCurrent uncommitted diff (do NOT revert; build on top of this):\n${existingDiff}` : "",
-     applyError ? `\nPrevious patch apply error:\n${applyError}` : "",
-     `\nReturn ONLY the patch.`,
-   ].filter(Boolean).join("\n");
+diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -14,8 +14,10 @@
+   updated_at?: string | null
  }
  
++type ColId = keyof Product
 +
-+function truncateMiddle(s, maxChars = 18_000) {
-+  const t = (s || "").toString();
-+  if (t.length <= maxChars) return t;
-+  const head = Math.floor(maxChars * 0.55);
-+  const tail = maxChars - head - 40;
-+  return `${t.slice(0, head)}\n\n... [truncated ${t.length - head - tail} chars] ...\n\n${t.slice(-tail)}`;
-+}
-+
-+async function getCurrentDiff(maxChars = 18_000) {
-+  const r = await run("git", ["diff"]);
-+  return truncateMiddle((r.out || "").trim(), maxChars);
-+}
-+
-+async function getFilesContextForPatch(patchText, maxFiles = 6, maxChars = 18_000) {
-+  const files = extractTouchedFilesFromPatch(patchText)
-+    .filter((f) => f && !f.startsWith("node_modules/") && fs.existsSync(f))
-+    .slice(0, maxFiles);
-+
-+  let acc = "";
-+  for (const fp of files) {
-+    const t = await readTextFileSafe(fp, 60_000);
-+    if (!t.trim()) continue;
-+    acc += `\n\n===== FILE: ${fp} (current) =====\n${t}`;
-+    if (acc.length > maxChars) {
-+      acc = acc.slice(0, maxChars);
-+      break;
-+    }
-+  }
-+  return acc.trim();
-+}
-+
-+function shouldRebaseLatestPatch({ triggerWorkflow, logsTail, latestPatchText }) {
-+  if (!latestPatchText || !latestPatchText.trim()) return false;
-+  const hay = `${triggerWorkflow || ""}\n${logsTail || ""}`.toLowerCase();
-+  if (hay.includes("apply patch and open pr")) return true;
-+  if (hay.includes("patch does not apply")) return true;
-+  if (hay.includes("patch failed")) return true;
-+  if (hay.includes("git apply")) return true;
-+  return false;
-+}
-+
-+function buildRebasePrompt(params) {
-+  const {
-+    headSha,
-+    runId,
-+    originalPatch,
-+    applyError,
-+    logsTail,
-+    filesSnippet,
-+  } = params;
-+
-+  return [
-+    `You are a senior maintainer. Produce ONLY a unified diff patch (git apply compatible). No commentary.`,
-+    `Repo: Ozonator`,
-+    `Target commit (HEAD): ${headSha}`,
-+    runId ? `CI run id: ${runId}` : "",
-+    `Goal: update/rebase the PROVIDED patch so it applies cleanly to this HEAD, preserving its intent.`,
-+    `Constraints:`,
-+    `- Patch must be a unified diff starting with 'diff --git'.`,
-+    `- Keep changes minimal; preserve the original intent.`,
-+    `- Do NOT modify: patches/latest.patch, .github/workflows/*, scripts/autofix_generate_patch.mjs`,
-+    `Original patch (may be truncated):\n${originalPatch}`,
-+    applyError ? `\nCurrent git apply error:\n${applyError}` : "",
-+    logsTail ? `\nCI logs tail:\n${logsTail}` : "",
-+    filesSnippet ? `\nCurrent file snapshots:\n${filesSnippet}` : "",
-+    `\nReturn ONLY the patch.`,
-+  ].filter(Boolean).join("\n");
-+}
-+
- async function main() {
-   await ensureShaMatches(EXPECT_SHA);
+ type ColDef = {
+-  id: keyof Product | 'archived'
++  id: ColId
+   title: string
+   w: number
+   visible: boolean
+@@ -28,32 +30,17 @@
  
-   const headSha = await getHeadSha();
-   const logsTail = await collectLogs(LOGS_DIR, 30_000);
+ const DEFAULT_COLS: ColDef[] = [
+   { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
+-  { id: 'name', title: 'Наименование', w: 320, visible: true },
+-  { id: 'category', title: 'Категория', w: 280, visible: true },
++  { id: 'name', title: 'Наименование', w: 360, visible: true },
+   { id: 'brand', title: 'Бренд', w: 180, visible: true },
++  { id: 'category', title: 'Категория', w: 260, visible: true },
+   { id: 'sku', title: 'SKU', w: 140, visible: true },
+-  { id: 'barcode', title: 'Штрихкод', w: 170, visible: true },
+-  { id: 'type', title: 'Тип', w: 220, visible: true },
++  { id: 'barcode', title: 'Штрихкод', w: 180, visible: true },
++  { id: 'type', title: 'Тип', w: 180, visible: true },
+   { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
+-  { id: 'created_at', title: 'Создан', w: 180, visible: true },
+-  { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
++  { id: 'created_at', title: 'Создан', w: 190, visible: true },
++  { id: 'updated_at', title: 'Обновлён', w: 190, visible: false },
+ ]
  
-+  const latestPatchPath = path.join("patches", "latest.patch");
-+  const latestPatchText = await readTextFileSafe(latestPatchPath, 200_000);
-+  const wantsRebase = shouldRebaseLatestPatch({
-+    triggerWorkflow: TRIGGER_WORKFLOW,
-+    logsTail,
-+    latestPatchText,
-+  });
-+  let rebasePending = wantsRebase && latestPatchText.trim().length > 0;
-+  let rebaseApplied = false;
-+
-   let applyError = "";
-   for (let attempt = 1; attempt <= 3; attempt++) {
-+    if (rebasePending && !rebaseApplied) {
-+      // The failing workflow likely indicates patches/latest.patch no longer applies.
-+      // Try to rebase it onto the current HEAD, preserving intent.
-+      if (!latestPatchText.includes("diff --git")) {
-+        applyError = "patches/latest.patch is not a unified diff (missing 'diff --git').";
-+      } else if (patchTouchesForbiddenPaths(latestPatchText)) {
-+        throw new Error("patches/latest.patch touches forbidden paths (workflows/scripts/patches).");
-+      }
-+
-+      const appliedOrig = await applyPatchText(latestPatchText);
-+      if (!appliedOrig.ok) {
-+        applyError = (appliedOrig.err || appliedOrig.out || "git apply failed").slice(-6_000);
-+        const filesSnippetForRebase = await getFilesContextForPatch(latestPatchText);
-+        const prompt = buildRebasePrompt({
-+          headSha,
-+          runId: RUN_ID,
-+          originalPatch: truncateMiddle(latestPatchText.trimEnd(), 40_000),
-+          applyError,
-+          logsTail,
-+          filesSnippet: filesSnippetForRebase,
-+        });
-+
-+        const rebasedPatch = await openaiPatch(prompt);
-+
-+        if (!rebasedPatch.includes("diff --git")) {
-+          applyError = "Model output is not a unified diff (missing 'diff --git').";
-+          continue;
-+        }
-+
-+        if (patchTouchesForbiddenPaths(rebasedPatch)) {
-+          applyError = "Patch touches forbidden paths (.github/workflows/, scripts/autofix..., or patches/latest.patch).";
-+          continue;
-+        }
-+
-+        const appliedRebased = await applyPatchText(rebasedPatch);
-+        if (!appliedRebased.ok) {
-+          applyError = (appliedRebased.err || appliedRebased.out || "git apply failed").slice(-6_000);
-+          continue;
-+        }
-+      }
-+
-+      rebaseApplied = true;
-+      rebasePending = false;
-+      applyError = "";
-+    }
-     const check = await runChecksOnce();
-     if (check.ok) {
-       const n = await writeLatestPatchFromDiff();
-@@ -326,6 +454,7 @@ async function main() {
+-const AUTO_MIN_W = 80
+-const AUTO_PAD = 34
+-const AUTO_MAX_W: Record<string, number> = {
+-  offer_id: 240,
+-  sku: 220,
+-  barcode: 260,
+-  brand: 220,
+-  is_visible: 180,
+-  created_at: 240,
+-  updated_at: 240,
+-  type: 320,
+-  category: 380,
+-  name: 460,
+-}
+-
+ function readCols(): ColDef[] {
+   try {
+     const raw = localStorage.getItem('ozonator_cols')
+@@ -65,20 +52,18 @@
+       if (x?.id) map.set(String(x.id), x)
      }
  
-     const filesSnippet = await getRelevantFilesSnippet(check.output);
-+    const existingDiff = await getCurrentDiff(18_000);
-     const prompt = buildPrompt({
-       headSha,
-       runId: RUN_ID,
-@@ -334,6 +463,7 @@ async function main() {
-       logsTail,
-       filesSnippet,
-       applyError,
-+      existingDiff,
-     });
+-    // Мержим с дефолтом, чтобы новые колонки появлялись автоматически
+     const merged: ColDef[] = []
+     for (const d of DEFAULT_COLS) {
+       const p = map.get(String(d.id))
+       merged.push({
+         id: d.id,
+         title: d.title,
+-        w: (typeof p?.w === 'number' && p.w > 60) ? p.w : d.w,
+-        visible: (typeof p?.visible === 'boolean') ? p.visible : d.visible,
++        w: typeof p?.w === 'number' && p.w > 60 ? p.w : d.w,
++        visible: typeof p?.visible === 'boolean' ? p.visible : d.visible,
+       })
+       map.delete(String(d.id))
+     }
  
-     const patchText = await openaiPatch(prompt);
+-    // Если в localStorage были старые/лишние колонки — игнорируем
+     return merged
+   } catch {
+     return DEFAULT_COLS
+@@ -86,14 +71,11 @@
+ }
+ 
+ function saveCols(cols: ColDef[]) {
+-  localStorage.setItem('ozonator_cols', JSON.stringify(cols))
+-}
+-
+-function toText(v: any): string {
+-  if (v == null) return ''
+-  if (typeof v === 'string') return v
+-  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+-  try { return JSON.stringify(v) } catch { return String(v) }
++  try {
++    localStorage.setItem('ozonator_cols', JSON.stringify(cols))
++  } catch {
++    // ignore
++  }
+ }
+ 
+ function visibilityText(p: Product): string {
+@@ -104,6 +86,26 @@
+   return 'Неизвестно'
+ }
+ 
++function toCellString(p: Product, id: ColId): string {
++  if (id === 'is_visible') return visibilityText(p)
++  const raw = (p as any)[id]
++  if (raw == null) return ''
++  return String(raw)
++}
++
++function parseNumberMaybe(s: string): number | null {
++  const compact = s.replace(/\s+/g, '')
++  if (!compact) return null
++  if (!/^-?\d+(?:[\.,]\d+)?$/.test(compact)) return null
++  const n = Number(compact.replace(',', '.'))
++  return Number.isFinite(n) ? n : null
++}
++
++function parseDateMaybe(s: string): number | null {
++  const ts = Date.parse(s)
++  return Number.isFinite(ts) ? ts : null
++}
++
+ let PRODUCTS_CACHE: Product[] | null = null
+ let PRODUCTS_CACHE_AT = 0
+ let PRODUCTS_INFLIGHT: Promise<Product[] | null> | null = null
+@@ -111,7 +113,7 @@
+ 
+ async function fetchProductsCached(force = false): Promise<Product[] | null> {
+   const now = Date.now()
+-  if (!force && PRODUCTS_CACHE && (now - PRODUCTS_CACHE_AT) < PRODUCTS_CACHE_TTL_MS) return PRODUCTS_CACHE
++  if (!force && PRODUCTS_CACHE && now - PRODUCTS_CACHE_AT < PRODUCTS_CACHE_TTL_MS) return PRODUCTS_CACHE
+   if (PRODUCTS_INFLIGHT) return PRODUCTS_INFLIGHT
+ 
+   PRODUCTS_INFLIGHT = (async () => {
+@@ -134,55 +136,95 @@
+   return PRODUCTS_INFLIGHT
+ }
+ 
++type SortDir = 'asc' | 'desc'
++
++type ConditionOp =
++  | 'contains'
++  | 'not_contains'
++  | 'eq'
++  | 'neq'
++  | 'starts_with'
++  | 'ends_with'
++  | 'empty'
++  | 'not_empty'
++  | 'gt'
++  | 'gte'
++  | 'lt'
++  | 'lte'
++  | 'between'
++  | 'date_after'
++  | 'date_before'
++  | 'date_between'
++
++type ColumnFilter =
++  | {
++      mode: 'values'
++      // null = выбрать всё
++      selected: string[] | null
++      search: string
++    }
++  | {
++      mode: 'condition'
++      op: ConditionOp
++      v1: string
++      v2?: string
++    }
++
++function normValueForSet(v: string): string {
++  const trimmed = String(v ?? '').trim()
++  return trimmed ? trimmed : '(Пусто)'
++}
++
++function isNumericColumn(id: ColId): boolean {
++  return id === 'sku' || id === 'barcode'
++}
++
++function isDateColumn(id: ColId): boolean {
++  return id === 'created_at' || id === 'updated_at'
++}
++
++function compareProducts(a: Product, b: Product, colId: ColId): number {
++  if (isDateColumn(colId)) {
++    const at = parseDateMaybe(toCellString(a, colId)) ?? 0
++    const bt = parseDateMaybe(toCellString(b, colId)) ?? 0
++    return at - bt
++  }
++
++  const avRaw = toCellString(a, colId)
++  const bvRaw = toCellString(b, colId)
++
++  const an = parseNumberMaybe(avRaw)
++  const bn = parseNumberMaybe(bvRaw)
++  if (an != null && bn != null) return an - bn
++
++  return avRaw.localeCompare(bvRaw, 'ru', { numeric: true, sensitivity: 'base' })
++}
++
+ export default function ProductsPage({ query = '', onStats }: Props) {
+   const [products, setProducts] = useState<Product[]>(() => PRODUCTS_CACHE ?? [])
+   const [cols, setCols] = useState<ColDef[]>(readCols)
+ 
+-  const [draggingId, setDraggingId] = useState<string | null>(null)
+-  const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
++  const visibleCols = useMemo(() => cols.filter((c) => c.visible), [cols])
++  const hiddenCols = useMemo(() => cols.filter((c) => !c.visible), [cols])
+ 
+   const [collapsedOpen, setCollapsedOpen] = useState(false)
+-  const [bodyScrollTop, setBodyScrollTop] = useState(0)
+-  const [bodyViewportH, setBodyViewportH] = useState(600)
+-
+   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
+   const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
+ 
+-
+-  const [colMenuId, setColMenuId] = useState<string | null>(null)
+-  const [colMenuMode, setColMenuMode] = useState<'main' | 'filter'>('main')
+-  const [filterDraft, setFilterDraft] = useState<string>('')
+-  const [colFilters, setColFilters] = useState<Record<string, string>>({})
+-  const [sortState, setSortState] = useState<{ id: string; dir: 'asc' | 'desc' } | null>(null)
+-
++  const [colMenuId, setColMenuId] = useState<ColId | null>(null)
++  const [colMenuTab, setColMenuTab] = useState<'main' | 'values' | 'condition'>('main')
+   const colMenuRef = useRef<HTMLDivElement | null>(null)
+   const colMenuBtnRef = useRef<HTMLButtonElement | null>(null)
+ 
+-  const scrollTopRafRef = useRef<number | null>(null)
+-  const lastScrollTopRef = useRef(0)
++  const [sortState, setSortState] = useState<{ id: ColId; dir: SortDir } | null>(null)
++  const [filters, setFilters] = useState<Record<string, ColumnFilter>>({})
+ 
+-  const resizingRef = useRef<{
+-    id: string
+-    startX: number
+-    startW: number
+-    startRight: number
+-    startTableW: number
+-    colIdx: number
+-    headCol?: HTMLTableColElement | null
+-    bodyCol?: HTMLTableColElement | null
+-  } | null>(null)
+-
+-  const headInnerRef = useRef<HTMLDivElement | null>(null)
+-  const bodyInnerRef = useRef<HTMLDivElement | null>(null)
+-  const headTableRef = useRef<HTMLTableElement | null>(null)
+-  const bodyTableRef = useRef<HTMLTableElement | null>(null)
+-  const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
+-  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
+-  const didAutoInitRef = useRef(false)
++  // drafts for condition editor
++  const [condOpDraft, setCondOpDraft] = useState<ConditionOp>('contains')
++  const [condV1Draft, setCondV1Draft] = useState('')
++  const [condV2Draft, setCondV2Draft] = useState('')
+ 
+-  const hasStoredCols = useMemo(() => {
+-    try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
+-  }, [])
++  // values mode draft is stored inside filters[colId]
+ 
+   async function load(force = false) {
+     const list = await fetchProductsCached(force)
+@@ -204,9 +246,7 @@
+     return () => window.clearTimeout(id)
+   }, [cols])
+ 
+-  const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
+-  const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
+-
++  // close menus on outside click
+   useEffect(() => {
+     if (!collapsedOpen) return
+ 
+@@ -231,35 +271,6 @@
+   }, [collapsedOpen])
+ 
+   useEffect(() => {
+-    if (collapsedOpen && hiddenCols.length === 0) setCollapsedOpen(false)
+-  }, [collapsedOpen, hiddenCols.length])
+-
+-
+-  function closeColMenu() {
+-    setColMenuId(null)
+-    setColMenuMode('main')
+-  }
+-
+-  function toggleColMenu(id: string) {
+-    setColMenuMode('main')
+-    setFilterDraft(String(colFilters[id] ?? ''))
+-    setColMenuId((prev) => (prev === id ? null : id))
+-  }
+-
+-  function applyFilter(id: string, value: string) {
+-    const v = String(value ?? '').trim()
+-    setColFilters((prev) => {
+-      const next = { ...prev }
+-      if (!v) {
+-        delete next[id]
+-      } else {
+-        next[id] = v
+-      }
+-      return next
+-    })
+-  }
+-
+-  useEffect(() => {
+     if (!colMenuId) return
+ 
+     const onDown = (ev: MouseEvent) => {
+@@ -267,11 +278,15 @@
+       if (!t) return
+       if (colMenuRef.current?.contains(t)) return
+       if (colMenuBtnRef.current?.contains(t)) return
+-      closeColMenu()
++      setColMenuId(null)
++      setColMenuTab('main')
+     }
+ 
+     const onKey = (ev: KeyboardEvent) => {
+-      if (ev.key === 'Escape') closeColMenu()
++      if (ev.key === 'Escape') {
++        setColMenuId(null)
++        setColMenuTab('main')
++      }
+     }
+ 
+     window.addEventListener('mousedown', onDown)
+@@ -282,773 +297,696 @@
+     }
+   }, [colMenuId])
+ 
+-  function sortValue(p: Product, colId: string): string | number {
+-    if (colId === 'created_at' || colId === 'updated_at') {
+-      const raw = (p as any)[colId]
+-      const ts = Date.parse(raw ?? '')
+-      return Number.isFinite(ts) ? ts : 0
+-    }
++  function showCol(id: ColId) {
++    setCols((prev) => prev.map((c) => (c.id === id ? { ...c, visible: true } : c)))
++  }
+ 
+-    const raw = getCellString(p, colId as any)
+-    const compact = String(raw ?? '').replace(/\s+/g, '')
+-    if (compact && /^-?\d+(?:[\.,]\d+)?$/.test(compact)) {
+-      const num = Number(compact.replace(',', '.'))
+-      if (Number.isFinite(num)) return num
+-    }
++  function hideCol(id: ColId) {
++    setCols((prev) => prev.map((c) => (c.id === id ? { ...c, visible: false } : c)))
+ 
+-    return String(raw ?? '').toLowerCase()
+-  }
++    setFilters((prev) => {
++      if (!prev[id]) return prev
++      const next = { ...prev }
++      delete next[id]
++      return next
++    })
+ 
+-  function compareProducts(a: Product, b: Product, colId: string): number {
+-    const av = sortValue(a, colId)
+-    const bv = sortValue(b, colId)
++    setSortState((prev) => (prev?.id === id ? null : prev))
+ 
+-    if (typeof av === 'number' && typeof bv === 'number') return av - bv
++    if (colMenuId === id) {
++      setColMenuId(null)
++      setColMenuTab('main')
++    }
++  }
+ 
+-    return String(av).localeCompare(String(bv), 'ru', { numeric: true, sensitivity: 'base' })
++  function toggleCollapsed() {
++    if (hiddenCols.length === 0) return
++    setCollapsedOpen((v) => !v)
++  }
++
++  function openColMenu(id: ColId, btn: HTMLButtonElement | null) {
++    // store btn for outside click ignore
++    colMenuBtnRef.current = btn
++
++    setColMenuId((prev) => {
++      const next = prev === id ? null : id
++      if (next) {
++        setColMenuTab('main')
++
++        const f = filters[id]
++        if (f?.mode === 'condition') {
++          setCondOpDraft(f.op)
++          setCondV1Draft(f.v1 ?? '')
++          setCondV2Draft(f.v2 ?? '')
++        } else {
++          // defaults for condition tab
++          const isNum = isNumericColumn(id)
++          const isDate = isDateColumn(id)
++          setCondOpDraft(isDate ? 'date_after' : isNum ? 'gt' : 'contains')
++          setCondV1Draft('')
++          setCondV2Draft('')
++        }
++      }
++      return next
++    })
+   }
+ 
+-  // Для поиска не учитываем ширины столбцов (чтобы ресайз не тормозил)
+-  const visibleSearchKey = useMemo(
+-    () => cols.map(c => `${c.id}:${c.visible ? 1 : 0}`).join('|'),
+-    [cols]
+-  )
+-
+-  const visibleSearchCols = useMemo(
+-    () => cols.filter(c => c.visible).map(c => c.id),
+-    [visibleSearchKey]
+-  )
++  // Query search uses only visible columns
++  const visibleSearchCols = useMemo(() => visibleCols.map((c) => c.id), [visibleCols])
+ 
+-  const filtered = useMemo(() => {
++  const rowsFiltered = useMemo(() => {
+     const q = String(query ?? '').trim().toLowerCase()
+-
+-    const activeFilters = Object.entries(colFilters)
+-      .map(([k, v]) => [String(k), String(v ?? '').trim().toLowerCase()] as const)
+-      .filter(([, v]) => !!v)
++    const activeFilters = Object.entries(filters)
+ 
+     if (!q && activeFilters.length === 0) return products
+ 
++    const filterFns: Array<(p: Product) => boolean> = []
++
++    // column filters
++    for (const [rawId, f] of activeFilters) {
++      const id = rawId as ColId
++      if (!f) continue
++
++      if (f.mode === 'values') {
++        const selected = f.selected
++        if (selected == null) continue
++        const set = new Set(selected.map(normValueForSet))
++        filterFns.push((p) => {
++          const cell = normValueForSet(toCellString(p, id))
++          return set.has(cell)
++        })
++        continue
++      }
++
++      if (f.mode === 'condition') {
++        const op = f.op
++        const v1 = String(f.v1 ?? '').trim()
++        const v2 = String(f.v2 ?? '').trim()
++
++        if (op === 'empty') {
++          filterFns.push((p) => !String(toCellString(p, id) ?? '').trim())
++          continue
++        }
++        if (op === 'not_empty') {
++          filterFns.push((p) => !!String(toCellString(p, id) ?? '').trim())
++          continue
++        }
++
++        if (isDateColumn(id)) {
++          const tCell = (p: Product) => parseDateMaybe(toCellString(p, id))
++          const t1 = parseDateMaybe(v1)
++          const t2 = parseDateMaybe(v2)
++
++          if (op === 'date_after' && t1 != null) {
++            filterFns.push((p) => (tCell(p) ?? -Infinity) > t1)
++          } else if (op === 'date_before' && t1 != null) {
++            filterFns.push((p) => (tCell(p) ?? Infinity) < t1)
++          } else if (op === 'date_between' && t1 != null && t2 != null) {
++            const lo = Math.min(t1, t2)
++            const hi = Math.max(t1, t2)
++            filterFns.push((p) => {
++              const t = tCell(p)
++              if (t == null) return false
++              return t >= lo && t <= hi
++            })
++          }
++          continue
++        }
++
++        if (isNumericColumn(id)) {
++          const n1 = parseNumberMaybe(v1)
++          const n2 = parseNumberMaybe(v2)
++
++          if (op === 'between' && n1 != null && n2 != null) {
++            const lo = Math.min(n1, n2)
++            const hi = Math.max(n1, n2)
++            filterFns.push((p) => {
++              const n = parseNumberMaybe(toCellString(p, id))
++              if (n == null) return false
++              return n >= lo && n <= hi
++            })
++          } else if ((op === 'gt' || op === 'gte' || op === 'lt' || op === 'lte' || op === 'eq' || op === 'neq') && n1 != null) {
++            filterFns.push((p) => {
++              const n = parseNumberMaybe(toCellString(p, id))
++              if (n == null) return false
++              if (op === 'gt') return n > n1
++              if (op === 'gte') return n >= n1
++              if (op === 'lt') return n < n1
++              if (op === 'lte') return n <= n1
++              if (op === 'eq') return n === n1
++              return n !== n1
++            })
++          }
++          continue
++        }
++
++        // text columns
++        const v1l = v1.toLowerCase()
++        if (!v1l && (op === 'contains' || op === 'not_contains' || op === 'starts_with' || op === 'ends_with' || op === 'eq' || op === 'neq')) {
++          continue
++        }
++
++        filterFns.push((p) => {
++          const cell = String(toCellString(p, id) ?? '').toLowerCase()
++          if (op === 'contains') return cell.includes(v1l)
++          if (op === 'not_contains') return !cell.includes(v1l)
++          if (op === 'starts_with') return cell.startsWith(v1l)
++          if (op === 'ends_with') return cell.endsWith(v1l)
++          if (op === 'eq') return cell === v1l
++          if (op === 'neq') return cell !== v1l
++          return true
++        })
++      }
++    }
++
+     return products.filter((p) => {
+       if (q) {
+-        const hay = visibleSearchCols
+-          .map((colId) => getCellString(p, colId as any))
+-          .join(' ')
+-          .toLowerCase()
++        const hay = visibleSearchCols.map((id) => toCellString(p, id)).join(' ').toLowerCase()
+         if (!hay.includes(q)) return false
+       }
+-
+-      for (const [colId, fv] of activeFilters) {
+-        const cell = getCellString(p, colId as any).toLowerCase()
+-        if (!cell.includes(fv)) return false
++      for (const fn of filterFns) {
++        if (!fn(p)) return false
+       }
+-
+       return true
+     })
+-  }, [products, query, visibleSearchKey, colFilters])
++  }, [products, query, visibleSearchCols, filters])
+ 
+   const rows = useMemo(() => {
+-    if (!sortState) return filtered
+-
++    if (!sortState) return rowsFiltered
+     const { id, dir } = sortState
+     const mul = dir === 'asc' ? 1 : -1
+-
+-    const arr = [...filtered]
++    const arr = [...rowsFiltered]
+     arr.sort((a, b) => mul * compareProducts(a, b, id))
+     return arr
+-  }, [filtered, sortState])
+-
++  }, [rowsFiltered, sortState])
+ 
+   useEffect(() => {
+     onStats?.({ total: products.length, filtered: rows.length })
+   }, [products.length, rows.length, onStats])
+ 
+-  function hideCol(id: string) {
+-    setCols((prev) => prev.map((c) => (String(c.id) === id ? { ...c, visible: false } : c)))
+-
+-    // если на этом столбце был фильтр/сортировка — очищаем
+-    setColFilters((prev) => {
+-      if (!(id in prev)) return prev
+-      const next = { ...prev }
+-      delete next[id]
+-      return next
++  // ===== Values filter helpers =====
++  const menuUniqueValues = useMemo(() => {
++    if (!colMenuId) return [] as string[]
++    const id = colMenuId
++
++    const seen = new Set<string>()
++    const list: string[] = []
++
++    for (const p of products) {
++      const v = normValueForSet(toCellString(p, id))
++      if (seen.has(v)) continue
++      seen.add(v)
++      list.push(v)
++      if (list.length >= 2500) break
++    }
++
++    list.sort((a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' }))
++    return list
++  }, [products, colMenuId])
++
++  const valuesFilterState = useMemo(() => {
++    if (!colMenuId) return null
++    const f = filters[colMenuId]
++    if (!f || f.mode !== 'values') {
++      return { selected: null as string[] | null, search: '' }
++    }
++    return f
++  }, [filters, colMenuId])
++
++  const valuesFilteredList = useMemo(() => {
++    if (!valuesFilterState) return []
++    const s = String(valuesFilterState.search ?? '').trim().toLowerCase()
++    if (!s) return menuUniqueValues
++    return menuUniqueValues.filter((v) => v.toLowerCase().includes(s))
++  }, [menuUniqueValues, valuesFilterState])
++
++  function setValuesSearch(id: ColId, search: string) {
++    setFilters((prev) => {
++      const cur = prev[id]
++      const base: ColumnFilter = cur && cur.mode === 'values' ? cur : { mode: 'values', selected: null, search: '' }
++      return { ...prev, [id]: { ...base, mode: 'values', search } }
+     })
+-
+-    setSortState((prev) => (prev?.id === id ? null : prev))
+-
+-    if (colMenuId === id) closeColMenu()
+-  }
+-
+-  function showCol(id: string) {
+-    setCols((prev) => prev.map((c) => (String(c.id) === id ? { ...c, visible: true } : c)))
+   }
+ 
+-  function onDragStart(e: React.DragEvent, id: string) {
+-    setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: true } : c))
+-  }
+-
+-  function onDragStart(e: React.DragEvent, id: string) {
+-    setDraggingId(id)
+-    e.dataTransfer.setData('text/plain', id)
+-    e.dataTransfer.effectAllowed = 'move'
+-  }
+-
+-
+-function onDragOverHeader(e: React.DragEvent) {
+-  e.preventDefault()
+-  e.dataTransfer.dropEffect = 'move'
+-
+-  const head = headScrollRef.current
+-  const row = headerRowRef.current
+-  if (!head || !row) return
+-  if (visibleCols.length === 0) return
+-
+-  const headRect = head.getBoundingClientRect()
+-  const x = (e.clientX - headRect.left) + head.scrollLeft
+-
+-  const cells = Array.from(row.children) as HTMLElement[]
+-  if (cells.length === 0) return
+-
+-  let targetId = String(visibleCols[0].id)
+-  let side: 'left' | 'right' = 'left'
+-  let lineX = 0
+-
+-  for (let i = 0; i < cells.length; i++) {
+-    const cell = cells[i]
+-    const left = cell.offsetLeft
+-    const w = cell.offsetWidth
+-    const mid = left + (w / 2)
+-
+-    if (x < mid) {
+-      targetId = String(visibleCols[i].id)
+-      side = 'left'
+-      lineX = left
+-      break
+-    }
+-
+-    if (i === cells.length - 1) {
+-      targetId = String(visibleCols[i].id)
+-      side = 'right'
+-      lineX = left + w
+-    }
+-  }
+-
+-  const next = { id: targetId, side, x: Math.round(lineX) }
+-
+-  setDropHint((prev) => {
+-    if (!prev) return next
+-
+-    // если линия «дрожит» на 3px — фиксируем положение, но обновляем цель
+-    const stableX = (Math.abs(next.x - prev.x) <= 3) ? prev.x : next.x
+-    const stable = { ...next, x: stableX }
+-
+-    if (prev.id === stable.id && prev.side === stable.side && prev.x === stable.x) return prev
+-    return stable
+-  })
+-}
+-
+-
+-
+-  function onDrop(e: React.DragEvent) {
+-  e.preventDefault()
+-
+-  const draggedId = e.dataTransfer.getData('text/plain')
+-  if (!draggedId) return
+-
+-  const hint = dropHint
+-  if (!hint) {
+-    setDraggingId(null)
+-    setDropHint(null)
+-    return
+-  }
+-
+-  const targetId = hint.id
+-  const side = hint.side
+-
+-  setCols(prev => {
+-    const fromIdx = prev.findIndex(c => String(c.id) === draggedId)
+-    const toIdxRaw = prev.findIndex(c => String(c.id) === targetId)
+-    if (fromIdx < 0 || toIdxRaw < 0 || fromIdx === toIdxRaw) return prev
+-
+-    const insertBase = toIdxRaw + (side === 'right' ? 1 : 0)
+-
+-    const next = [...prev]
+-    const [moved] = next.splice(fromIdx, 1)
+-
+-    let insertIdx = insertBase
+-    // если элемент забрали слева, индексы сдвинулись
+-    if (fromIdx < insertIdx) insertIdx -= 1
+-    if (insertIdx < 0) insertIdx = 0
+-    if (insertIdx > next.length) insertIdx = next.length
+-
+-    next.splice(insertIdx, 0, moved)
+-    return next
+-  })
+-
+-  setDraggingId(null)
+-  setDropHint(null)
+-}
+-
+-  function onDragEnd() {
+-    setDraggingId(null)
+-    setDropHint(null)
++  function setValuesSelected(id: ColId, selected: string[] | null) {
++    setFilters((prev) => {
++      const cur = prev[id]
++      const base: ColumnFilter = cur && cur.mode === 'values' ? cur : { mode: 'values', selected: null, search: '' }
++      // если выбрано «всё» — убираем фильтр совсем
++      if (selected == null) {
++        // keep search state only if menu open; but store as no filter
++        const next = { ...prev }
++        delete next[id]
++        return next
++      }
++      return { ...prev, [id]: { ...base, mode: 'values', selected } }
++    })
+   }
+-  function startResize(e: React.MouseEvent, colId: string) {
+-    e.preventDefault()
+-    e.stopPropagation()
+-
+-    const col = cols.find(c => String(c.id) === colId)
+-    if (!col) return
+ 
+-    const head = headScrollRef.current
+-    const row = headerRowRef.current
+-    const cell = row?.querySelector<HTMLElement>(`th[data-col-id="${colId}"]`)
+-    if (!head || !cell) return
+-
+-    const colIdx = visibleCols.findIndex(c => String(c.id) === colId)
+-    if (colIdx < 0) return
+-
+-    const startRight = cell.offsetLeft + cell.offsetWidth
+-
+-    const headCols = headTableRef.current?.querySelectorAll('colgroup col') ?? []
+-    const bodyCols = bodyTableRef.current?.querySelectorAll('colgroup col') ?? []
+-    const headCol = (headCols[colIdx] as any) as HTMLTableColElement | null
+-    const bodyCol = (bodyCols[colIdx] as any) as HTMLTableColElement | null
+-
+-    resizingRef.current = {
+-      id: colId,
+-      startX: e.clientX,
+-      startW: col.w,
+-      startRight,
+-      startTableW: tableWidth,
+-      colIdx,
+-      headCol,
+-      bodyCol,
+-    }
+-
+-    const indicator = resizeIndicatorRef.current
+-    if (indicator) {
+-      indicator.style.display = 'block'
+-      indicator.style.left = `${Math.round(startRight - (head.scrollLeft ?? 0))}px`
+-    }
+-
+-    const prevCursor = document.body.style.cursor
+-    const prevSelect = document.body.style.userSelect
+-    document.body.style.cursor = 'col-resize'
+-    document.body.style.userSelect = 'none'
+-
+-    let raf: number | null = null
+-    let pendingDx = 0
+-    let lastW = col.w
+-
+-    const flush = () => {
+-      raf = null
+-      const r = resizingRef.current
+-      if (!r) return
+-
+-      const w = Math.max(AUTO_MIN_W, Math.round(r.startW + pendingDx))
+-      const delta = w - r.startW
+-      const newTableW = Math.max(1, Math.round(r.startTableW + delta))
+-
+-      if (w !== lastW) {
+-        lastW = w
+-        if (r.headCol) (r.headCol as any).style.width = `${w}px`
+-        if (r.bodyCol) (r.bodyCol as any).style.width = `${w}px`
+-
+-        if (headInnerRef.current) headInnerRef.current.style.width = `${newTableW}px`
+-        if (bodyInnerRef.current) bodyInnerRef.current.style.width = `${newTableW}px`
+-        if (headTableRef.current) headTableRef.current.style.width = `${newTableW}px`
+-        if (bodyTableRef.current) bodyTableRef.current.style.width = `${newTableW}px`
++  function toggleValue(id: ColId, value: string) {
++    setFilters((prev) => {
++      const cur = prev[id]
++      const base: ColumnFilter = cur && cur.mode === 'values' ? cur : { mode: 'values', selected: null, search: '' }
++      const curSel = base.mode === 'values' ? base.selected : null
++
++      // если сейчас «выбрано всё», то при первом клике переходим в режим "только этот"
++      const nextSel = new Set<string>((curSel ?? menuUniqueValues).map(normValueForSet))
++
++      const key = normValueForSet(value)
++      if (nextSel.has(key)) nextSel.delete(key)
++      else nextSel.add(key)
++
++      const arr = Array.from(nextSel)
++      arr.sort((a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' }))
++
++      // если снова выбрали всё — снимаем фильтр
++      if (arr.length === menuUniqueValues.length) {
++        const next = { ...prev }
++        delete next[id]
++        return next
+       }
+ 
+-      const sl = headScrollRef.current?.scrollLeft ?? 0
+-      if (indicator) indicator.style.left = `${Math.round(r.startRight + delta - sl)}px`
+-    }
+-
+-    const schedule = () => {
+-      if (raf != null) return
+-      raf = window.requestAnimationFrame(flush)
+-    }
+-
+-    const onMove = (ev: MouseEvent) => {
+-      const r = resizingRef.current
+-      if (!r) return
+-      pendingDx = ev.clientX - r.startX
+-      schedule()
+-    }
++      return { ...prev, [id]: { ...(base as any), mode: 'values', selected: arr } }
++    })
++  }
+ 
+-    const onUp = () => {
+-      if (raf != null) {
+-        window.cancelAnimationFrame(raf)
+-        raf = null
++  function applyConditionFilter(id: ColId) {
++    const op = condOpDraft
++    const v1 = String(condV1Draft ?? '').trim()
++    const v2 = String(condV2Draft ?? '').trim()
++
++    // validate minimal
++    const isEmptyOp = op === 'empty' || op === 'not_empty'
++
++    if (!isEmptyOp) {
++      if (isDateColumn(id)) {
++        if ((op === 'date_between' && (!v1 || !v2)) || ((op === 'date_after' || op === 'date_before') && !v1)) {
++          return
++        }
++      } else if (isNumericColumn(id)) {
++        if ((op === 'between' && (!v1 || !v2)) || (op !== 'between' && !v1 && op !== 'empty' && op !== 'not_empty')) {
++          return
++        }
++      } else {
++        if (!v1 && op !== 'empty' && op !== 'not_empty') return
+       }
+-
+-      const r = resizingRef.current
+-      resizingRef.current = null
+-
+-      document.body.style.cursor = prevCursor
+-      document.body.style.userSelect = prevSelect
+-
+-      if (indicator) indicator.style.display = 'none'
+-
+-      window.removeEventListener('mousemove', onMove)
+-      window.removeEventListener('mouseup', onUp)
+-
+-      if (!r) return
+-      const finalW = Math.max(AUTO_MIN_W, Math.round(r.startW + pendingDx))
+-      setCols(prev => prev.map(c => String(c.id) === r.id ? { ...c, w: finalW } : c))
+     }
+ 
+-    window.addEventListener('mousemove', onMove)
+-    window.addEventListener('mouseup', onUp)
++    setFilters((prev) => ({ ...prev, [id]: { mode: 'condition', op, v1, v2 } }))
++    setColMenuTab('main')
+   }
+ 
+-  function cellText(p: Product, colId: ColDef['id']): { text: string; title?: string } {
+-    if (colId === 'offer_id') return { text: p.offer_id }
+-    if (colId === 'name') return { text: (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия' }
+-    if (colId === 'brand') return { text: (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан' }
+-
+-    if (colId === 'is_visible') {
+-      const txt = visibilityText(p)
+-      const title = (p.hidden_reasons && String(p.hidden_reasons).trim()) ? String(p.hidden_reasons) : undefined
+-      return { text: txt, title }
+-    }
+-
+-    const v = (p as any)[colId]
+-    return { text: (v == null || v === '') ? '-' : String(v) }
++  function clearFilter(id: ColId) {
++    setFilters((prev) => {
++      if (!prev[id]) return prev
++      const next = { ...prev }
++      delete next[id]
++      return next
++    })
+   }
+ 
+-  function measureTextWidth(text: string): number {
+-    const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'))
+-    const ctx = canvas.getContext('2d')
+-    if (!ctx) return text.length * 7
+-
+-    const cs = window.getComputedStyle(document.body)
+-    const fontSize = cs.fontSize || '13px'
+-    const fontFamily = cs.fontFamily || 'system-ui'
+-    const fontWeight = cs.fontWeight || '400'
+-    ctx.font = `${fontWeight} ${fontSize} ${fontFamily}`
+-
+-    return ctx.measureText(text).width
++  // ===== Sort actions =====
++  function setSort(id: ColId, dir: SortDir) {
++    setSortState({ id, dir })
+   }
+ 
+-  function getCellString(p: Product, colId: ColDef['id']): string {
+-    if (colId === 'archived') return ''
+-    if (colId === 'is_visible') return visibilityText(p)
+-    if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
+-    if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+-    return toText((p as any)[colId])
++  function clearSort(id: ColId) {
++    setSortState((prev) => (prev?.id === id ? null : prev))
+   }
+ 
+-  function autoSizeColumn(colId: string, rows: Product[]) {
+-    const col = cols.find(c => String(c.id) === colId)
+-    if (!col) return
+-
+-    const cap = AUTO_MAX_W[colId] ?? 320
+-
+-    let max = measureTextWidth(col.title)
+-    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
+-    for (const p of sample) {
+-      const s = getCellString(p, col.id)
+-      if (!s) continue
+-      const w = measureTextWidth(s)
+-      if (w > max) max = w
+-    }
++  // ===== Column drag reorder =====
++  const [dragId, setDragId] = useState<ColId | null>(null)
+ 
+-    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
+-    setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
++  function onDragStartHeader(e: React.DragEvent, id: ColId) {
++    setDragId(id)
++    e.dataTransfer.setData('text/plain', String(id))
++    e.dataTransfer.effectAllowed = 'move'
+   }
+ 
+-  // Первичная авто-ширина (если пользователь ещё ничего не сохранял)
+-  useEffect(() => {
+-    if (didAutoInitRef.current) return
+-    if (hasStoredCols) return
+-    if (products.length === 0) return
+-
+-    didAutoInitRef.current = true
+-
+-    // авто-подгоняем только видимые дефолтные столбцы
+-    const next = cols.map((c) => {
+-      if (!c.visible) return c
+-      const cap = AUTO_MAX_W[String(c.id)] ?? 320
+-
+-      let max = measureTextWidth(c.title)
+-      const sample = products.length > 1600 ? products.slice(0, 1600) : products
+-      for (const p of sample) {
+-        const s = getCellString(p, c.id)
+-        if (!s) continue
+-        const w = measureTextWidth(s)
+-        if (w > max) max = w
+-      }
++  function onDropHeader(e: React.DragEvent, targetId: ColId) {
++    e.preventDefault()
++    const raw = e.dataTransfer.getData('text/plain')
++    const fromId = (raw as any) as ColId
++    if (!fromId || fromId === targetId) {
++      setDragId(null)
++      return
++    }
+ 
+-      const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
+-      return { ...c, w: nextW }
++    setCols((prev) => {
++      const fromIdx = prev.findIndex((c) => c.id === fromId)
++      const toIdx = prev.findIndex((c) => c.id === targetId)
++      if (fromIdx < 0 || toIdx < 0) return prev
++      const next = [...prev]
++      const [m] = next.splice(fromIdx, 1)
++      next.splice(toIdx, 0, m)
++      return next
+     })
+ 
+-    setCols(next)
+-    // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [products.length])
+-
+-  const tableWidth = useMemo(() => Math.max(1, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
+-
+-  const headScrollRef = useRef<HTMLDivElement | null>(null)
+-  const bodyScrollRef = useRef<HTMLDivElement | null>(null)
+-  const scrollSyncLockRef = useRef(false)
+-  const headerRowRef = useRef<HTMLTableRowElement | null>(null)
++    setDragId(null)
++  }
+ 
+-  useEffect(() => {
+-    const head = headScrollRef.current
+-    const body = bodyScrollRef.current
+-    if (!head || !body) return
+-
+-    const syncFromBody = () => {
+-      if (scrollSyncLockRef.current) return
+-      scrollSyncLockRef.current = true
+-      head.scrollLeft = body.scrollLeft
+-      scrollSyncLockRef.current = false
+-    }
++  function onDragOverHeader(e: React.DragEvent) {
++    e.preventDefault()
++    e.dataTransfer.dropEffect = 'move'
++  }
+ 
+-    const syncFromHead = () => {
+-      if (scrollSyncLockRef.current) return
+-      scrollSyncLockRef.current = true
+-      body.scrollLeft = head.scrollLeft
+-      scrollSyncLockRef.current = false
+-    }
++  // ===== Render =====
+ 
+-    body.addEventListener('scroll', syncFromBody, { passive: true })
+-    head.addEventListener('scroll', syncFromHead, { passive: true })
++  const tableStyle = useMemo(() => {
++    const grid = visibleCols.map((c) => `${c.w}px`).join(' ')
++    return { gridTemplateColumns: grid }
++  }, [visibleCols])
+ 
+-    // первичная синхронизация
+-    head.scrollLeft = body.scrollLeft
++  return (
++    <div className="productsCard">
++      <div className="productsTableWrap">
++        <div className="productsTableTop">
++          <button
++            ref={collapsedBtnRef}
++            type="button"
++            className={`collapsedBtn ${hiddenCols.length ? '' : 'disabled'}`}
++            title={hiddenCols.length ? 'Скрытые столбцы' : 'Нет скрытых столбцов'}
++            onClick={toggleCollapsed}
++            disabled={!hiddenCols.length}
++          >
++            +
++          </button>
++
++          {collapsedOpen && hiddenCols.length > 0 && (
++            <div ref={collapsedMenuRef} className="collapsedMenu" role="menu" aria-label="Скрытые столбцы">
++              <div className="collapsedMenuTitle">Скрытые столбцы</div>
++              {hiddenCols.map((c) => (
++                <button
++                  key={String(c.id)}
++                  type="button"
++                  className="collapsedMenuItem"
++                  onMouseDown={(e) => e.preventDefault()}
++                  onClick={() => showCol(c.id)}
++                >
++                  {c.title}
++                </button>
++              ))}
++            </div>
++          )}
++        </div>
+ 
+-    return () => {
+-      body.removeEventListener('scroll', syncFromBody)
+-      head.removeEventListener('scroll', syncFromHead)
+-    }
+-  }, [visibleCols.length])
++        <div className="gridTable" role="table" aria-label="Товары">
++          <div className="gridHead" role="rowgroup">
++            <div className="gridRow gridRowHead" role="row" style={tableStyle}>
++              {visibleCols.map((c) => {
++                const id = c.id
++                const isOpen = colMenuId === id
++                const hasFilter = !!filters[id]
++                const isSorted = sortState?.id === id
++
++                return (
++                  <div
++                    key={String(id)}
++                    role="columnheader"
++                    className={`gridCell gridHeadCell ${dragId === id ? 'dragging' : ''}`}
++                    draggable
++                    onDragStart={(e) => onDragStartHeader(e, id)}
++                    onDragOver={onDragOverHeader}
++                    onDrop={(e) => onDropHeader(e, id)}
++                    title={c.title}
++                  >
++                    <button
++                      type="button"
++                      className={`colMenuBtn ${isOpen ? 'open' : ''} ${hasFilter ? 'filtered' : ''} ${isSorted ? 'sorted' : ''}`}
++                      aria-label="Меню столбца"
++                      onMouseDown={(e) => e.preventDefault()}
++                      onClick={(e) => openColMenu(id, e.currentTarget)}
++                    >
++                      ▾
++                    </button>
+ 
++                    <span className="gridHeadTitle">{c.title}</span>
+ 
+-  // Виртуализация строк: резко снижает лаги при переключении вкладок и при ресайзе колонок
+-  useEffect(() => {
+-    const body = bodyScrollRef.current
+-    if (!body) return
++                    {isSorted && <span className="sortBadge">{sortState?.dir === 'asc' ? '▲' : '▼'}</span>}
++                    {hasFilter && !isSorted && <span className="filterBadge">⎇</span>}
+ 
+-    const updateViewport = () => setBodyViewportH(body.clientHeight || 0)
+-    updateViewport()
++                    {isOpen && (
++                      <div ref={colMenuRef} className="colMenu" role="menu" aria-label={`Меню столбца ${c.title}`}>
++                        {colMenuTab === 'main' && (
++                          <div className="colMenuBlock">
++                            <button
++                              type="button"
++                              className="colMenuItem"
++                              onMouseDown={(ev) => ev.preventDefault()}
++                              onClick={() => setColMenuTab('values')}
++                            >
++                              Фильтр по значениям
++                            </button>
++                            <button
++                              type="button"
++                              className="colMenuItem"
++                              onMouseDown={(ev) => ev.preventDefault()}
++                              onClick={() => setColMenuTab('condition')}
++                            >
++                              Фильтр по условию
++                            </button>
+ 
+-    // eslint-disable-next-line no-undef
+-    const ro = new ResizeObserver(() => updateViewport())
+-    ro.observe(body)
+-    return () => ro.disconnect()
+-  }, [])
++                            <div className="colMenuDivider" />
+ 
+-  useEffect(() => {
+-    const body = bodyScrollRef.current
+-    if (!body) return
++                            <button
++                              type="button"
++                              className="colMenuItem"
++                              onMouseDown={(ev) => ev.preventDefault()}
++                              onClick={() => setSort(id, 'asc')}
++                            >
++                              Сортировка А→Я / 0→9
++                            </button>
++                            <button
++                              type="button"
++                              className="colMenuItem"
++                              onMouseDown={(ev) => ev.preventDefault()}
++                              onClick={() => setSort(id, 'desc')}
++                            >
++                              Сортировка Я→А / 9→0
++                            </button>
++                            {sortState?.id === id && (
++                              <button
++                                type="button"
++                                className="colMenuItem muted"
++                                onMouseDown={(ev) => ev.preventDefault()}
++                                onClick={() => clearSort(id)}
++                              >
++                                Сбросить сортировку
++                              </button>
++                            )}
++
++                            <div className="colMenuDivider" />
++
++                            {!!filters[id] && (
++                              <button
++                                type="button"
++                                className="colMenuItem muted"
++                                onMouseDown={(ev) => ev.preventDefault()}
++                                onClick={() => clearFilter(id)}
++                              >
++                                Сбросить фильтр
++                              </button>
++                            )}
+ 
+-    const onScroll = () => {
+-      lastScrollTopRef.current = body.scrollTop
+-      if (scrollTopRafRef.current != null) return
+-
+-      scrollTopRafRef.current = window.requestAnimationFrame(() => {
+-        scrollTopRafRef.current = null
+-        setBodyScrollTop(lastScrollTopRef.current)
+-      })
+-    }
++                            <button
++                              type="button"
++                              className="colMenuItem danger"
++                              onMouseDown={(ev) => ev.preventDefault()}
++                              onClick={() => hideCol(id)}
++                            >
++                              Скрыть столбец
++                            </button>
++                          </div>
++                        )}
+ 
+-    body.addEventListener('scroll', onScroll, { passive: true })
+-    onScroll()
++                        {colMenuTab === 'values' && colMenuId === id && (
++                          <div className="colMenuBlock">
++                            <div className="colMenuHeader">
++                              <button
++                                type="button"
++                                className="colMenuBack"
++                                onMouseDown={(ev) => ev.preventDefault()}
++                                onClick={() => setColMenuTab('main')}
++                              >
++                                ←
++                              </button>
++                              <div className="colMenuHeaderTitle">Фильтр по значениям</div>
++                            </div>
+ 
+-    return () => {
+-      body.removeEventListener('scroll', onScroll)
+-      if (scrollTopRafRef.current != null) {
+-        window.cancelAnimationFrame(scrollTopRafRef.current)
+-        scrollTopRafRef.current = null
+-      }
+-    }
+-  }, [])
++                            <input
++                              className="colMenuSearch"
++                              value={(valuesFilterState as any)?.search ?? ''}
++                              placeholder="Поиск значений…"
++                              onChange={(e) => setValuesSearch(id, e.target.value)}
++                            />
++
++                            <div className="colMenuActions">
++                              <button
++                                type="button"
++                                className="smallBtn"
++                                onMouseDown={(ev) => ev.preventDefault()}
++                                onClick={() => setValuesSelected(id, null)}
++                              >
++                                Выбрать всё
++                              </button>
++                              <button
++                                type="button"
++                                className="smallBtn"
++                                onMouseDown={(ev) => ev.preventDefault()}
++                                onClick={() => setValuesSelected(id, [])}
++                              >
++                                Очистить
++                              </button>
++                            </div>
+ 
+-  const ROW_H = 28
+-  const OVERSCAN = 12
++                            <div className="colMenuValues">
++                              {valuesFilteredList.map((v) => {
++                                const selected =
++                                  (filters[id]?.mode === 'values' && (filters[id] as any).selected != null
++                                    ? (filters[id] as any).selected
++                                    : null) ?? null
++
++                                const checked = selected == null ? true : selected.includes(v)
++
++                                return (
++                                  <label key={v} className="colMenuValueRow">
++                                    <input
++                                      type="checkbox"
++                                      checked={checked}
++                                      onChange={() => toggleValue(id, v)}
++                                    />
++                                    <span className="colMenuValueText">{v}</span>
++                                  </label>
++                                )
++                              })}
++                            </div>
++                          </div>
++                        )}
+ 
+-  const useVirtual = rows.length > 5000
++                        {colMenuTab === 'condition' && colMenuId === id && (
++                          <div className="colMenuBlock">
++                            <div className="colMenuHeader">
++                              <button
++                                type="button"
++                                className="colMenuBack"
++                                onMouseDown={(ev) => ev.preventDefault()}
++                                onClick={() => setColMenuTab('main')}
++                              >
++                                ←
++                              </button>
++                              <div className="colMenuHeaderTitle">Фильтр по условию</div>
++                            </div>
+ 
+-  const totalRows = rows.length
+-  const viewH = bodyViewportH || 600
+-  const startRow = useVirtual ? Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN) : 0
+-  const endRow = useVirtual ? Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2)) : totalRows
+-
+-  const visibleRows = useMemo(() => rows.slice(startRow, endRow), [rows, startRow, endRow])
+-  const topSpace = useVirtual ? (startRow * ROW_H) : 0
+-  const bottomSpace = useVirtual ? Math.max(0, (totalRows - endRow) * ROW_H) : 0
++                            <div className="condRow">
++                              <select
++                                className="condSelect"
++                                value={condOpDraft}
++                                onChange={(e) => setCondOpDraft(e.target.value as ConditionOp)}
++                              >
++                                {/* text */}
++                                {!isNumericColumn(id) && !isDateColumn(id) && (
++                                  <>
++                                    <option value="contains">Содержит</option>
++                                    <option value="not_contains">Не содержит</option>
++                                    <option value="starts_with">Начинается с</option>
++                                    <option value="ends_with">Заканчивается на</option>
++                                    <option value="eq">Равно</option>
++                                    <option value="neq">Не равно</option>
++                                    <option value="empty">Пусто</option>
++                                    <option value="not_empty">Не пусто</option>
++                                  </>
++                                )}
++
++                                {/* number */}
++                                {isNumericColumn(id) && (
++                                  <>
++                                    <option value="gt">Больше</option>
++                                    <option value="gte">Больше или равно</option>
++                                    <option value="lt">Меньше</option>
++                                    <option value="lte">Меньше или равно</option>
++                                    <option value="between">Между</option>
++                                    <option value="eq">Равно</option>
++                                    <option value="neq">Не равно</option>
++                                    <option value="empty">Пусто</option>
++                                    <option value="not_empty">Не пусто</option>
++                                  </>
++                                )}
++
++                                {/* date */}
++                                {isDateColumn(id) && (
++                                  <>
++                                    <option value="date_after">После</option>
++                                    <option value="date_before">До</option>
++                                    <option value="date_between">Между</option>
++                                    <option value="empty">Пусто</option>
++                                    <option value="not_empty">Не пусто</option>
++                                  </>
++                                )}
++                              </select>
++                            </div>
+ 
+-  return (
+-    <div className="card productsCard">
+-      <div className="productsTableArea">
+-        <div className="tableWrap" style={{ position: 'relative' }}>
+-          <div className="resizeIndicator" ref={resizeIndicatorRef} style={{ display: 'none' }} />
+-          {hiddenCols.length > 0 && (
+-            <div className="collapsedCorner" style={{ position: 'absolute', top: 6, right: 6, zIndex: 5 }}>
+-              <button
+-                type="button"
+-                className="colToggle colTogglePlus"
+-                ref={collapsedBtnRef}
+-                title="Показать скрытый столбец"
+-                aria-haspopup="menu"
+-                aria-expanded={collapsedOpen}
+-                onMouseDown={(e) => e.preventDefault()}
+-                onClick={() => setCollapsedOpen(v => !v)}
+-              >
+-                +
+-              </button>
+-
+-              {collapsedOpen && (
+-                <div
+-                  className="collapsedMenu"
+-                  ref={collapsedMenuRef}
+-                  role="menu"
+-                  style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 6 }}
+-                >
+-                  {hiddenCols.map(c => (
+-                    <button
+-                      type="button"
+-                      key={String(c.id)}
+-                      className="collapsedMenuItem"
+-                      role="menuitem"
+-                      style={{ padding: '6px 10px', lineHeight: 1.1 }}
+-                      onMouseDown={(e) => e.preventDefault()}
+-                      onClick={() => {
+-                        showCol(String(c.id))
+-                      }}
+-                    >
+-                      {c.title}
+-                    </button>
+-                  ))}
+-                </div>
+-              )}
+-            </div>
+-          )}
+-          <div className="tableHeadX" ref={headScrollRef}>
+-            <div className="tableWrapY tableHeadInner" ref={headInnerRef} style={{ width: tableWidth }}>
+-              {dropHint && <div className="dropIndicator" style={{ left: dropHint.x }} />}
+-              <table ref={headTableRef} className="table tableFixed tableHead" style={{ width: tableWidth }}>
+-                <colgroup>
+-                  {visibleCols.map(c => (
+-                    <col key={String(c.id)} style={{ width: c.w }} />
+-                  ))}
+-                </colgroup>
+-                <thead onDragOver={onDragOverHeader} onDrop={onDrop}>
+-                  <tr ref={headerRowRef}>
+-                    {visibleCols.map(c => {
+-                      const id = String(c.id)
+-                      return (
+-                        <th
+-                          key={id}
+-                          data-col-id={id}
+-                          draggable
+-                          onDragStart={(e) => onDragStart(e, id)}
+-                          onDragEnd={onDragEnd}
+-                          className={`thDraggable ${draggingId === id ? 'thDragging' : ''}`.trim()}
+-                        >
+-                          <div className="thInner">
+-                            <button
+-                              type="button"
+-                              className="colToggle"
+-                              ref={colMenuId === id ? colMenuBtnRef : undefined}
+-                              title="Действия по столбцу"
+-                              aria-haspopup="menu"
+-                              aria-expanded={colMenuId === id}
+-                              onMouseDown={(e) => e.preventDefault()}
+-                              onClick={(e) => {
+-                                e.stopPropagation()
+-                                toggleColMenu(id)
+-                              }}
+-                            >
+-                              ▾
+-                            </button>
+-                            <span className="thTitle" title={c.title}>{c.title}</span>
+-                          </div>
++                            {condOpDraft !== 'empty' && condOpDraft !== 'not_empty' && (
++                              <>
++                                <input
++                                  className="condInput"
++                                  value={condV1Draft}
++                                  placeholder={isDateColumn(id) ? 'YYYY-MM-DD или ISO' : 'Значение…'}
++                                  onChange={(e) => setCondV1Draft(e.target.value)}
++                                />
+ 
+-                          {colMenuId === id && (
+-                            <div
+-                              className="colMenu"
+-                              ref={colMenuRef}
+-                              role="menu"
+-                              onMouseDown={(e) => e.stopPropagation()}
+-                            >
+-                              {colMenuMode === 'main' ? (
+-                                <>
+-                                  <button
+-                                    type="button"
+-                                    className="colMenuItem"
+-                                    role="menuitem"
+-                                    onMouseDown={(e) => e.preventDefault()}
+-                                    onClick={() => {
+-                                      setColMenuMode('filter')
+-                                      setFilterDraft(String(colFilters[id] ?? ''))
+-                                    }}
+-                                  >
+-                                    Фильтр
+-                                  </button>
+-
+-                                  <button
+-                                    type="button"
+-                                    className="colMenuItem"
+-                                    role="menuitem"
+-                                    onMouseDown={(e) => e.preventDefault()}
+-                                    onClick={() => {
+-                                      setSortState({ id, dir: 'asc' })
+-                                      closeColMenu()
+-                                    }}
+-                                  >
+-                                    Сортировка А→Я / 0→9
+-                                  </button>
+-
+-                                  <button
+-                                    type="button"
+-                                    className="colMenuItem"
+-                                    role="menuitem"
+-                                    onMouseDown={(e) => e.preventDefault()}
+-                                    onClick={() => {
+-                                      setSortState({ id, dir: 'desc' })
+-                                      closeColMenu()
+-                                    }}
+-                                  >
+-                                    Сортировка Я→А / 9→0
+-                                  </button>
+-
+-                                  <div className="colMenuDivider" />
+-
+-                                  <button
+-                                    type="button"
+-                                    className="colMenuItem"
+-                                    role="menuitem"
+-                                    onMouseDown={(e) => e.preventDefault()}
+-                                    onClick={() => {
+-                                      hideCol(id)
+-                                      closeColMenu()
+-                                    }}
+-                                  >
+-                                    Скрыть столбец
+-                                  </button>
+-                                </>
+-                              ) : (
+-                                <div className="colMenuFilter">
+-                                  <div className="colMenuFilterTitle">Фильтр: {c.title}</div>
++                                {(condOpDraft === 'between' || condOpDraft === 'date_between') && (
+                                   <input
+-                                    className="colMenuInput"
+-                                    value={filterDraft}
+-                                    autoFocus
+-                                    placeholder="содержит…"
+-                                    onChange={(e) => setFilterDraft(e.target.value)}
+-                                    onKeyDown={(e) => {
+-                                      if (e.key === 'Escape') {
+-                                        setColMenuMode('main')
+-                                      }
+-                                      if (e.key === 'Enter') {
+-                                        applyFilter(id, filterDraft)
+-                                        closeColMenu()
+-                                      }
+-                                    }}
++                                    className="condInput"
++                                    value={condV2Draft}
++                                    placeholder={isDateColumn(id) ? 'YYYY-MM-DD или ISO' : 'Второе значение…'}
++                                    onChange={(e) => setCondV2Draft(e.target.value)}
+                                   />
+-                                  <div className="colMenuFilterBtns">
+-                                    <button
+-                                      type="button"
+-                                      className="colMenuItem"
+-                                      onMouseDown={(e) => e.preventDefault()}
+-                                      onClick={() => {
+-                                        applyFilter(id, filterDraft)
+-                                        closeColMenu()
+-                                      }}
+-                                    >
+-                                      Применить
+-                                    </button>
+-                                    <button
+-                                      type="button"
+-                                      className="colMenuItem"
+-                                      onMouseDown={(e) => e.preventDefault()}
+-                                      onClick={() => {
+-                                        applyFilter(id, '')
+-                                        closeColMenu()
+-                                      }}
+-                                    >
+-                                      Сбросить
+-                                    </button>
+-                                    <button
+-                                      type="button"
+-                                      className="colMenuItem"
+-                                      onMouseDown={(e) => e.preventDefault()}
+-                                      onClick={() => setColMenuMode('main')}
+-                                    >
+-                                      Назад
+-                                    </button>
+-                                  </div>
+-                                </div>
+-                              )}
++                                )}
++                              </>
++                            )}
++
++                            <div className="colMenuActions" style={{ marginTop: 10 }}>
++                              <button
++                                type="button"
++                                className="smallBtn primary"
++                                onMouseDown={(ev) => ev.preventDefault()}
++                                onClick={() => applyConditionFilter(id)}
++                              >
++                                Применить
++                              </button>
++                              <button
++                                type="button"
++                                className="smallBtn"
++                                onMouseDown={(ev) => ev.preventDefault()}
++                                onClick={() => clearFilter(id)}
++                              >
++                                Сбросить
++                              </button>
+                             </div>
+-                          )}
+-                          <div
+-                            className="thResizer"
+-                            title="Изменить ширину (двойной клик — по содержимому)"
+-                            onMouseDown={(e) => startResize(e, id)}
+-                            onDoubleClick={(e) => {
+-                              e.preventDefault()
+-                              e.stopPropagation()
+-                              autoSizeColumn(id, rows)
+-                            }}
+-                          />
+-                        </th>
+-                      )
+-                    })}
+-                  </tr>
+-                </thead>
+-              </table>
++                          </div>
++                        )}
++                      </div>
++                    )}
++                  </div>
++                )
++              })}
+             </div>
+           </div>
+ 
+-          <div className="tableWrapX" ref={bodyScrollRef}>
+-            <div className="tableWrapY" ref={bodyInnerRef} style={{ width: tableWidth }}>
+-              <table ref={bodyTableRef} className="table tableFixed tableBody" style={{ width: tableWidth }}>
+-                <colgroup>
+-                  {visibleCols.map(c => (
+-                    <col key={String(c.id)} style={{ width: c.w }} />
++          <div className="gridBody" role="rowgroup">
++            {rows.length === 0 ? (
++              <div className="gridEmpty">Ничего не найдено</div>
++            ) : (
++              rows.map((p, idx) => (
++                <div key={p.offer_id + ':' + idx} className="gridRow" role="row" style={tableStyle}>
++                  {visibleCols.map((c) => (
++                    <div key={String(c.id)} className="gridCell" role="cell" title={toCellString(p, c.id)}>
++                      {toCellString(p, c.id) || <span className="muted">—</span>}
++                    </div>
+                   ))}
+-                </colgroup>
+-                <tbody>
+-                  {topSpace > 0 && (
+-                    <tr className="spacerRow">
+-                      <td colSpan={visibleCols.length} style={{ height: topSpace, padding: 0, border: 'none' }} />
+-                    </tr>
+-                  )}
+-
+-                  {visibleRows.map(p => (
+-                    <tr key={p.offer_id}>
+-                      {visibleCols.map(c => {
+-                        const id = String(c.id)
+-                        const { text, title } = cellText(p, c.id)
+-                        return (
+-                          <td key={id}>
+-                            <div className="cellText" title={title ?? text}>{text}</div>
+-                          </td>
+-                        )
+-                      })}
+-                    </tr>
+-                  ))}
+-
+-                  {bottomSpace > 0 && (
+-                    <tr className="spacerRow">
+-                      <td colSpan={visibleCols.length} style={{ height: bottomSpace, padding: 0, border: 'none' }} />
+-                    </tr>
+-                  )}
+-
+-
+-                  {rows.length === 0 && (
+-                    <tr>
+-                      <td colSpan={visibleCols.length} className="empty">Ничего не найдено.</td>
+-                    </tr>
+-                  )}
+-                </tbody>
+-              </table>
+-            </div>
++                </div>
++              ))
++            )}
+           </div>
+         </div>
+       </div>
+
+diff --git a/src/renderer/src/ui/styles.css b/src/renderer/src/ui/styles.css
+--- a/src/renderer/src/ui/styles.css
++++ b/src/renderer/src/ui/styles.css
+@@ -67,6 +67,10 @@
+   overflow: hidden;
+ }
+ 
++.container.containerWide{
++  padding: 0;
++}
++
+ /* Topbar */
+ .topbar{
+   position: sticky;
+@@ -916,3 +920,295 @@
+ .tableHeadX::-webkit-scrollbar{ height: 0; width: 0; }
+ 
+ .tableBody tr:first-child td{ border-top: none; }
++
++/* Products table (grid, Google Sheets-like UX) */
++.productsCard{
++  height: 100%;
++  min-height: 0;
++  display: flex;
++  flex-direction: column;
++}
++
++.productsTableWrap{
++  position: relative;
++  height: 100%;
++  min-height: 0;
++  overflow: hidden;
++}
++
++.productsTableTop{
++  position: absolute;
++  top: 10px;
++  right: 10px;
++  z-index: 30;
++}
++
++.collapsedBtn{
++  width: 28px;
++  height: 28px;
++  border-radius: 10px;
++  border: 1px solid var(--hairline);
++  background: rgba(255,255,255,.85);
++  box-shadow: var(--shadowSoft);
++  cursor: pointer;
++  font-weight: 800;
++}
++
++.collapsedBtn.disabled{ opacity: .55; cursor: default; }
++
++.collapsedMenu{
++  position: absolute;
++  top: 34px;
++  right: 0;
++  width: 240px;
++  max-height: 420px;
++  overflow: auto;
++  background: rgba(255,255,255,.96);
++  border: 1px solid var(--hairline);
++  border-radius: 14px;
++  box-shadow: var(--shadow);
++  padding: 8px;
++}
++
++.collapsedMenuTitle{
++  font-weight: 750;
++  font-size: 12px;
++  color: rgba(60,60,67,.78);
++  padding: 6px 8px;
++}
++
++.collapsedMenuItem{
++  width: 100%;
++  text-align: left;
++  border: 0;
++  background: transparent;
++  padding: 8px 10px;
++  border-radius: 10px;
++  cursor: pointer;
++}
++
++.collapsedMenuItem:hover{ background: rgba(10,132,255,.10); }
++
++.gridTable{
++  height: 100%;
++  min-height: 0;
++  overflow: auto;
++  scrollbar-gutter: stable both-edges;
++  background: rgba(255,255,255,.50);
++}
++
++.gridTable::-webkit-scrollbar{ height: 12px; width: 12px; }
++.gridTable::-webkit-scrollbar-thumb{ background: rgba(0,0,0,.22); border-radius: 999px; border: 2px solid rgba(255,255,255,.75); }
++.gridTable::-webkit-scrollbar-track{ background: rgba(0,0,0,.05); border-radius: 999px; }
++
++.gridHead{
++  position: sticky;
++  top: 0;
++  z-index: 20;
++  background: rgba(242,242,247,.88);
++  backdrop-filter: blur(16px);
++  -webkit-backdrop-filter: blur(16px);
++  border-bottom: 1px solid var(--hairline2);
++}
++
++.gridRow{
++  display: grid;
++  align-items: center;
++}
++
++.gridRowHead{
++  min-height: 40px;
++}
++
++.gridCell{
++  padding: 8px 10px;
++  border-right: 1px solid rgba(60,60,67,.08);
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
++}
++
++.gridRow .gridCell:last-child{ border-right: 0; }
++
++.gridHeadCell{
++  position: relative;
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  font-weight: 750;
++  color: rgba(28,28,30,.90);
++  user-select: none;
++}
++
++.gridHeadTitle{
++  flex: 1;
++  min-width: 0;
++}
++
++.colMenuBtn{
++  width: 18px;
++  height: 18px;
++  border-radius: 6px;
++  border: 1px solid rgba(60,60,67,.16);
++  background: rgba(255,255,255,.78);
++  cursor: pointer;
++  font-size: 12px;
++  line-height: 16px;
++  padding: 0;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  color: rgba(28,28,30,.72);
++}
++
++.colMenuBtn.filtered{ border-color: rgba(10,132,255,.38); box-shadow: 0 0 0 3px rgba(10,132,255,.12); }
++.colMenuBtn.sorted{ border-color: rgba(60,60,67,.28); }
++.colMenuBtn.open{ background: #fff; }
++
++.sortBadge,
++.filterBadge{
++  margin-left: 6px;
++  font-size: 11px;
++  color: rgba(60,60,67,.72);
++}
++
++.colMenu{
++  position: absolute;
++  margin-top: 34px;
++  margin-left: -8px;
++  width: 280px;
++  background: rgba(255,255,255,.96);
++  border: 1px solid var(--hairline);
++  border-radius: 14px;
++  box-shadow: var(--shadow);
++  padding: 8px;
++  z-index: 100;
++}
++
++.colMenuBlock{ display: flex; flex-direction: column; gap: 6px; }
++
++.colMenuItem{
++  width: 100%;
++  text-align: left;
++  border: 0;
++  background: transparent;
++  padding: 8px 10px;
++  border-radius: 10px;
++  cursor: pointer;
++  font-weight: 650;
++}
++
++.colMenuItem:hover{ background: rgba(10,132,255,.10); }
++
++.colMenuItem.muted{ color: rgba(60,60,67,.78); }
++.colMenuItem.danger{ color: rgba(255,59,48,.92); }
++
++.colMenuDivider{ height: 1px; background: rgba(60,60,67,.12); margin: 2px 0; }
++
++.colMenuHeader{
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 4px 2px 2px;
++}
++
++.colMenuBack{
++  width: 28px;
++  height: 28px;
++  border-radius: 10px;
++  border: 1px solid rgba(60,60,67,.14);
++  background: rgba(255,255,255,.78);
++  cursor: pointer;
++}
++
++.colMenuHeaderTitle{ font-weight: 750; }
++
++.colMenuSearch{
++  width: 100%;
++  height: 32px;
++  border-radius: 10px;
++  border: 1px solid rgba(60,60,67,.16);
++  padding: 0 10px;
++  outline: none;
++}
++
++.colMenuSearch:focus{ box-shadow: var(--focus); border-color: rgba(10,132,255,.42); }
++
++.colMenuActions{
++  display: flex;
++  gap: 8px;
++}
++
++.smallBtn{
++  height: 30px;
++  padding: 0 10px;
++  border-radius: 10px;
++  border: 1px solid rgba(60,60,67,.14);
++  background: rgba(255,255,255,.78);
++  cursor: pointer;
++  font-weight: 650;
++}
++
++.smallBtn.primary{ border-color: rgba(10,132,255,.40); }
++
++.colMenuValues{
++  margin-top: 2px;
++  max-height: 280px;
++  overflow: auto;
++  border: 1px solid rgba(60,60,67,.12);
++  border-radius: 12px;
++  padding: 6px;
++  background: rgba(255,255,255,.72);
++}
++
++.colMenuValueRow{
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 6px 8px;
++  border-radius: 10px;
++  cursor: pointer;
++}
++
++.colMenuValueRow:hover{ background: rgba(10,132,255,.08); }
++
++.colMenuValueText{
++  min-width: 0;
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
++}
++
++.condRow{ display: flex; gap: 8px; }
++
++.condSelect{
++  width: 100%;
++  height: 34px;
++  border-radius: 10px;
++  border: 1px solid rgba(60,60,67,.16);
++  background: rgba(255,255,255,.78);
++  padding: 0 10px;
++}
++
++.condInput{
++  width: 100%;
++  height: 34px;
++  border-radius: 10px;
++  border: 1px solid rgba(60,60,67,.16);
++  padding: 0 10px;
++  outline: none;
++}
++
++.condInput:focus{ box-shadow: var(--focus); border-color: rgba(10,132,255,.42); }
++
++.gridBody .gridRow:nth-child(odd){ background: rgba(255,255,255,.40); }
++.gridBody .gridRow:nth-child(even){ background: rgba(255,255,255,.62); }
++
++.gridEmpty{
++  padding: 18px;
++  color: rgba(60,60,67,.72);
++}
++
++/* Prevent selection flicker while scrolling */
++.gridBody{ will-change: scroll-position; }
++
