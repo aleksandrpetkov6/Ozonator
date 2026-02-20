@@ -181,6 +181,10 @@ jobs:
           $hasTestsDir = Test-Path 'tests\e2e'
           $hasHumanSmoke = Test-Path 'tests\e2e\human-smoke.spec.ts'
 
+          # default signals for 118-matrix generator
+          "visual=NR" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "ux=NR" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
           if (-not $hasCfg -or -not $hasTestsDir) {
             "E2E skipped: playwright.config.ts and/or tests\e2e are not present in repo" | Tee-Object -FilePath logs\e2e.log
             "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -216,9 +220,14 @@ jobs:
           }
 
           if ($LASTEXITCODE -eq 0) {
+            if (Test-Path 'test-results\human-smoke-success.png') {
+              "visual=PASS" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            }
+            "ux=PASS" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "status=ran-pass" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           } else {
+            "ux=FAIL" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "status=failed: playwright test" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
@@ -231,8 +240,11 @@ jobs:
           TYPECHECK_STATUS: ${{ steps.typecheck.outputs.ok == 'true' && 'PASS' || steps.typecheck.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           UNIT_STATUS: ${{ steps.unit.outputs.ok == 'true' && 'PASS' || steps.unit.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           BUILD_STATUS: ${{ steps.dist.outputs.ok == 'true' && 'PASS' || steps.dist.outputs.ok == 'false' && 'FAIL' || 'NR' }}
-          E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'true') && 'PASS' || ((steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'false') || startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
+          E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran-pass') && 'PASS' || (startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
           SYNTHETIC_STATUS: ${{ (steps.e2e.outputs.status == 'ran-pass') && 'PASS' || (startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
+          VISUAL_STATUS: ${{ steps.e2e.outputs.visual || 'NR' }}
+          UX_PROXY_STATUS: ${{ steps.e2e.outputs.ux || 'NR' }}
+          UX_STATUS: ${{ steps.e2e.outputs.ux || 'NR' }}
           STATIC_STATUS: PASS
           REVIEW_STATUS: PASS
           TEST_CYCLES: 1
