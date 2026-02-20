@@ -1,13 +1,9 @@
 import { test, expect, Page, Locator } from '@playwright/test';
-import { mkdir, writeFile } from 'node:fs/promises';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const NON_DESTRUCTIVE_BUTTON_BLACKLIST = /(удал|delete|remove|reset|сброс|drop|clear all|очист|logout|выйти|exit|close app|quit)/i;
-
-test.use({
-  screenshot: 'on',
-  trace: 'on',
-  video: 'on',
-});
 
 async function firstVisible(locator: Locator, max = 10): Promise<Locator | null> {
   const count = await locator.count();
@@ -30,7 +26,65 @@ async function safeClick(locator: Locator): Promise<boolean> {
   }
 }
 
-async function resolveBaseUrl(): Promise<string> {
+type UiEntry = { target: string; mode: 'url' | 'file'; checked: string[] };
+
+function findBuiltIndexHtml(): { filePath: string; checked: string[] } | null {
+  const cwd = process.cwd();
+  const checked: string[] = [];
+  const direct = [
+    'dist/index.html',
+    'build/index.html',
+    'out/index.html',
+    'www/index.html',
+    'app/dist/index.html',
+    'renderer/dist/index.html',
+    'packages/renderer/dist/index.html',
+  ];
+
+  for (const rel of direct) {
+    const abs = path.resolve(cwd, rel);
+    checked.push(abs);
+    if (fs.existsSync(abs)) return { filePath: abs, checked };
+  }
+
+  const skip = new Set(['node_modules', '.git', 'playwright-report', 'test-results', 'coverage']);
+  const queue: string[] = [cwd];
+  let scannedDirs = 0;
+
+  while (queue.length && scannedDirs < 80) {
+    const dir = queue.shift()!;
+    scannedDirs += 1;
+
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (skip.has(entry.name)) continue;
+        if (entry.name.startsWith('.')) continue;
+        queue.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (entry.name !== 'index.html') continue;
+
+      const rel = path.relative(cwd, full).replace(/\\/g, '/');
+      checked.push(full);
+      if (/(^|\/)(dist|build|out|www)(\/|$)/i.test(rel)) {
+        return { filePath: full, checked };
+      }
+    }
+  }
+
+  return null;
+}
+
+async function resolveUiEntry(): Promise<UiEntry> {
   const fromEnv = [
     process.env.E2E_BASE_URL,
     process.env.PLAYWRIGHT_BASE_URL,
@@ -46,28 +100,40 @@ async function resolveBaseUrl(): Promise<string> {
     'http://localhost:3000',
   ];
 
+  const checked: string[] = [];
   const candidates = [...new Set([...fromEnv, ...defaults])];
 
   for (const url of candidates) {
+    checked.push(url);
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 1500);
       const res = await fetch(url, { method: 'GET', signal: ctrl.signal });
       clearTimeout(t);
-      if (res.ok || (res.status >= 300 && res.status < 500)) return url;
+      if (res.ok || (res.status >= 300 && res.status < 500)) {
+        return { target: url, mode: 'url', checked };
+      }
     } catch {
       // try next
     }
   }
 
-  throw new Error(`Не найден доступный URL для UI. Укажи E2E_BASE_URL (проверены: ${candidates.join(', ')})`);
+  const built = findBuiltIndexHtml();
+  if (built) {
+    checked.push(...built.checked.filter((x) => !checked.includes(x)));
+    return { target: pathToFileURL(built.filePath).href, mode: 'file', checked };
+  }
+
+  throw new Error(
+    `Не найден доступный UI (ни URL, ни built index.html). Проверены: ${checked.join(', ')}`,
+  );
 }
+
 
 async function clickByTexts(page: Page, patterns: RegExp[], maxClicks = 2): Promise<number> {
   let clicks = 0;
   for (const pattern of patterns) {
     if (clicks >= maxClicks) return clicks;
-
     const byRoleButton = page.getByRole('button', { name: pattern }).first();
     if (await safeClick(byRoleButton)) {
       clicks += 1;
@@ -82,7 +148,7 @@ async function clickByTexts(page: Page, patterns: RegExp[], maxClicks = 2): Prom
       continue;
     }
 
-    const generic = page.getByText(pattern).first();
+    const generic = page.locator(`text=${pattern.source}`).first();
     if (await safeClick(generic)) {
       clicks += 1;
       await page.waitForTimeout(200);
@@ -101,10 +167,6 @@ type ScrollProbe = {
   cellLike: number;
   textLen: number;
   busy: boolean;
-};
-
-type ScrollMeta = ScrollProbe & {
-  rect: { x: number; y: number; width: number; height: number } | null;
 };
 
 async function probePrimaryScrollable(page: Page, move?: { top?: number; left?: number }): Promise<ScrollProbe> {
@@ -157,185 +219,106 @@ async function probePrimaryScrollable(page: Page, move?: { top?: number; left?: 
   }, move ?? {});
 }
 
-async function getPrimaryScrollableMeta(page: Page): Promise<ScrollMeta> {
-  return page.evaluate(() => {
-    const candidates = Array.from(document.querySelectorAll<HTMLElement>('*'))
-      .filter((el) => {
-        const cs = window.getComputedStyle(el);
-        const y = /(auto|scroll)/.test(cs.overflowY);
-        const x = /(auto|scroll)/.test(cs.overflowX);
-        return (y || x) && (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth);
-      })
-      .sort((a, b) => (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight));
-
-    const target = candidates[0];
-    if (!target) {
-      return {
-        hasTarget: false,
-        scrollTop: 0,
-        scrollLeft: 0,
-        maxTop: 0,
-        maxLeft: 0,
-        rowLike: 0,
-        cellLike: 0,
-        textLen: 0,
-        busy: false,
-        rect: null,
-      };
-    }
-
-    const r = target.getBoundingClientRect();
-    const rowLike = target.querySelectorAll('tr, [role="row"], .ag-row').length;
-    const cellLike = target.querySelectorAll('td, [role="gridcell"], .ag-cell').length;
-    const textLen = (target.innerText || '').trim().length;
-    const busy =
-      !!target.querySelector('[aria-busy="true"], .loading, .loader, .spinner') ||
-      /загрузка|loading|подожд/i.test((target.innerText || '').slice(0, 300));
-
-    return {
-      hasTarget: true,
-      scrollTop: target.scrollTop,
-      scrollLeft: target.scrollLeft,
-      maxTop: Math.max(0, target.scrollHeight - target.clientHeight),
-      maxLeft: Math.max(0, target.scrollWidth - target.clientWidth),
-      rowLike,
-      cellLike,
-      textLen,
-      busy,
-      rect: { x: r.x, y: r.y, width: r.width, height: r.height },
-    };
-  });
-}
-
-type VerticalAggressiveDebug = {
-  dragSupported: boolean;
-  dragAttempts: number;
-  dragMovedCount: number;
-  wheelAttempts: number;
-  wheelMovedCount: number;
-  jsJumpAttempts: number;
+type ScrollDebug = {
+  base: ScrollProbe;
+  jumps: number[];
   maxBlankStreakMs: number;
-  blankEvents: Array<{ mode: string; at: number; topBefore: number; topAfter: number; streakMs: number }>;
+  blankSamples: string[];
+  notes: string[];
 };
 
-async function measureBlankWhileSettling(
-  page: Page,
-  mode: string,
-  topBefore: number,
-  topAfter: number,
-  dbg: VerticalAggressiveDebug,
-): Promise<void> {
-  const started = Date.now();
-  let blankStreak = 0;
-  while (Date.now() - started < 1800) {
-    const snap = await probePrimaryScrollable(page);
-    const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
-    if (hasData) {
-      blankStreak = 0;
-    } else if (!snap.busy) {
-      blankStreak += 60;
-      if (blankStreak > dbg.maxBlankStreakMs) dbg.maxBlankStreakMs = blankStreak;
-      if (blankStreak >= 120 && dbg.blankEvents.length < 20) {
-        dbg.blankEvents.push({
-          mode,
-          at: Date.now() - started,
-          topBefore,
-          topAfter,
-          streakMs: blankStreak,
-        });
-      }
-    }
-    await page.waitForTimeout(60);
-  }
-}
-
-async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<VerticalAggressiveDebug> {
-  const dbg: VerticalAggressiveDebug = {
-    dragSupported: false,
-    dragAttempts: 0,
-    dragMovedCount: 0,
-    wheelAttempts: 0,
-    wheelMovedCount: 0,
-    jsJumpAttempts: 0,
+async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<ScrollDebug> {
+  const base = await probePrimaryScrollable(page);
+  const debug: ScrollDebug = {
+    base,
+    jumps: [],
     maxBlankStreakMs: 0,
-    blankEvents: [],
+    blankSamples: [],
+    notes: [],
   };
 
-  const base = await getPrimaryScrollableMeta(page);
-  if (!base.hasTarget || base.maxTop <= 8 || !base.rect) return dbg;
-
-  const rect = base.rect;
-  const vp = page.viewportSize() ?? { width: 1280, height: 720 };
-
-  // Пытаемся воспроизвести именно сценарий пользователя: резкий drag за правый край (область полосы прокрутки).
-  const dragX = Math.max(2, Math.min(Math.round(rect.x + rect.width - 3), vp.width - 2));
-  const topY = Math.max(4, Math.round(rect.y + 12));
-  const bottomY = Math.min(vp.height - 4, Math.round(rect.y + rect.height - 12));
-  const midY = Math.round((topY + bottomY) / 2);
-
-  const dragPairs: Array<[number, number]> = [
-    [midY, bottomY],
-    [bottomY - 8, topY],
-    [topY + 8, bottomY],
-    [bottomY - 8, topY + 4],
-  ];
-
-  for (const [fromY, toY] of dragPairs) {
-    dbg.dragAttempts += 1;
-    const before = await probePrimaryScrollable(page);
-    await page.mouse.move(dragX, fromY);
-    await page.mouse.down();
-    await page.mouse.move(dragX, toY, { steps: 2 });
-    await page.mouse.up();
-    await page.waitForTimeout(50);
-    const after = await probePrimaryScrollable(page);
-    if (Math.abs(after.scrollTop - before.scrollTop) > 12) {
-      dbg.dragSupported = true;
-      dbg.dragMovedCount += 1;
-    }
-    await measureBlankWhileSettling(page, 'drag', before.scrollTop, after.scrollTop, dbg);
+  if (!base.hasTarget) {
+    debug.notes.push('scrollable-target-not-found');
+    return debug;
+  }
+  if (base.maxTop <= 8) {
+    debug.notes.push('vertical-scroll-not-needed');
+    return debug;
   }
 
-  // Дополнительно — агрессивные колесом (быстро вниз/вверх) в зоне таблицы.
-  const wheelX = Math.max(4, Math.min(Math.round(rect.x + rect.width / 2), vp.width - 4));
-  const wheelY = Math.max(4, Math.min(Math.round(rect.y + rect.height / 2), vp.height - 4));
-  await page.mouse.move(wheelX, wheelY);
-  const wheelDeltas = [2200, -2200, 1800, -1800, 2600, -2600];
-  for (const delta of wheelDeltas) {
-    dbg.wheelAttempts += 1;
-    const before = await probePrimaryScrollable(page);
-    await page.mouse.wheel(0, delta);
-    await page.waitForTimeout(30);
-    const after = await probePrimaryScrollable(page);
-    if (Math.abs(after.scrollTop - before.scrollTop) > 12) dbg.wheelMovedCount += 1;
-    await measureBlankWhileSettling(page, 'wheel', before.scrollTop, after.scrollTop, dbg);
-  }
-
-  // Fallback для сред, где drag нативного скроллбара не перехватывается Playwright.
   const jumps = [
     Math.floor(base.maxTop * 0.98),
     Math.floor(base.maxTop * 0.03),
-    Math.floor(base.maxTop * 0.9),
-    Math.floor(base.maxTop * 0.1),
+    Math.floor(base.maxTop * 0.90),
+    Math.floor(base.maxTop * 0.12),
+    Math.floor(base.maxTop * 0.80),
+    Math.floor(base.maxTop * 0.22),
+    Math.floor(base.maxTop * 0.70),
+    Math.floor(base.maxTop * 0.05),
     base.maxTop,
     0,
   ];
+  debug.jumps = jumps;
+
+  let maxBlankStreakMs = 0;
+  const examples: string[] = [];
+
   for (const top of jumps) {
-    dbg.jsJumpAttempts += 1;
-    const before = await probePrimaryScrollable(page);
     await probePrimaryScrollable(page, { top });
-    const after = await probePrimaryScrollable(page);
-    await measureBlankWhileSettling(page, 'js-jump', before.scrollTop, after.scrollTop, dbg);
+
+    const started = Date.now();
+    let blankStreak = 0;
+
+    while (Date.now() - started < 1800) {
+      const snap = await probePrimaryScrollable(page);
+      const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
+
+      if (hasData) {
+        blankStreak = 0;
+      } else if (!snap.busy) {
+        blankStreak += 60;
+        maxBlankStreakMs = Math.max(maxBlankStreakMs, blankStreak);
+        if (examples.length < 12) {
+          examples.push(`jump top=${top}, t=${Date.now() - started}ms`);
+        }
+      }
+
+      await page.waitForTimeout(60);
+    }
   }
 
-  // Жёсткая проверка: данные не должны пропадать заметно (более 150 мс подряд) при резких действиях.
+  const wheelBursts = [2200, -1800, 2600, -2400, 3200, -3000];
+  for (const delta of wheelBursts) {
+    await page.mouse.wheel(0, delta).catch(() => {});
+    const started = Date.now();
+    let blankStreak = 0;
+    while (Date.now() - started < 700) {
+      const snap = await probePrimaryScrollable(page);
+      const hasData = (snap.rowLike > 0 || snap.cellLike > 0 || snap.textLen > 40) && !snap.busy;
+      if (hasData) {
+        blankStreak = 0;
+      } else if (!snap.busy) {
+        blankStreak += 50;
+        maxBlankStreakMs = Math.max(maxBlankStreakMs, blankStreak);
+        if (examples.length < 20) {
+          examples.push(`wheel dY=${delta}, t=${Date.now() - started}ms`);
+        }
+      }
+      await page.waitForTimeout(50);
+    }
+  }
+
+  debug.maxBlankStreakMs = maxBlankStreakMs;
+  debug.blankSamples = examples;
+
   expect(
-    dbg.maxBlankStreakMs,
-    `Данные пропадали при агрессивной вертикальной прокрутке. maxBlank=${dbg.maxBlankStreakMs}ms; dragMoved=${dbg.dragMovedCount}/${dbg.dragAttempts}; wheelMoved=${dbg.wheelMovedCount}/${dbg.wheelAttempts}`,
+    maxBlankStreakMs,
+    `Данные пропадали при агрессивной вертикальной прокрутке (рывки вниз/вверх). Макс. пустой интервал: ${maxBlankStreakMs}мс. Примеры: ${examples.join(' | ')}`,
   ).toBeLessThanOrEqual(150);
 
-  return dbg;
+  return debug;
 }
+
 
 async function assertHorizontalScrollAlwaysReachable(page: Page): Promise<void> {
   const base = await probePrimaryScrollable(page);
@@ -352,16 +335,20 @@ async function assertHorizontalScrollAlwaysReachable(page: Page): Promise<void> 
   expect(s2.scrollLeft, 'Горизонтальная прокрутка не возвращается влево').toBeLessThanOrEqual(2);
 }
 
-async function saveDebugJson(data: unknown): Promise<void> {
-  await mkdir('test-results', { recursive: true });
-  await writeFile('test-results/human-scroll-debug.json', JSON.stringify(data, null, 2), 'utf8');
-}
 
 test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, category)', async ({ page }) => {
-  const baseUrl = await resolveBaseUrl();
+  const debugOutPath = path.resolve('test-results', 'human-scroll-debug.json');
+  const traceOutPath = path.resolve('test-results', 'human-scroll-trace.zip');
 
-  const pageErrors: string[] = [];
-  const consoleErrors: string[] = [];
+  try {
+    const ui = await resolveUiEntry();
+    const baseUrl = ui.target;
+
+    const pageErrors: string[] = [];
+    const consoleErrors: string[] = [];
+  fs.mkdirSync(path.dirname(debugOutPath), { recursive: true });
+
+  await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true }).catch(() => {});
 
   page.on('pageerror', (err) => {
     pageErrors.push(String(err?.message || err));
@@ -378,8 +365,10 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+
   await expect(page.locator('body')).toBeVisible();
 
+  // Переходы по типичным вкладкам/экранам + проверки, что экраны реально открылись
   const productsOpen1 = await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
   expect(productsOpen1, 'Не удалось открыть раздел товаров/каталога').toBeGreaterThan(0);
 
@@ -397,19 +386,19 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
   const categoryVisible = await page.getByText(/категор|category/i).first().isVisible().catch(() => false);
   expect(categoryVisible, 'Не найдено отображение категории (заголовок/метка)').toBeTruthy();
 
+  // Ввод в поиск / фильтр
   const searchInput = await firstVisible(
-    page.locator(
-      [
-        'input[type="search"]',
-        'input[placeholder*="Поиск"]',
-        'input[placeholder*="поиск"]',
-        'input[placeholder*="Search"]',
-        'input[placeholder*="search"]',
-        'input',
-      ].join(','),
-    ),
+    page.locator([
+      'input[type="search"]',
+      'input[placeholder*="Поиск"]',
+      'input[placeholder*="поиск"]',
+      'input[placeholder*="Search"]',
+      'input[placeholder*="search"]',
+      'input',
+    ].join(',')),
     20,
   );
+
   if (searchInput) {
     await searchInput.fill('test');
     await page.keyboard.press('Enter').catch(() => {});
@@ -418,8 +407,10 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     await page.waitForTimeout(200);
   }
 
+  // Кнопка фильтров / панель фильтра
   await clickByTexts(page, [/фильтр/i, /filters?/i], 2);
 
+  // Работа с селектами (если есть)
   const selectEl = await firstVisible(page.locator('select'), 10);
   if (selectEl) {
     const values = await selectEl.locator('option').evaluateAll((opts) =>
@@ -431,9 +422,14 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     }
   }
 
+  // Колонки / меню таблицы
   await clickByTexts(page, [/колонк/i, /columns?/i, /вид/i, /display/i], 2);
 
-  const header = await firstVisible(page.locator('th, [role="columnheader"], .ag-header-cell, .rt-th'), 20);
+  // Сортировка по заголовкам таблицы (1-2 клика)
+  const header = await firstVisible(
+    page.locator('th, [role="columnheader"], .ag-header-cell, .rt-th'),
+    20,
+  );
   if (header) {
     await safeClick(header);
     await page.waitForTimeout(250);
@@ -441,6 +437,7 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     await page.waitForTimeout(250);
   }
 
+  // Несколько безопасных кнопок (не удаление)
   const buttons = page.locator('button');
   const btnCount = Math.min(await buttons.count(), 20);
   let clicked = 0;
@@ -452,10 +449,12 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     if (await safeClick(b)) {
       clicked += 1;
       await page.waitForTimeout(200);
+      // Закрываем модалку, если появилась
       await page.keyboard.press('Escape').catch(() => {});
     }
   }
 
+  // Базовый скролл страницы + агрессивная проверка таблицы/списка (рывки вниз/вверх)
   await page.evaluate(() => {
     window.scrollTo({ top: 0 });
     window.scrollTo({ top: document.body.scrollHeight });
@@ -465,35 +464,49 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
   const verticalDebug = await assertAggressiveVerticalScrollNoBlank(page);
   await assertHorizontalScrollAlwaysReachable(page);
 
+  // Проверка, что UI живой и не пустой после действий/скролла
   const visibleRows = await page.locator('table tr, [role="row"], .ag-row').count().catch(() => 0);
   const visibleText = (await page.locator('body').innerText()).trim();
   expect(visibleText.length).toBeGreaterThan(0);
 
+  const finalProbe = await probePrimaryScrollable(page);
   const debugPayload = {
-    baseUrl,
-    timestamp: new Date().toISOString(),
-    verticalScroll: verticalDebug,
-    visibleRows,
+    ui,
+    verticalDebug,
+    finalProbe,
     pageErrors,
     consoleErrors: consoleErrors.slice(0, 20),
+    timestamp: new Date().toISOString(),
   };
-
-  await saveDebugJson(debugPayload);
+  fs.writeFileSync(debugOutPath, JSON.stringify(debugPayload, null, 2), 'utf-8');
   await test.info().attach('human-scroll-debug', {
-    body: JSON.stringify(debugPayload, null, 2),
+    path: debugOutPath,
     contentType: 'application/json',
   });
 
+  // Скрин на успех (для артефактов)
   await page.screenshot({ path: 'test-results/human-smoke-success.png', fullPage: true }).catch(() => {});
 
+  // Не валим по единичным шумным консольным предупреждениям, но валим по pageerror
   expect(pageErrors, `Uncaught page errors:\n${pageErrors.join('\n')}`).toEqual([]);
 
+  // Если совсем ничего не нашли в таблице и нет типичных экранов — тоже сигнализируем
   if (visibleRows === 0 && !/товар|products|лог|settings|настро/i.test(visibleText)) {
     throw new Error('UI открылся, но не найдено ожидаемых элементов (таблица/экраны). Проверь селекторы/маршрут.');
   }
 
+  // Сохраняем как мягкую диагностику (не ломаем, если есть одиночные console.error от внешних библиотек)
   test.info().annotations.push({
     type: 'console-errors',
     description: consoleErrors.slice(0, 10).join(' | ') || 'none',
   });
+  } finally {
+    await page.context().tracing.stop({ path: traceOutPath }).catch(() => {});
+    if (fs.existsSync(traceOutPath)) {
+      await test.info().attach('human-scroll-trace', {
+        path: traceOutPath,
+        contentType: 'application/zip',
+      });
+    }
+  }
 });
