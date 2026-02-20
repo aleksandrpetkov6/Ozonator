@@ -2,14 +2,14 @@ name: AutoFix (generate latest.patch)
 
 on:
   workflow_run:
-    # ВАЖНО: имя должно совпадать 1:1 с тем, как workflow называется в Actions слева
+    # ВАЖНО: имена ниже должны совпадать 1:1 с названиями workflow в Actions
     workflows:
       - "Windows CI (Озонатор)"
       - "Apply patch and open PR"
     types: [completed]
 
 concurrency:
-  group: "autofix-${{ github.event.workflow_run.head_sha }}"
+  group: autofix-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 jobs:
@@ -58,14 +58,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm ci
+          npm ci || npm ci --legacy-peer-deps
 
-      - name: Generate patches/latest.patch via AutoFix provider and validate by re-running checks
+      - name: Generate patches/latest.patch via model and validate by re-running checks
         shell: bash
         env:
           AUTOFIX_PROVIDER: ${{ secrets.AUTOFIX_PROVIDER }}
           AUTOFIX_MODEL: ${{ secrets.AUTOFIX_MODEL }}
           AUTOFIX_API_KEY: ${{ secrets.AUTOFIX_API_KEY }}
+          # Совместимость со старой логикой (если скрипт еще читает OPENAI_*):
+          OPENAI_API_KEY: ${{ secrets.AUTOFIX_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.AUTOFIX_MODEL }}
         run: |
           set -euo pipefail
           node scripts/autofix_generate_patch.mjs \
@@ -80,6 +83,7 @@ jobs:
           PR_BOT_TOKEN: ${{ secrets.PR_BOT_TOKEN }}
         run: |
           set -euo pipefail
+
           if [ ! -f patches/latest.patch ]; then
             echo "patches/latest.patch not found; nothing to push"
             exit 0
@@ -97,6 +101,6 @@ jobs:
 
           git commit -m "autofix: update patches/latest.patch (run ${{ github.event.workflow_run.id }})"
 
-          # Push using PR_BOT_TOKEN (PAT). GITHUB_TOKEN pushes do NOT trigger new workflow runs on push.
+          # Push через PR_BOT_TOKEN (PAT), чтобы сработал следующий workflow
           git remote set-url origin "https://x-access-token:${PR_BOT_TOKEN}@github.com/${{ github.repository }}.git"
           git push origin HEAD:main
