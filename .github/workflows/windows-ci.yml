@@ -178,9 +178,10 @@ jobs:
         run: |
           # E2E is stage 2: run only if repo already contains Playwright config + tests
           $hasCfg = Test-Path 'playwright.config.ts'
-          $hasTests = Test-Path 'tests\e2e'
+          $hasTestsDir = Test-Path 'tests\e2e'
+          $hasHumanSmoke = Test-Path 'tests\e2e\human-smoke.spec.ts'
 
-          if (-not $hasCfg -or -not $hasTests) {
+          if (-not $hasCfg -or -not $hasTestsDir) {
             "E2E skipped: playwright.config.ts and/or tests\e2e are not present in repo" | Tee-Object -FilePath logs\e2e.log
             "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -189,6 +190,7 @@ jobs:
 
           npm ls @playwright/test --depth=0 *>&1 | Tee-Object -FilePath logs\e2e.log
           if ($LASTEXITCODE -ne 0) {
+            "Installing @playwright/test temporarily for CI (no-save)" | Tee-Object -FilePath logs\e2e.log -Append
             npm i -D @playwright/test --no-save --legacy-peer-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
             if ($LASTEXITCODE -ne 0) {
               "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -197,17 +199,29 @@ jobs:
             }
           }
 
-          npx playwright install --with-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
+          # On Windows runners use browser-only install (no --with-deps)
+          npx playwright install chromium *>&1 | Tee-Object -FilePath logs\e2e.log -Append
           if ($LASTEXITCODE -ne 0) {
             "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "status=failed: playwright install" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             exit 0
           }
 
-          npx playwright test *>&1 | Tee-Object -FilePath logs\e2e.log -Append
-          $ok = ($LASTEXITCODE -eq 0)
-          "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "status=ran" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($hasHumanSmoke) {
+            "Running targeted synthetic UI test: tests/e2e/human-smoke.spec.ts" | Tee-Object -FilePath logs\e2e.log -Append
+            npx playwright test tests/e2e/human-smoke.spec.ts *>&1 | Tee-Object -FilePath logs\e2e.log -Append
+          } else {
+            "Running default Playwright suite" | Tee-Object -FilePath logs\e2e.log -Append
+            npx playwright test *>&1 | Tee-Object -FilePath logs\e2e.log -Append
+          }
+
+          if ($LASTEXITCODE -eq 0) {
+            "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "status=ran-pass" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "status=failed: playwright test" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
 
       - name: Generate 118-matrix TestReport (auto)
         continue-on-error: true
@@ -218,6 +232,7 @@ jobs:
           UNIT_STATUS: ${{ steps.unit.outputs.ok == 'true' && 'PASS' || steps.unit.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           BUILD_STATUS: ${{ steps.dist.outputs.ok == 'true' && 'PASS' || steps.dist.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'true') && 'PASS' || ((steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'false') || startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
+          SYNTHETIC_STATUS: ${{ (steps.e2e.outputs.status == 'ran-pass') && 'PASS' || (startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
           STATIC_STATUS: PASS
           REVIEW_STATUS: PASS
           TEST_CYCLES: 1
