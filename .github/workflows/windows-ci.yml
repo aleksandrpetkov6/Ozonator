@@ -246,6 +246,13 @@ jobs:
           if ($hasCfg -and $hasTests) {
             "E2E mode: Playwright" | Tee-Object -FilePath logs\e2e.log
 
+            # UI robot is enabled by a simple repo flag file (safe default = off)
+            $env:UI_ROBOT_ENABLE = '0'
+            if (Test-Path 'tests\e2e\_enable-ui-robot.flag') {
+              $env:UI_ROBOT_ENABLE = '1'
+            }
+            "UI_ROBOT_ENABLE=$env:UI_ROBOT_ENABLE" | Tee-Object -FilePath logs\e2e.log -Append
+
             npx playwright install --with-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
             if ($LASTEXITCODE -ne 0) {
               "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -329,6 +336,7 @@ jobs:
           UNIT_STATUS: ${{ steps.unit.outputs.ok == 'true' && 'PASS' || steps.unit.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           BUILD_STATUS: ${{ steps.dist.outputs.ok == 'true' && 'PASS' || steps.dist.outputs.ok == 'false' && 'FAIL' || 'NR' }}
           E2E_STATUS: ${{ (startsWith(steps.e2e.outputs.status, 'ran') && steps.e2e.outputs.ok == 'true') && 'PASS' || ((startsWith(steps.e2e.outputs.status, 'ran') && steps.e2e.outputs.ok == 'false') || startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
+          UX_PROXY_STATUS: ${{ (steps.e2e.outputs.status == 'ran: playwright' && steps.e2e.outputs.ok == 'true') && 'PASS' || (steps.e2e.outputs.status == 'ran: playwright' && steps.e2e.outputs.ok == 'false') && 'FAIL' || 'NR' }}
           SMOKE_INSTALL_STATUS: ${{ (startsWith(steps.smoke_install.outputs.status, 'ran') && steps.smoke_install.outputs.ok == 'true') && 'PASS' || ((startsWith(steps.smoke_install.outputs.status, 'ran') && steps.smoke_install.outputs.ok == 'false') || startsWith(steps.smoke_install.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
           STATIC_STATUS: PASS
           REVIEW_STATUS: PASS
