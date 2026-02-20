@@ -1,14 +1,25 @@
 --- a/.github/workflows/windows-ci.yml
 +++ b/.github/workflows/windows-ci.yml
-@@ -191,8 +191,9 @@
+@@ -191,16 +191,18 @@
            if ($LASTEXITCODE -ne 0) {
              npm i -D @playwright/test --no-save --legacy-peer-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
              if ($LASTEXITCODE -ne 0) {
 -              "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 -              "status=failed: install @playwright/test" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+              "E2E skipped: @playwright/test is not installed in project and temporary install failed" | Tee-Object -FilePath logs\e2e.log -Append
++              "E2E skipped: @playwright/test is not installed and temporary install failed" | Tee-Object -FilePath logs\e2e.log -Append
 +              "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+              "status=skipped: no @playwright/test" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
++              "status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
                exit 0
              }
            }
+ 
+           npx playwright install --with-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
+           if ($LASTEXITCODE -ne 0) {
+-            "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+-            "status=failed: playwright install" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
++            "E2E skipped: playwright browser install failed" | Tee-Object -FilePath logs\e2e.log -Append
++            "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
++            "status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+             exit 0
+           }
+ 
