@@ -1,25 +1,87 @@
---- a/.github/workflows/windows-ci.yml
-+++ b/.github/workflows/windows-ci.yml
-@@ -191,16 +191,18 @@
-           if ($LASTEXITCODE -ne 0) {
-             npm i -D @playwright/test --no-save --legacy-peer-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
-             if ($LASTEXITCODE -ne 0) {
--              "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
--              "status=failed: install @playwright/test" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+              "E2E skipped: @playwright/test is not installed and temporary install failed" | Tee-Object -FilePath logs\e2e.log -Append
-+              "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+              "status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-               exit 0
-             }
-           }
- 
-           npx playwright install --with-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
-           if ($LASTEXITCODE -ne 0) {
--            "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
--            "status=failed: playwright install" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+            "E2E skipped: playwright browser install failed" | Tee-Object -FilePath logs\e2e.log -Append
-+            "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-+            "status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-             exit 0
-           }
- 
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@
+ export const ProductsPage: React.FC = () => {
+   // component implementation
+   return (
+     <div>
+       {/* Products page content */}
+     </div>
+   );
+ };
++
++// Ensure the component is exported as the default export for compatibility with tests
++export default ProductsPage;
+--- a/src/renderer/src/ui/pages/SettingsPage.tsx
++++ b/src/renderer/src/ui/pages/SettingsPage.tsx
+@@
+ export const SettingsPage: React.FC = () => {
+   // component implementation
+   return (
+     <div>
+       {/* Settings page content */}
+     </div>
+   );
+ };
++
++// Ensure the component is exported as the default export for compatibility with tests
++export default SettingsPage;
+--- a/src/renderer/src/ui/pages/LogsPage.tsx
++++ b/src/renderer/src/ui/pages/LogsPage.tsx
+@@
+ export const LogsPage: React.FC = () => {
+   // component implementation
+   return (
+     <div>
+       {/* Logs page content */}
+     </div>
+   );
+ };
++
++// Ensure the component is exported as the default export for compatibility with tests
++export default LogsPage;
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@
+-const ProductsPage: React.FC = () => {
++const ProductsPage: React.FC = () => {
+   // component implementation
+   return (
+     <div>
+       {/* Products page content */}
+     </div>
+   );
+ };
++
++// Ensure the component is exported as the default export for compatibility with tests
++export default ProductsPage;
+--- a/src/renderer/src/ui/pages/SettingsPage.tsx
++++ b/src/renderer/src/ui/pages/SettingsPage.tsx
+@@
+-const SettingsPage: React.FC = () => {
++const SettingsPage: React.FC = () => {
+   // component implementation
+   return (
+     <div>
+       {/* Settings page content */}
+     </div>
+   );
+ };
++
++// Ensure the component is exported as the default export for compatibility with tests
++export default SettingsPage;
+--- a/src/renderer/src/ui/pages/LogsPage.tsx
++++ b/src/renderer/src/ui/pages/LogsPage.tsx
+@@
+-const LogsPage: React.FC = () => {
++const LogsPage: React.FC = () => {
+   // component implementation
+   return (
+     <div>
+       {/* Logs page content */}
+     </div>
+   );
+ };
++
++// Ensure the component is exported as the default export for compatibility with tests
++export default LogsPage;
