@@ -1,50 +1,57 @@
-diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index 88a6854..626110a 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -148,9 +148,6 @@ export default function ProductsPage({ query = '', onStats }: Props) {
-   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
-   const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
+@@ -142,7 +142,7 @@
+   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
  
--  const scrollTopRafRef = useRef<number | null>(null)
--  const lastScrollTopRef = useRef(0)
--
-   const resizingRef = useRef<{
-     id: string
-     startX: number
-@@ -628,13 +625,8 @@ function onDragOverHeader(e: React.DragEvent) {
+   const [collapsedOpen, setCollapsedOpen] = useState(false)
+-  const [bodyScrollTop, setBodyScrollTop] = useState(0)
++  const [bodyWindowAnchorRow, setBodyWindowAnchorRow] = useState(0)
+   const [bodyViewportH, setBodyViewportH] = useState(600)
+ 
+   const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
+@@ -620,13 +620,21 @@
+     return () => ro.disconnect()
+   }, [])
+ 
++  const ROW_H = 28
++
+   useEffect(() => {
+     const body = bodyScrollRef.current
      if (!body) return
  
++    const viewH = bodyViewportH || 600
++    const viewportRows = Math.max(1, Math.ceil(viewH / ROW_H))
++    const windowStepRows = Math.max(12, Math.ceil(viewportRows / 2))
++
      const onScroll = () => {
--      lastScrollTopRef.current = body.scrollTop
--      if (scrollTopRafRef.current != null) return
--
--      scrollTopRafRef.current = window.requestAnimationFrame(() => {
--        scrollTopRafRef.current = null
--        setBodyScrollTop(lastScrollTopRef.current)
--      })
-+      const nextTop = body.scrollTop
-+      setBodyScrollTop((prev) => (prev === nextTop ? prev : nextTop))
+-      const nextTop = body.scrollTop
+-      setBodyScrollTop((prev) => (prev === nextTop ? prev : nextTop))
++      const nextTop = Math.max(0, body.scrollTop || 0)
++      const anchorRow = Math.floor(nextTop / ROW_H)
++      const nextWindowAnchorRow = Math.floor(anchorRow / windowStepRows) * windowStepRows
++      setBodyWindowAnchorRow((prev) => (prev === nextWindowAnchorRow ? prev : nextWindowAnchorRow))
      }
  
      body.addEventListener('scroll', onScroll, { passive: true })
-@@ -642,18 +634,14 @@ function onDragOverHeader(e: React.DragEvent) {
- 
+@@ -635,15 +643,15 @@
      return () => {
        body.removeEventListener('scroll', onScroll)
--      if (scrollTopRafRef.current != null) {
--        window.cancelAnimationFrame(scrollTopRafRef.current)
--        scrollTopRafRef.current = null
--      }
      }
-   }, [])
- 
-   const ROW_H = 28
--  const OVERSCAN = 12
+-  }, [])
+-
+-  const ROW_H = 28
++  }, [bodyViewportH])
  
    const totalRows = filtered.length
    const viewH = bodyViewportH || 600
-+  const OVERSCAN = Math.max(24, Math.ceil(viewH / ROW_H))
-   const startRow = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN)
-   const endRow = Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2))
+-  const OVERSCAN = Math.max(24, Math.ceil(viewH / ROW_H))
+-  const startRow = Math.max(0, Math.floor(bodyScrollTop / ROW_H) - OVERSCAN)
+-  const endRow = Math.min(totalRows, startRow + Math.ceil(viewH / ROW_H) + (OVERSCAN * 2))
++  const viewportRows = Math.max(1, Math.ceil(viewH / ROW_H))
++  const OVERSCAN = Math.max(64, viewportRows * 3)
++  const WINDOW_STEP_ROWS = Math.max(12, Math.ceil(viewportRows / 2))
++  const startRow = Math.max(0, bodyWindowAnchorRow - OVERSCAN)
++  const endRow = Math.min(totalRows, bodyWindowAnchorRow + viewportRows + (OVERSCAN * 2) + WINDOW_STEP_ROWS)
  
+   const visibleRows = useMemo(() => filtered.slice(startRow, endRow), [filtered, startRow, endRow])
+   const topSpace = startRow * ROW_H
