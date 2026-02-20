@@ -3,8 +3,20 @@
   "totalTests": 118,
   "modes": {
     "default": "auto",
-    "human": [29, 30, 31, 34, 55, 100, 116, 118],
-    "proxy": [13, 14]
+    "human": [
+      116,
+      118
+    ],
+    "proxy": [
+      13,
+      14,
+      29,
+      30,
+      31,
+      34,
+      55,
+      100
+    ]
   },
   "reasons": {
     "29": "Dogfooding требует реального внутреннего использования",
@@ -18,6 +30,12 @@
   },
   "proxyRules": {
     "13": "PASS если e2eStatus=PASS, иначе FAIL/NR по факту",
-    "14": "PASS если e2eStatus=PASS и buildStatus=PASS (машинный proxy-UAT), иначе FAIL/NR"
+    "14": "PASS если e2eStatus=PASS и buildStatus=PASS (машинный proxy-UAT), иначе FAIL/NR",
+    "29": "PASS если syntheticStatus=PASS, иначе FAIL/NR",
+    "30": "PASS если syntheticStatus=PASS и uxProxyStatus=PASS, иначе FAIL/NR",
+    "31": "PASS если smokeInstallStatus=PASS и e2eStatus=PASS, иначе FAIL/NR",
+    "34": "PASS если monkeyStatus=PASS, иначе FAIL/NR",
+    "55": "PASS если securityStatus=PASS, иначе FAIL/NR",
+    "100": "PASS если visualStatus=PASS и uxProxyStatus=PASS, иначе FAIL/NR"
   }
 }
