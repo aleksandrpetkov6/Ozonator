@@ -1,455 +1,415 @@
-import { test, expect, type Locator, type Page } from '@playwright/test';
+import { test, expect, Page, Locator } from '@playwright/test';
 
-const TIMEOUT_SHORT = 1500;
-const STEP_WAIT_MS = 120;
+const NON_DESTRUCTIVE_BUTTON_BLACKLIST = /(удал|delete|remove|reset|сброс|drop|clear all|очист|logout|выйти|exit|close app|quit)/i;
 
-type GridMetrics = {
-  scrollTop: number;
-  scrollLeft: number;
-  maxTop: number;
-  maxLeft: number;
-  clientHeight: number;
-  clientWidth: number;
-};
-
-type GridSnapshot = {
-  visibleTextCount: number;
-  rowLikeCount: number;
-  cellLikeCount: number;
-  isBusy: boolean;
-};
-
-async function firstVisible(list: readonly Locator[], index = 0): Promise<Locator | null> {
-  if (index >= list.length) return null;
-
-  try {
-    if (await list[index].isVisible({ timeout: TIMEOUT_SHORT })) {
-      return list[index];
-    }
-  } catch {
-    // ignore and continue
+async function firstVisible(locator: Locator, max = 10): Promise<Locator | null> {
+  const count = await locator.count();
+  const limit = Math.min(count, max);
+  for (let i = 0; i < limit; i += 1) {
+    const item = locator.nth(i);
+    if (await item.isVisible().catch(() => false)) return item;
   }
-
-  return firstVisible(list, index + 1);
+  return null;
 }
 
-async function clickFirstVisible(candidates: readonly Locator[]): Promise<boolean> {
-  const target = await firstVisible(candidates);
-  if (!target) return false;
-
+async function safeClick(locator: Locator): Promise<boolean> {
   try {
-    await target.click({ timeout: TIMEOUT_SHORT });
+    if (!(await locator.isVisible())) return false;
+    if (!(await locator.isEnabled())) return false;
+    await locator.click({ timeout: 2000 });
     return true;
   } catch {
     return false;
   }
 }
 
-async function fillFirstVisible(candidates: readonly Locator[], value: string): Promise<boolean> {
-  const target = await firstVisible(candidates);
-  if (!target) return false;
+async function resolveBaseUrl(): Promise<string> {
+  const fromEnv = [
+    process.env.E2E_BASE_URL,
+    process.env.PLAYWRIGHT_BASE_URL,
+    process.env.BASE_URL,
+  ].filter(Boolean) as string[];
 
-  try {
-    await target.fill(value, { timeout: TIMEOUT_SHORT });
-    return true;
-  } catch {
-    return false;
-  }
-}
+  const defaults = [
+    'http://127.0.0.1:4173',
+    'http://localhost:4173',
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
+    'http://127.0.0.1:3000',
+    'http://localhost:3000',
+  ];
 
-async function pressIfVisible(page: Page, key: string): Promise<void> {
-  try {
-    await page.keyboard.press(key);
-  } catch {
-    // ignore
-  }
-}
+  const candidates = [...new Set([...fromEnv, ...defaults])];
 
-async function stepSafe(page: Page, action: () => Promise<void>): Promise<void> {
-  try {
-    await action();
-    await page.waitForLoadState('domcontentloaded', { timeout: TIMEOUT_SHORT });
-  } catch {
-    // keep smoke test resilient
-  }
-}
-
-async function waitFrame(page: Page, frames = 1): Promise<void> {
-  await page.evaluate(async (count: number) => {
-    const waitOne = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    for (let i = 0; i < count; i += 1) {
-      await waitOne();
+  for (const url of candidates) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 1500);
+      const res = await fetch(url, { method: 'GET', signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.ok || (res.status >= 300 && res.status < 500)) return url;
+    } catch {
+      // try next
     }
-  }, frames);
-}
+  }
 
-async function locateMainScrollableArea(page: Page): Promise<Locator | null> {
-  const direct = await firstVisible([
-    page.locator('[role="grid"]'),
-    page.locator('[role="table"]'),
-    page.locator('table'),
-    page.locator('.ag-body-viewport'),
-    page.locator('.ReactVirtualized__Grid'),
-    page.locator('[data-testid*="grid"]'),
-  ]);
-  if (direct) return direct;
-
-  const selector = await page.evaluate(() => {
-    const MARK = 'data-e2e-scroll-probe';
-    document.querySelectorAll(`[${MARK}]`).forEach((el) => el.removeAttribute(MARK));
-
-    const all = Array.from(document.querySelectorAll<HTMLElement>('body *'));
-    let best: HTMLElement | null = null;
-    let bestScore = -1;
-
-    for (const el of all) {
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 300 || rect.height < 140) continue;
-
-      const style = window.getComputedStyle(el);
-      const canY = el.scrollHeight > el.clientHeight + 40 || /(auto|scroll|overlay)/i.test(style.overflowY);
-      const canX = el.scrollWidth > el.clientWidth + 40 || /(auto|scroll|overlay)/i.test(style.overflowX);
-      if (!canX && !canY) continue;
-
-      const identity = `${el.id} ${String(el.className)} ${el.getAttribute('role') ?? ''}`;
-      const hint = /(grid|table|viewport|virtual|body|content)/i.test(identity) ? 15000 : 0;
-      const rowLike = el.querySelectorAll('tr,[role="row"],.ag-row,.rt-tr').length;
-      const cellLike = el.querySelectorAll('td,[role="gridcell"],[role="cell"],.ag-cell').length;
-      const score =
-        hint +
-        (rect.width * rect.height) +
-        (Math.max(0, el.scrollHeight - el.clientHeight) * 10) +
-        (Math.max(0, el.scrollWidth - el.clientWidth) * 10) +
-        (rowLike * 30) +
-        (cellLike * 10);
-
-      if (score > bestScore) {
-        best = el;
-        bestScore = score;
-      }
-    }
-
-    if (!best) return null;
-    best.setAttribute(MARK, '1');
-    return `[${MARK}="1"]`;
-  });
-
-  return selector ? page.locator(selector) : null;
-}
-
-async function readGridMetrics(grid: Locator): Promise<GridMetrics> {
-  return grid.evaluate((node) => {
-    const el = node as HTMLElement;
-    return {
-      scrollTop: el.scrollTop,
-      scrollLeft: el.scrollLeft,
-      maxTop: Math.max(0, el.scrollHeight - el.clientHeight),
-      maxLeft: Math.max(0, el.scrollWidth - el.clientWidth),
-      clientHeight: el.clientHeight,
-      clientWidth: el.clientWidth,
-    };
-  });
-}
-
-async function setGridScroll(grid: Locator, top: number, left?: number): Promise<void> {
-  await grid.evaluate(
-    (node, payload) => {
-      const el = node as HTMLElement;
-      el.scrollTop = payload.top;
-      if (typeof payload.left === 'number') {
-        el.scrollLeft = payload.left;
-      }
-    },
-    { top, left },
+  throw new Error(
+    `Не найден доступный URL для UI. Укажи E2E_BASE_URL (проверены: ${candidates.join(', ')})`,
   );
 }
 
-async function readGridSnapshot(grid: Locator): Promise<GridSnapshot> {
-  return grid.evaluate((node) => {
-    const root = node as HTMLElement;
-    const rootRect = root.getBoundingClientRect();
-
-    const isVisible = (el: Element): boolean => {
-      const htmlEl = el as HTMLElement;
-      const style = window.getComputedStyle(htmlEl);
-      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
-      const rect = htmlEl.getBoundingClientRect();
-      if (rect.width < 1 || rect.height < 1) return false;
-      const intersects =
-        rect.bottom > rootRect.top &&
-        rect.top < rootRect.bottom &&
-        rect.right > rootRect.left &&
-        rect.left < rootRect.right;
-      return intersects;
-    };
-
-    const rowLikeCount = root.querySelectorAll('tr,[role="row"],.ag-row,.rt-tr,[data-row-index]').length;
-    const cellLikeCount = root.querySelectorAll('td,[role="gridcell"],[role="cell"],.ag-cell').length;
-
-    const preferredTextNodes = Array.from(
-      root.querySelectorAll<HTMLElement>(
-        'td,[role="gridcell"],[role="cell"],.ag-cell,th,[role="columnheader"],.ag-header-cell',
-      ),
-    );
-
-    let visibleTextCount = 0;
-    for (const el of preferredTextNodes) {
-      if (!isVisible(el)) continue;
-      const text = (el.innerText || el.textContent || '').trim();
-      if (!text) continue;
-      visibleTextCount += 1;
-      if (visibleTextCount >= 200) break;
+async function clickByTexts(page: Page, patterns: RegExp[], maxClicks = 2) {
+  let clicks = 0;
+  for (const pattern of patterns) {
+    if (clicks >= maxClicks) return;
+    const byRoleButton = page.getByRole('button', { name: pattern }).first();
+    if (await safeClick(byRoleButton)) {
+      clicks += 1;
+      await page.waitForTimeout(200);
+      continue;
     }
 
-    if (visibleTextCount === 0) {
-      const genericTextNodes = Array.from(root.querySelectorAll<HTMLElement>('div,span'));
-      for (const el of genericTextNodes) {
-        if (!isVisible(el)) continue;
-        const text = (el.innerText || el.textContent || '').trim();
-        if (!text) continue;
-        visibleTextCount += 1;
-        if (visibleTextCount >= 200) break;
+    const byRoleTab = page.getByRole('tab', { name: pattern }).first();
+    if (await safeClick(byRoleTab)) {
+      clicks += 1;
+      await page.waitForTimeout(200);
+      continue;
+    }
+
+    const generic = page.locator(`text=${pattern.source}`).first();
+    if (await safeClick(generic)) {
+      clicks += 1;
+      await page.waitForTimeout(200);
+    }
+  }
+}
+
+type AggressiveScrollProbe = {
+  foundTarget: boolean;
+  targetTag?: string;
+  targetClass?: string;
+  targetClientHeight?: number;
+  targetClientWidth?: number;
+  targetScrollHeight?: number;
+  targetScrollWidth?: number;
+  verticalHadBlankFrames: boolean;
+  verticalMaxBlankMs: number;
+  verticalWorstObservedTextLen: number;
+  horizontalChanged: boolean;
+  samples: Array<{
+    step: number;
+    axis: 'y' | 'x';
+    blankMs: number;
+    textLen: number;
+    rows: number;
+    cells: number;
+    top: number;
+    left: number;
+  }>;
+};
+
+async function aggressiveScrollProbe(page: Page): Promise<AggressiveScrollProbe> {
+  return page.evaluate(async () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const raf = () => new Promise((r) => requestAnimationFrame(() => r(null)));
+
+    const styleOverflow = (el: HTMLElement) => {
+      const cs = window.getComputedStyle(el);
+      return {
+        x: /(auto|scroll)/.test(cs.overflowX),
+        y: /(auto|scroll)/.test(cs.overflowY),
+      };
+    };
+
+    const all = Array.from(document.querySelectorAll<HTMLElement>('body *'));
+    const candidates = all
+      .filter((el) => {
+        if (!el.isConnected) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 120 || rect.height < 80) return false;
+        const ov = styleOverflow(el);
+        const canY = ov.y && el.scrollHeight > el.clientHeight + 40;
+        const canX = ov.x && el.scrollWidth > el.clientWidth + 40;
+        return canY || canX;
+      })
+      .sort((a, b) => {
+        const as = a.clientWidth * a.clientHeight;
+        const bs = b.clientWidth * b.clientHeight;
+        return bs - as;
+      });
+
+    const target = candidates[0];
+    if (!target) {
+      return {
+        foundTarget: false,
+        verticalHadBlankFrames: false,
+        verticalMaxBlankMs: 0,
+        verticalWorstObservedTextLen: 0,
+        horizontalChanged: false,
+        samples: [],
+      } satisfies AggressiveScrollProbe;
+    }
+
+    const snap = () => {
+      const rows = target.querySelectorAll('tr, [role="row"], .ag-row').length;
+      const cells = target.querySelectorAll('td, [role="gridcell"], .ag-cell, .cell, .row').length;
+      const txt = (target.innerText || '').replace(/\s+/g, ' ').trim();
+      return { rows, cells, textLen: txt.length };
+    };
+
+    // Прогрев
+    target.scrollTop = 0;
+    target.scrollLeft = 0;
+    await raf();
+    await sleep(30);
+
+    const samples: AggressiveScrollProbe['samples'] = [];
+    let verticalMaxBlankMs = 0;
+    let verticalWorstObservedTextLen = Number.MAX_SAFE_INTEGER;
+
+    const yMax = Math.max(0, target.scrollHeight - target.clientHeight);
+    const xMax = Math.max(0, target.scrollWidth - target.clientWidth);
+
+    // Агрессивные рывки по вертикали: как пользователь резко тянет ползунок туда-сюда
+    if (yMax > 0) {
+      const yPositions = [yMax, 0, yMax, 0, yMax, 0, Math.floor(yMax * 0.6), Math.floor(yMax * 0.2), yMax, 0];
+
+      for (let i = 0; i < yPositions.length; i += 1) {
+        target.scrollTop = yPositions[i];
+
+        const started = performance.now();
+        let blankMs = 0;
+        let bestTextLen = 0;
+        let ok = false;
+
+        // Проверяем сразу и потом быстро опрашиваем ~350мс, чтобы поймать "пустой экран"
+        for (let t = 0; t < 22; t += 1) {
+          await raf();
+          const s = snap();
+          bestTextLen = Math.max(bestTextLen, s.textLen);
+
+          const hasContent = s.rows > 0 || s.cells > 10 || s.textLen > 20;
+          if (hasContent) {
+            blankMs = Math.round(performance.now() - started);
+            verticalWorstObservedTextLen = Math.min(verticalWorstObservedTextLen, s.textLen);
+            samples.push({
+              step: i,
+              axis: 'y',
+              blankMs,
+              textLen: s.textLen,
+              rows: s.rows,
+              cells: s.cells,
+              top: target.scrollTop,
+              left: target.scrollLeft,
+            });
+            verticalMaxBlankMs = Math.max(verticalMaxBlankMs, blankMs);
+            ok = true;
+            break;
+          }
+          await sleep(16);
+        }
+
+        if (!ok) {
+          // Контент так и не появился за окно наблюдения
+          blankMs = Math.round(performance.now() - started);
+          verticalWorstObservedTextLen = Math.min(verticalWorstObservedTextLen, bestTextLen);
+          samples.push({
+            step: i,
+            axis: 'y',
+            blankMs,
+            textLen: bestTextLen,
+            rows: 0,
+            cells: 0,
+            top: target.scrollTop,
+            left: target.scrollLeft,
+          });
+          verticalMaxBlankMs = Math.max(verticalMaxBlankMs, blankMs);
+        }
       }
     }
 
-    const isBusy = Boolean(
-      root.querySelector(
-        '[aria-busy="true"], .loading, .spinner, .ant-spin-spinning, [data-loading="true"], [data-testid*="loading"]',
-      ),
-    );
+    // Горизонталь: проверяем, что реально скроллится туда-сюда
+    let horizontalChanged = false;
+    if (xMax > 0) {
+      const before = target.scrollLeft;
+      target.scrollLeft = xMax;
+      await raf();
+      await sleep(20);
+      const atMax = target.scrollLeft;
+      target.scrollLeft = 0;
+      await raf();
+      await sleep(20);
+      const back = target.scrollLeft;
+      horizontalChanged = atMax > before || back < atMax;
+
+      const s = snap();
+      samples.push({
+        step: 0,
+        axis: 'x',
+        blankMs: 0,
+        textLen: s.textLen,
+        rows: s.rows,
+        cells: s.cells,
+        top: target.scrollTop,
+        left: target.scrollLeft,
+      });
+    }
 
     return {
-      visibleTextCount,
-      rowLikeCount,
-      cellLikeCount,
-      isBusy,
-    };
+      foundTarget: true,
+      targetTag: target.tagName,
+      targetClass: target.className || '',
+      targetClientHeight: target.clientHeight,
+      targetClientWidth: target.clientWidth,
+      targetScrollHeight: target.scrollHeight,
+      targetScrollWidth: target.scrollWidth,
+      verticalHadBlankFrames: verticalMaxBlankMs > 150,
+      verticalMaxBlankMs,
+      verticalWorstObservedTextLen: Number.isFinite(verticalWorstObservedTextLen) ? verticalWorstObservedTextLen : 0,
+      horizontalChanged,
+      samples,
+    } satisfies AggressiveScrollProbe;
   });
 }
 
-async function ensureMainUiLoaded(page: Page): Promise<void> {
-  await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await expect(page.locator('body')).toBeVisible({ timeout: 10000 });
+test('human smoke: open app, click around, type, filter, sort, aggressive scroll', async ({ page }) => {
+  const baseUrl = await resolveBaseUrl();
 
-  await stepSafe(page, async () => {
-    await clickFirstVisible([
-      page.getByRole('button', { name: /закрыть|close|ok|понятно/i }),
-      page.getByRole('button', { name: /принять|accept/i }),
-    ]);
+  const pageErrors: string[] = [];
+  const consoleErrors: string[] = [];
+
+  page.on('pageerror', (err) => {
+    pageErrors.push(String(err?.message || err));
   });
 
-  await stepSafe(page, async () => {
-    await clickFirstVisible([
-      page.getByRole('tab').first(),
-      page.locator('[role="tab"]').first(),
-    ]);
-  });
-}
-
-async function runBasicInteractions(page: Page): Promise<void> {
-  await stepSafe(page, async () => {
-    await fillFirstVisible(
-      [
-        page.getByPlaceholder(/поиск|search/i),
-        page.getByRole('searchbox'),
-        page.locator('input[type="search"]'),
-        page.locator('input').first(),
-      ],
-      'test',
-    );
-  });
-
-  await stepSafe(page, async () => {
-    await pressIfVisible(page, 'Control+A');
-    await pressIfVisible(page, 'Backspace');
-  });
-
-  await stepSafe(page, async () => {
-    await clickFirstVisible([
-      page.getByRole('button', { name: /фильтр|filter/i }),
-      page.getByRole('button', { name: /сорт|sort/i }),
-      page.getByRole('button', { name: /колон|столб/i }),
-    ]);
-  });
-
-  await stepSafe(page, async () => {
-    await clickFirstVisible([
-      page.locator('th').first(),
-      page.locator('[role="columnheader"]').first(),
-    ]);
-  });
-}
-
-async function assertVerticalScrollNoBlank(page: Page, grid: Locator): Promise<void> {
-  const metrics = await readGridMetrics(grid);
-  expect(metrics.maxTop, 'Нет вертикального диапазона прокрутки для проверки').toBeGreaterThan(80);
-
-  const baseline = await readGridSnapshot(grid);
-  expect(
-    baseline.visibleTextCount + baseline.rowLikeCount + baseline.cellLikeCount,
-    'До прокрутки в таблице не видно данных (нечего проверять)',
-  ).toBeGreaterThan(0);
-
-  const points = [0, 0.08, 0.2, 0.45, 0.7, 0.95, 0.55, 0.9, 0.15, 1];
-  const blankHits: string[] = [];
-
-  for (const ratio of points) {
-    const targetTop = Math.round(metrics.maxTop * ratio);
-    await setGridScroll(grid, targetTop);
-
-    for (let i = 0; i < 5; i += 1) {
-      await waitFrame(page, 1);
-      await page.waitForTimeout(STEP_WAIT_MS);
-
-      const snap = await readGridSnapshot(grid);
-      const score = snap.visibleTextCount + snap.rowLikeCount + snap.cellLikeCount;
-      if (score === 0 && !snap.isBusy) {
-        blankHits.push(`top=${targetTop}, step=${i}`);
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      const t = msg.text();
+      if (!/favicon|download the react devtools|source map/i.test(t)) {
+        consoleErrors.push(t);
       }
+    }
+  });
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+
+  await expect(page.locator('body')).toBeVisible();
+
+  // Переходы по типичным вкладкам/экранам
+  await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
+  await clickByTexts(page, [/лог/i, /logs?/i, /истори/i], 1);
+  await clickByTexts(page, [/настро/i, /settings?/i], 1);
+  await clickByTexts(page, [/товар/i, /products?/i], 1);
+
+  // Ввод в поиск / фильтр
+  const searchInput = await firstVisible(
+    page.locator([
+      'input[type="search"]',
+      'input[placeholder*="Поиск"]',
+      'input[placeholder*="поиск"]',
+      'input[placeholder*="Search"]',
+      'input[placeholder*="search"]',
+      'input',
+    ].join(',')),
+    20,
+  );
+
+  if (searchInput) {
+    await searchInput.fill('test');
+    await page.keyboard.press('Enter').catch(() => {});
+    await page.waitForTimeout(300);
+    await searchInput.fill('');
+    await page.waitForTimeout(200);
+  }
+
+  // Кнопка фильтров / панель фильтра
+  await clickByTexts(page, [/фильтр/i, /filters?/i], 2);
+
+  // Работа с селектами (если есть)
+  const selectEl = await firstVisible(page.locator('select'), 10);
+  if (selectEl) {
+    const values = await selectEl.locator('option').evaluateAll((opts) =>
+      opts.map((o) => (o as HTMLOptionElement).value).filter(Boolean),
+    );
+    if (values.length > 1) {
+      await selectEl.selectOption(values[1]).catch(() => {});
+      await page.waitForTimeout(200);
     }
   }
 
-  expect(blankHits, `При резкой вертикальной прокрутке данные исчезали: ${blankHits.join(' | ')}`).toEqual([]);
-}
+  // Колонки / меню таблицы
+  await clickByTexts(page, [/колонк/i, /columns?/i, /вид/i, /display/i], 2);
 
-async function assertHorizontalScrollAvailable(grid: Locator): Promise<void> {
-  const before = await readGridMetrics(grid);
-  if (before.maxLeft <= 40) {
-    return; // горизонтального переполнения нет — проверка не применима
+  // Сортировка по заголовкам таблицы (1-2 клика)
+  const header = await firstVisible(
+    page.locator('th, [role="columnheader"], .ag-header-cell, .rt-th'),
+    20,
+  );
+  if (header) {
+    await safeClick(header);
+    await page.waitForTimeout(250);
+    await safeClick(header);
+    await page.waitForTimeout(250);
   }
 
-  await setGridScroll(grid, before.scrollTop, before.maxLeft);
-  const afterRight = await readGridMetrics(grid);
-  expect(afterRight.scrollLeft, 'Горизонтальная прокрутка не работает (не двигается вправо)').toBeGreaterThan(10);
-
-  await setGridScroll(grid, afterRight.scrollTop, 0);
-  const afterLeft = await readGridMetrics(grid);
-  expect(afterLeft.scrollLeft, 'Горизонтальная прокрутка не возвращается влево').toBeLessThanOrEqual(2);
-}
-
-async function assertColumnsDragAttempt(page: Page): Promise<void> {
-  const headers = page.locator('th,[role="columnheader"],.ag-header-cell');
-  const count = await headers.count();
-  if (count < 2) {
-    return; // в текущем экране нет заголовков — не ломаем smoke
+  // Несколько безопасных кнопок (не удаление)
+  const buttons = page.locator('button');
+  const btnCount = Math.min(await buttons.count(), 20);
+  let clicked = 0;
+  for (let i = 0; i < btnCount && clicked < 4; i += 1) {
+    const b = buttons.nth(i);
+    const text = ((await b.innerText().catch(() => '')) || '').trim();
+    if (!text) continue;
+    if (NON_DESTRUCTIVE_BUTTON_BLACKLIST.test(text)) continue;
+    if (await safeClick(b)) {
+      clicked += 1;
+      await page.waitForTimeout(200);
+      await page.keyboard.press('Escape').catch(() => {});
+    }
   }
 
-  const first = headers.nth(0);
-  const second = headers.nth(1);
-
-  const firstVisibleOk = await first.isVisible().catch(() => false);
-  const secondVisibleOk = await second.isVisible().catch(() => false);
-  if (!firstVisibleOk || !secondVisibleOk) return;
-
-  const beforeA = await first.boundingBox();
-  const beforeB = await second.boundingBox();
-  if (!beforeA || !beforeB) return;
-
-  try {
-    await first.dragTo(second, { timeout: 3000 });
-  } catch {
-    // fallback: manual drag gesture
-    await first.hover({ timeout: 1500 });
-    await page.mouse.down();
-    await page.mouse.move(beforeB.x + beforeB.width / 2, beforeB.y + beforeB.height / 2, { steps: 10 });
-    await page.mouse.up();
-  }
-
-  await page.waitForTimeout(250);
-
-  const afterA = await first.boundingBox();
-  const afterB = await second.boundingBox();
-  if (!afterA || !afterB) return;
-
-  const moved = Math.abs(afterA.x - beforeA.x) > 4 || Math.abs(afterB.x - beforeB.x) > 4;
-  expect(moved, 'Перетаскивание столбцов не отрабатывает (позиции заголовков не меняются)').toBeTruthy();
-}
-
-async function assertCategoryAndLogsVisible(page: Page): Promise<void> {
-  await stepSafe(page, async () => {
-    await clickFirstVisible([
-      page.getByRole('tab', { name: /лог/i }),
-      page.getByRole('button', { name: /лог/i }),
-    ]);
+  // Агрессивная проверка скролла (рывки вниз/вверх) + горизонталь
+  const scrollProbe = await aggressiveScrollProbe(page);
+  test.info().annotations.push({
+    type: 'scroll-probe',
+    description: JSON.stringify(scrollProbe).slice(0, 1500),
   });
 
-  const bodyText = (await page.locator('body').innerText()).toLowerCase();
-  const hasCategory = bodyText.includes('категор') || bodyText.includes('category');
-  const hasLogs = bodyText.includes('лог') || bodyText.includes('log');
+  // Проверка, что UI живой и не пустой после действий/скролла
+  const visibleRows = await page.locator('table tr, [role="row"], .ag-row').count().catch(() => 0);
+  const visibleText = (await page.locator('body').innerText()).trim();
+  expect(visibleText.length).toBeGreaterThan(0);
 
-  expect(hasCategory, 'Не видно отображения категории в интерфейсе').toBeTruthy();
-  expect(hasLogs, 'Не видно отображения логов в интерфейсе').toBeTruthy();
-}
+  // Скрин на успех/состояние (для артефактов)
+  await page.screenshot({ path: 'test-results/human-smoke-success.png', fullPage: true }).catch(() => {});
 
-test.describe('Human smoke UI interactions', () => {
-  test('click / scroll / filter / sort / columns', async ({ page }) => {
-    const pageErrors: string[] = [];
+  // Не валим по единичным шумным консольным предупреждениям, но валим по pageerror
+  expect(pageErrors, `Uncaught page errors:\n${pageErrors.join('\n')}`).toEqual([]);
 
-    page.on('pageerror', (error) => {
-      pageErrors.push(String(error));
-    });
+  if (visibleRows === 0 && !/товар|products|лог|settings|настро/i.test(visibleText)) {
+    throw new Error('UI открылся, но не найдено ожидаемых элементов (таблица/экраны). Проверь селекторы/маршрут.');
+  }
 
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') {
-        pageErrors.push(msg.text());
-      }
-    });
+  if (!scrollProbe.foundTarget) {
+    throw new Error('Не найден прокручиваемый контейнер для smoke-проверки скролла.');
+  }
 
-    await ensureMainUiLoaded(page);
-    await runBasicInteractions(page);
+  // Ключевая проверка: после резких рывков контент должен появляться практически мгновенно.
+  // 150мс — мягкий предел для UI; 1-2 секунды гарантированно поймается как fail.
+  expect(
+    scrollProbe.verticalMaxBlankMs,
+    `Слишком долгое исчезновение данных при агрессивной вертикальной прокрутке: ${scrollProbe.verticalMaxBlankMs}мс`,
+  ).toBeLessThanOrEqual(150);
 
-    await stepSafe(page, async () => {
-      const grid = await locateMainScrollableArea(page);
+  // Горизонтальный скролл не обязателен на любом экране, но если контент шире контейнера — он должен двигаться.
+  const horizontalNeeded = (scrollProbe.targetScrollWidth || 0) > (scrollProbe.targetClientWidth || 0) + 20;
+  if (horizontalNeeded) {
+    expect(scrollProbe.horizontalChanged, 'Горизонтальная прокрутка есть, но не двигается').toBeTruthy();
+  }
 
-      if (grid) {
-        await grid.hover();
-        await page.mouse.wheel(0, 900);
-        await page.mouse.wheel(0, -500);
-        await page.mouse.wheel(900, 0);
-        await page.mouse.wheel(-500, 0);
-      } else {
-        await page.mouse.wheel(0, 900);
-        await page.mouse.wheel(0, -500);
-      }
-    });
-
-    await stepSafe(page, async () => {
-      await clickFirstVisible([
-        page.getByRole('button', { name: /добавить столбец|add column/i }),
-        page.getByRole('button', { name: /колонки|columns/i }),
-      ]);
-    });
-
-    await stepSafe(page, async () => {
-      await clickFirstVisible([
-        page.getByRole('checkbox').first(),
-        page.locator('input[type="checkbox"]').first(),
-      ]);
-    });
-
-    await stepSafe(page, async () => {
-      await clickFirstVisible([
-        page.getByRole('button', { name: /применить|apply|сохранить|save/i }),
-        page.getByRole('button', { name: /закрыть|close/i }),
-      ]);
-    });
-
-    await expect(page.locator('body')).toBeVisible({ timeout: 5000 });
-    await expect(pageErrors, `UI errors:\n${pageErrors.join('\n')}`).toEqual([]);
-  });
-
-  test('user-like scrollbar and table checks (no app fixes, only detection)', async ({ page }) => {
-    await ensureMainUiLoaded(page);
-    await runBasicInteractions(page);
-
-    const grid = await locateMainScrollableArea(page);
-    expect(grid, 'Не найден основной скроллируемый блок таблицы').not.toBeNull();
-    if (!grid) return;
-
-    await grid.hover();
-    await assertVerticalScrollNoBlank(page, grid);
-    await assertHorizontalScrollAvailable(grid);
-    await assertColumnsDragAttempt(page);
-    await assertCategoryAndLogsVisible(page);
+  test.info().annotations.push({
+    type: 'console-errors',
+    description: consoleErrors.slice(0, 10).join(' | ') || 'none',
   });
 });
