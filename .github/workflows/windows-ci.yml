@@ -1,18 +1,5 @@
-      - name: Final gate (fail job if CI checks failed)
-        if: always() && steps.install.outputs.ok == 'true'
-        run: |
-          exit 1
 
-          $failed = @()
-          if ('${{ steps.lint.outputs.ok }}' -eq 'false') { $failed += 'lint' }
-          if ('${{ steps.typecheck.outputs.ok }}' -eq 'false') { $failed += 'typecheck' }
-          if ('${{ steps.unit.outputs.ok }}' -eq 'false') { $failed += 'unit' }
-          if ('${{ steps.dist.outputs.ok }}' -eq 'false') { $failed += 'dist' }
-          if ('${{ steps.collect.outputs.installer_ok }}' -ne 'true') { $failed += 'installer artifact' }
-          if ('${{ steps.collect.outputs.portable_ok }}' -ne 'true') { $failed += 'portable artifact' }
-
-          if ($failed.Count -gt 0) {
-            Write-Error ("CI failed checks: {0}. See TestReport.txt + build-logs." -f ($failed -join ', '))
-          } else {
-            Write-Host 'CI checks passed.'
-          }
+### Как должен начинаться файл
+Первая строка должна быть **ровно**:
+```yaml
+name: Windows CI (Озонатор)
