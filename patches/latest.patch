@@ -1,42 +1,54 @@
---- a/electron/main/storage/secrets.ts
-+++ b/electron/main/storage/secrets.ts
+--- a/src/types/better-sqlite3.d.ts
++++ b/src/types/better-sqlite3.d.ts
 @@
--import dotenv from 'dotenv';
--ddotenv.config();
-+// The repository does not ship with the `dotenv` package. Importing it would
-+// throw an error during CI. The secrets are expected to be supplied via
-+// environment variables, so we simply read them directly from `process.env`.
-@@
--export const secrets = {
--  apiKey: process.env.API_KEY,
--  secret: process.env.SECRET,
--};
-+export const secrets = {
-+  apiKey: process.env.API_KEY ?? '',
-+  secret: process.env.SECRET ?? '',
-+};
+ // Minimal type definitions for better-sqlite3 to satisfy TypeScript
+ // during CI builds. The real library provides a rich API, but for the
+ // purposes of this project we only need a subset that is used in the
+ // database module.
+ 
+ declare module 'better-sqlite3' {
+   interface Statement {
+     run(...params: any[]): this;
+     get(...params: any[]): any;
+     all(...params: any[]): any[];
+     exec(sql: string): void;
+   }
+ 
+   interface Database {
+     prepare(sql: string): Statement;
+     exec(sql: string): void;
+     close(): void;
+   }
+ 
+   const Database: {
+     new (filename: string, options?: any): Database;
+   };
+ 
+   export = Database;
+ }
+ 
 --- a/electron/main/storage/db.ts
 +++ b/electron/main/storage/db.ts
 @@
 -import Database from 'better-sqlite3';
-+// `better-sqlite3` is a native module that may fail to build on Windows CI.
-+// We attempt to load it, but fall back to the pure‑JS `sqlite3` module if it
-+// cannot be imported. This keeps the application functional in CI without
-+// requiring native compilation.
-+let Database: any;
-+try {
-+  Database = require('better-sqlite3');
-+} catch (_) {
-+  Database = require('sqlite3').verbose();
-+}
++// Import the Database constructor from better-sqlite3. The type definitions
++// are provided in src/types/better-sqlite3.d.ts to keep the TypeScript
++// compilation happy on CI.
++import Database from 'better-sqlite3';
+ 
+ const dbPath = path.join(app.getPath('userData'), 'app.db');
+ 
+ // Ensure the database file exists
 @@
--const db = new Database(path.join(app.getPath('userData'), 'app.db'));
-+const dbPath = path.join(app.getPath('userData'), 'app.db');
-+let db;
-+try {
-+  db = new Database(dbPath);
-+} catch (e) {
-+  // If better-sqlite3 fails, use sqlite3 in serialized mode
-+  db = new Database(dbPath, { verbose: console.log });
-+}
-*** End
+-const db = new Database(dbPath);
++const db = new Database(dbPath);
+ 
+ // Example table creation
+ db.exec(`
+   CREATE TABLE IF NOT EXISTS settings (
+     key TEXT PRIMARY KEY,
+     value TEXT
+   )
+ `);
+ 
+*** End of File ***
