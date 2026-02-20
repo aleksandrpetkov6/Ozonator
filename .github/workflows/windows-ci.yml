@@ -70,7 +70,7 @@ jobs:
           if (Test-Path -Path 'tsconfig.json') {
             # В CI исключаем e2e-типизацию из общего typecheck: для неё отдельный (опциональный) запуск.
             # Это убирает падения по отсутствующему @playwright/test и строгим any в e2e-хелперах.
-            Set-Content -Path 'tsconfig.ci.typecheck.json' -Encoding utf8 -Value '{"extends":"./tsconfig.json","exclude":["tests/e2e","tests/e2e/**/*"]}'
+            Set-Content -Path 'tsconfig.ci.typecheck.json' -Encoding utf8 -Value '{"extends":"./tsconfig.json","exclude":["tests/e2e","tests/e2e/**/*","playwright.config.ts"]}'
             npx tsc -p tsconfig.ci.typecheck.json --noEmit *>&1 | Tee-Object -FilePath logs\typecheck.log
             $ok = ($LASTEXITCODE -eq 0)
             $status = 'ran: npx tsc -p tsconfig.ci.typecheck.json --noEmit'
@@ -187,7 +187,17 @@ jobs:
             exit 0
           }
 
-          npx playwright install --with-deps *>&1 | Tee-Object -FilePath logs\e2e.log
+          npm ls @playwright/test --depth=0 *>&1 | Tee-Object -FilePath logs\e2e.log
+          if ($LASTEXITCODE -ne 0) {
+            npm i -D @playwright/test --no-save --legacy-peer-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
+            if ($LASTEXITCODE -ne 0) {
+              "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              "status=failed: install @playwright/test" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              exit 0
+            }
+          }
+
+          npx playwright install --with-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
           if ($LASTEXITCODE -ne 0) {
             "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "status=failed: playwright install" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
