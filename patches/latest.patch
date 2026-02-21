@@ -58,3 +58,23 @@ index 0000000..1111111
 +            _zips/TestReport.zip
 +            _zips/e2e-results.zip
 +          if-no-files-found: warn
+
+--- a/tests/e2e/human-smoke.spec.ts
++++ b/tests/e2e/human-smoke.spec.ts
+@@ -628,6 +628,16 @@
+ 
+   const bootProbe = await waitForUiReady(page);
+ 
++  // Контрольная точка: оболочка интерфейса должна быть видна даже без данных
++  const uiShellPath = path.resolve('test-results', 'ui-shell.png');
++  await page.screenshot({ path: uiShellPath, fullPage: true }).catch(() => {});
++  if (fs.existsSync(uiShellPath)) {
++    await test.info().attach('ui-shell', {
++      path: uiShellPath,
++      contentType: 'image/png',
++    });
++  }
++
+   // Переходы по типичным вкладкам/экранам + проверки, что экраны реально открылись
+   const productsOpen1 = await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
+   expect(productsOpen1, 'Не удалось открыть раздел товаров/каталога').toBeGreaterThan(0);
