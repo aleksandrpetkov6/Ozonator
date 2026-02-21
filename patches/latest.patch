@@ -1,7 +1,8 @@
 diff --git a/.github/workflows/zip-ci-reports.yml b/.github/workflows/zip-ci-reports.yml
 --- a/.github/workflows/zip-ci-reports.yml
 +++ b/.github/workflows/zip-ci-reports.yml
-@@ -4,3 +4,3 @@
+@@ -1,6 +1,6 @@
+       - uses: actions/upload-artifact@v4
          with:
 -          name: ci-reports-zipped
 +          name: ci-reports-zipped.zip
