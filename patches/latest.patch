@@ -1,16 +1,24 @@
-diff --git a/.github/workflows/zip-ci-reports.yml b/.github/workflows/zip-ci-reports.yml
-index 1111111..2222222 100644
---- a/.github/workflows/zip-ci-reports.yml
-+++ b/.github/workflows/zip-ci-reports.yml
-@@ -31,10 +31,10 @@ jobs:
-       - name: Zip downloaded reports
-         run: |
-           cd out
-           zip -r ../ci-reports.zip TestReport e2e-results || true
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-21 18:54:18.016410514 +0000
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-21 18:54:18.024147893 +0000
+@@ -228,7 +228,11 @@
+   )
  
-       - name: Upload zipped CI reports
-         uses: actions/upload-artifact@v4
-         with:
--          name: ci-reports-zipped
-+          name: ci-reports-zipped.zip
-           path: ci-reports.zip
+   const visibleSearchCols = useMemo(
+-    () => cols.filter(c => c.visible).map(c => c.id),
++    () => visibleSearchKey
++      .split('|')
++      .filter(Boolean)
++      .filter((token) => token.endsWith(':1'))
++      .map((token) => token.slice(0, token.lastIndexOf(':'))),
+     [visibleSearchKey]
+   )
+ 
+@@ -250,7 +254,7 @@
+ 
+       return hay.includes(q)
+     })
+-  }, [products, query, visibleSearchKey])
++  }, [products, query, visibleSearchCols])
+ 
+ 
+   useEffect(() => {
