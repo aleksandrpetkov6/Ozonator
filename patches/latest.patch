@@ -1,46 +1,21 @@
---- a/tests/e2e/helpers/uiRobot.ts
-+++ b/tests/e2e/helpers/uiRobot.ts
-@@
--import robot from 'robotjs';
-+// The CI environment may not support the native robotjs module (e.g. missing X11).
-+// Import it lazily and provide a no‑op fallback if it cannot be loaded.
-+let robot: any = null;
-+try {
-+  // eslint-disable-next-line @typescript-eslint/no-var-requires
-+  robot = require('robotjs');
-+} catch (e) {
-+  // Fallback stub that safely ignores all robot actions.
-+  robot = {
-+    moveMouse: () => {},
-+    mouseClick: () => {},
-+    typeString: () => {},
-+    keyTap: () => {},
-+    keyToggle: () => {},
-+  };
-+}
- 
--export async function click(x: number, y: number) {
--  robot.moveMouse(x, y);
--  robot.mouseClick();
--}
-+export async function click(x: number, y: number) {
-+  robot.moveMouse(x, y);
-+  robot.mouseClick();
-+}
- 
--export async function type(text: string) {
--  robot.typeString(text);
--}
-+export async function type(text: string) {
-+  robot.typeString(text);
-+}
-+
-+// Optional helpers that may be used by tests
-+export async function keyTap(key: string, modifier?: string) {
-+  robot.keyTap(key, modifier);
-+}
-+
-+export async function keyToggle(key: string, down: boolean, modifier?: string) {
-+  robot.keyToggle(key, down ? 'down' : 'up', modifier);
-+}
-*** End of File ***
+diff --git a/.github/workflows/windows-ci.yml b/.github/workflows/windows-ci.yml
+--- a/.github/workflows/windows-ci.yml
++++ b/.github/workflows/windows-ci.yml
+@@ -275,7 +275,7 @@ jobs:
+       if: always()
+       uses: actions/upload-artifact@v4
+       with:
+-        name: TestReport
++        name: TestReport.zip
+         path: |
+           artifacts/TestReport.txt
+           artifacts/TestSummary.txt
+@@ -292,7 +292,7 @@ jobs:
+       if: always()
+       uses: actions/upload-artifact@v4
+       with:
+-        name: e2e-results
++        name: e2e-results.zip
+         path: |
+           playwright-report/**
+           test-results/**
