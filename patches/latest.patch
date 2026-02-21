@@ -1,6 +1,33 @@
---- a/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-21 18:54:18.016410514 +0000
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-21 18:54:18.024147893 +0000
-@@ -228,7 +228,11 @@
+diff --git a/.github/workflows/apply_patch_pr.yml b/.github/workflows/apply_patch_pr.yml
+index 69ccde2..0d51545 100644
+--- a/.github/workflows/apply_patch_pr.yml
++++ b/.github/workflows/apply_patch_pr.yml
+@@ -102,7 +102,7 @@ jobs:
+         run: |
+           set -euo pipefail
+           BRANCH="bot/apply-patch-${{ github.run_id }}"
+-          echo "branch=$BRANCH" >> "$GITHUB_ENV"
++          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+ 
+           git config user.name  "github-actions[bot]"
+           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+@@ -118,6 +118,11 @@ jobs:
+         shell: bash
+         run: |
+           set -euo pipefail
++          if [ -z "${BRANCH:-}" ]; then
++            echo "BRANCH is not set (expected from Create patch branch and commit step via GITHUB_ENV)"
++            exit 1
++          fi
++
+           if [ -z "${PR_BOT_TOKEN:-}" ]; then
+             echo "PR_BOT_TOKEN is not configured"
+             exit 1
+diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
+index 27e60d8..a5b133f 100644
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -228,7 +228,11 @@ export default function ProductsPage({ query = '', onStats }: Props) {
    )
  
    const visibleSearchCols = useMemo(
@@ -13,7 +40,7 @@
      [visibleSearchKey]
    )
  
-@@ -250,7 +254,7 @@
+@@ -250,7 +254,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
  
        return hay.includes(q)
      })
