@@ -1,7 +1,15 @@
 diff --git a/.github/workflows/zip-ci-reports.yml b/.github/workflows/zip-ci-reports.yml
+index 1111111..2222222 100644
 --- a/.github/workflows/zip-ci-reports.yml
 +++ b/.github/workflows/zip-ci-reports.yml
-@@ -2,3 +2,3 @@
+@@ -31,10 +31,10 @@ jobs:
+       - name: Zip downloaded reports
+         run: |
+           cd out
+           zip -r ../ci-reports.zip TestReport e2e-results || true
+ 
+       - name: Upload zipped CI reports
+         uses: actions/upload-artifact@v4
          with:
 -          name: ci-reports-zipped
 +          name: ci-reports-zipped.zip
