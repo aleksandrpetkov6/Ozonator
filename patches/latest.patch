@@ -1,32 +1,26 @@
-diff --git a/.github/workflows/zip-ci-reports.yml b/.github/workflows/zip-ci-reports.yml
---- a/.github/workflows/zip-ci-reports.yml
-+++ b/.github/workflows/zip-ci-reports.yml
-@@ -42,12 +42,21 @@ jobs:
--      - name: Upload zipped reports
-+      - name: Upload TestReport.zip artifact
-         if: always()
-         uses: actions/upload-artifact@v4
-         with:
--          name: ci-reports-zipped
--          path: |
--            _zips/TestReport.zip
--            _zips/e2e-results.zip
-+          name: TestReport.zip
-+          path: _zips/TestReport.zip
-+          if-no-files-found: warn
-+
-+      - name: Upload e2e-results.zip artifact
-+        if: always()
-+        uses: actions/upload-artifact@v4
-+        with:
-+          name: e2e-results.zip
-+          path: _zips/e2e-results.zip
-           if-no-files-found: warn
-+
-+      - name: Upload combined zipped reports artifact
-+        if: always()
-+        uses: actions/upload-artifact@v4
-+        with:
-+          name: ci-reports-zipped
-+          path: _zips
-+          if-no-files-found: warn
+--- a/package.json
++++ b/package.json
+@@
+   "dependencies": {
+     "electron": "^27.0.0",
+     "react": "^18.2.0",
+     "react-dom": "^18.2.0",
+     "typescript": "^5.0.0",
+     "vite": "^5.0.0",
+     "vite-plugin-electron": "^0.12.0",
+     "vite-plugin-electron-renderer": "^0.12.0",
+     "better-sqlite3": "^11.0.0",
+     "dotenv": "^16.0.0"
+   },
+   "devDependencies": {
+     "@types/react": "^18.0.0",
+     "@types/react-dom": "^18.0.0",
+     "@types/node": "^20.0.0",
+     "eslint": "^8.0.0",
+     "eslint-config-prettier": "^8.0.0",
+     "eslint-plugin-react": "^7.0.0",
+     "prettier": "^3.0.0",
+     "playwright": "^1.40.0",
+     "ts-node": "^10.0.0"
+   },
+*** End of File ***
