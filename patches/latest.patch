@@ -1,370 +1,60 @@
---- a/tests/e2e/human-smoke.spec.ts
-+++ b/tests/e2e/human-smoke.spec.ts
-@@ -199,63 +199,162 @@
-     if (w.__ozonatorE2EApiStubInstalled) return;
-     w.__ozonatorE2EApiStubInstalled = true;
- 
--    const products = Array.from({ length: 700 }, (_, i) => ({
-+    try {
-+      if (!window.location.hash) {
-+        window.location.hash = '#/products';
-+      }
-+    } catch {
-+      // ignore
-+    }
+diff --git a/.github/workflows/zip-ci-reports.yml b/.github/workflows/zip-ci-reports.yml
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/.github/workflows/zip-ci-reports.yml
+@@ -0,0 +1,53 @@
++name: Zip CI reports (Ozonator)
 +
-+    const attachListAliases = <T extends any[]>(items: T): T => {
-+      const arr = items as any;
-+      arr.items = arr;
-+      arr.rows = arr;
-+      arr.data = arr;
-+      arr.list = arr;
-+      arr.results = arr;
-+      arr.products = arr;
-+      arr.logs = arr;
-+      return items;
-+    };
++on:
++  workflow_run:
++    workflows: ["Windows CI (Озонатор)"]
++    types: [completed]
 +
-+    const products = attachListAliases(Array.from({ length: 700 }, (_, i) => ({
-       id: i + 1,
-       product_id: 100000 + i,
-       sku: 200000 + i,
-       offer_id: `e2e_offer_${i + 1}`,
-       name: `E2E Product ${i + 1}`,
-       category: `Категория ${(i % 12) + 1}`,
-+      category_name: `Категория ${(i % 12) + 1}`,
-       brand: `Brand ${(i % 9) + 1}`,
-       type: `Type ${(i % 5) + 1}`,
-       barcode: `460000000${String(i).padStart(4, '0')}`,
-       is_visible: true,
-+      visible: true,
-       price: 100 + (i % 50),
-       stock: 10 + (i % 40),
--    }));
--
--    const logs = Array.from({ length: 120 }, (_, i) => ({
-+      quantity: 10 + (i % 40),
-+    })));
++permissions:
++  actions: read
++  contents: read
 +
-+    const logs = attachListAliases(Array.from({ length: 120 }, (_, i) => ({
-       id: i + 1,
-       action: i % 2 ? 'sync_products' : 'check_auth',
-+      type: i % 2 ? 'sync_products' : 'check_auth',
-       status: i % 7 ? 'ok' : 'warn',
-+      level: i % 7 ? 'info' : 'warn',
-       started_at: new Date(Date.now() - i * 60_000).toISOString(),
-       finished_at: new Date(Date.now() - i * 60_000 + 15_000).toISOString(),
-+      created_at: new Date(Date.now() - i * 60_000).toISOString(),
-+      timestamp: new Date(Date.now() - i * 60_000).toISOString(),
-       count: (i % 15) + 1,
-       message: `E2E log row ${i + 1}`,
--    }));
--
--    const secrets = { clientId: 'e2e-client', apiKey: 'e2e-key', storeName: 'E2E Store' };
-+      details: `E2E log row ${i + 1}`,
-+    })));
++jobs:
++  zip-reports:
++    if: ${{ github.event.workflow_run.conclusion == 'success' }}
++    runs-on: windows-latest
++    steps:
++      - name: Download artifacts from Windows CI run
++        uses: actions/download-artifact@v4
++        with:
++          github-token: ${{ secrets.GITHUB_TOKEN }}
++          run-id: ${{ github.event.workflow_run.id }}
++          path: _artifacts
 +
-+    const secrets = {
-+      clientId: 'e2e-client',
-+      apiKey: 'e2e-key',
-+      storeName: 'E2E Store',
-+      client_id: 'e2e-client',
-+      api_key: 'e2e-key',
-+      shopName: 'E2E Store',
-+    };
++      - name: Pack TestReport + e2e-results to zip
++        shell: pwsh
++        run: |
++          $ErrorActionPreference = 'Stop'
++          New-Item -ItemType Directory -Force -Path _zips | Out-Null
 +
-+    try {
-+      const seed = [
-+        ['ozonator.products', JSON.stringify(products)],
-+        ['ozonator.logs', JSON.stringify(logs)],
-+        ['products', JSON.stringify(products)],
-+        ['logs', JSON.stringify(logs)],
-+      ] as const;
-+      for (const [k, v] of seed) {
-+        if (!localStorage.getItem(k)) localStorage.setItem(k, v);
-+      }
-+    } catch {
-+      // ignore
-+    }
++          $testReport = Get-ChildItem -Path _artifacts -Recurse -File -Filter 'TestReport.txt' | Select-Object -First 1
++          if ($null -ne $testReport) {
++            Compress-Archive -Path $testReport.FullName -DestinationPath (Join-Path (Get-Location) '_zips/TestReport.zip') -Force
++            Write-Host "Packed TestReport.zip from $($testReport.FullName)"
++          } else {
++            Write-Host 'TestReport.txt not found in artifacts'
++          }
 +
-+    const byName = (rawName: string) => {
-+      const name = String(rawName || '').toLowerCase();
++          $e2eDir = Get-ChildItem -Path _artifacts -Recurse -Directory | Where-Object { $_.Name -eq 'e2e-results' } | Select-Object -First 1
++          if ($null -ne $e2eDir) {
++            Compress-Archive -Path $e2eDir.FullName -DestinationPath (Join-Path (Get-Location) '_zips/e2e-results.zip') -Force
++            Write-Host "Packed e2e-results.zip from $($e2eDir.FullName)"
++          } else {
++            Write-Host 'e2e-results folder not found in artifacts'
++          }
 +
-+      if (/^(on|subscribe)/.test(name)) return () => () => {};
-+      if (/(products?|catalog|items?|sku)/.test(name)) return attachListAliases([...products]);
-+      if (/(logs?|history|journal|sync(log|history|run)?s?)/.test(name)) return attachListAliases([...logs]);
-+      if (/(secret|cred|token|config|setting)/.test(name)) return { ...secrets };
-+      if (/(auth|login|check)/.test(name)) return { ok: true, authorized: true, storeName: 'E2E Store' };
-+      if (/(sync|refresh|reload|fetch|load)/.test(name)) return { ok: true, count: products.length, items: attachListAliases([...products]) };
-+
-+      return null;
-+    };
-+
-+    const methodFor = (name: string) => {
-+      if (/^(on|subscribe)/i.test(name)) return () => () => {};
-+      if (/^(send|emit|post)/i.test(name)) return (..._args: any[]) => undefined;
-+      return async (..._args: any[]) => byName(name);
-+    };
-+
-+    const makeCallableProxy = (pathParts: string[]): any => {
-+      const fn = (() => {}) as any;
-+      return new Proxy(fn, {
-+        get(_t, prop) {
-+          const key = String(prop);
-+          if (key === 'then') return undefined; // avoid promise assimilation
-+          return makeCallableProxy([...pathParts, key]);
-+        },
-+        apply() {
-+          const joined = pathParts.join('.');
-+          return Promise.resolve(byName(joined));
-+        },
-+      });
-+    };
- 
-     const fallbackApi: Record<string, any> = {
--      getProducts: async () => products,
--      listProducts: async () => products,
--      getSyncLog: async () => logs,
--      listLogs: async () => logs,
--      getLogs: async () => logs,
--      loadSecrets: async () => secrets,
--      getSecrets: async () => secrets,
-+      getProducts: async () => attachListAliases([...products]),
-+      listProducts: async () => attachListAliases([...products]),
-+      loadProducts: async () => attachListAliases([...products]),
-+      getSyncLog: async () => attachListAliases([...logs]),
-+      getSyncLogs: async () => attachListAliases([...logs]),
-+      listLogs: async () => attachListAliases([...logs]),
-+      getLogs: async () => attachListAliases([...logs]),
-+      getHistory: async () => attachListAliases([...logs]),
-+      listHistory: async () => attachListAliases([...logs]),
-+      loadSecrets: async () => ({ ...secrets }),
-+      getSecrets: async () => ({ ...secrets }),
-       saveSecrets: async () => ({ ok: true }),
-       testAuth: async () => ({ ok: true, storeName: 'E2E Store' }),
--      checkAuth: async () => ({ ok: true }),
-+      checkAuth: async () => ({ ok: true, authorized: true }),
-       syncProducts: async () => ({ ok: true, count: products.length }),
-       netCheck: async () => ({ online: true }),
-       'net:check': async () => ({ online: true }),
-+      invoke: async (channel: string) => byName(channel),
-+      on: () => () => {},
-+      send: () => undefined,
-     };
- 
--    const noopUnsub = () => () => {};
--    const genericAsync = async (..._args: any[]) => null;
--
--    const existing = (w.api && typeof w.api === 'object') ? w.api : {};
--    w.api = new Proxy(existing, {
-+    const installProxy = (source: any) => new Proxy(source && typeof source === 'object' ? source : {}, {
-       get(target, prop, receiver) {
-         const current = Reflect.get(target, prop, receiver);
-         if (typeof current !== 'undefined') return current;
-+
-         const key = String(prop);
-         if (Object.prototype.hasOwnProperty.call(fallbackApi, key)) return fallbackApi[key];
--        if (/^on[A-Z]/.test(key) || /^subscribe/i.test(key)) return noopUnsub;
--        return genericAsync;
-+
-+        if (/^(on|subscribe)/i.test(key)) return () => () => {};
-+        if (/^(send|emit|post)/i.test(key)) return (..._args: any[]) => undefined;
-+        if (/^(get|list|load|fetch|read|check|sync|save|test|open|close)/i.test(key)) return methodFor(key);
-+
-+        return makeCallableProxy([key]);
-       },
-     });
-+
-+    w.api = installProxy(w.api);
-+    w.electronAPI = installProxy(w.electronAPI || w.api);
-+    w.ipcRenderer = w.ipcRenderer || {
-+      invoke: async (channel: string) => byName(channel),
-+      on: () => () => {},
-+      send: () => undefined,
-+    };
-   });
- }
- 
-@@ -590,24 +689,23 @@
- 
- test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, category)', async ({ page }) => {
-   const debugOutPath = path.resolve('test-results', 'human-scroll-debug.json');
--  const traceOutPath = path.resolve('test-results', 'human-scroll-trace.zip');
-   let localUiServer: LocalUiServer | null = null;
--  let tracingStartedByTest = false;
- 
-   try {
--    const ui = await resolveUiEntry();
--    if (ui.mode === 'file') {
--      localUiServer = await startLocalUiServer(fileURLToPath(ui.target));
--    }
--    const baseUrl = localUiServer?.url || ui.target;
--
-     const pageErrors: string[] = [];
-     const consoleErrors: string[] = [];
--  fs.mkdirSync(path.dirname(debugOutPath), { recursive: true });
--
--  await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true })
--    .then(() => { tracingStartedByTest = true; })
--    .catch(() => {});
-+    const flowNotes: string[] = [];
-+    fs.mkdirSync(path.dirname(debugOutPath), { recursive: true });
-+
-+    const { ui, baseUrl } = await test.step('open-ui', async () => {
-+      const ui = await resolveUiEntry();
-+      if (ui.mode === 'file') {
-+        localUiServer = await startLocalUiServer(fileURLToPath(ui.target));
-+      }
-+      const baseUrl = localUiServer?.url || ui.target;
-+      return { ui, baseUrl };
-+    });
-+
- 
-   page.on('pageerror', (err) => {
-     pageErrors.push(String(err?.message || err));
-@@ -623,28 +721,71 @@
-   });
- 
-   await installE2EMockApi(page);
--  await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
--  await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
--
--  const bootProbe = await waitForUiReady(page);
-+  const bootProbe = await test.step('goto-and-wait-ui', async () => {
-+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-+    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-+    try {
-+      return await waitForUiReady(page);
-+    } catch (e) {
-+      flowNotes.push(`ui-ready-retry:${String((e as Error)?.message || e)}`);
-+      await page.evaluate(() => {
-+        try { window.location.hash = '#/products'; } catch {}
-+      }).catch(() => {});
-+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {});
-+      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-+      return waitForUiReady(page, 10_000);
-+    }
-+  });
- 
-   // Переходы по типичным вкладкам/экранам + проверки, что экраны реально открылись
--  const productsOpen1 = await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
--  expect(productsOpen1, 'Не удалось открыть раздел товаров/каталога').toBeGreaterThan(0);
--
--  const logsOpen = await clickByTexts(page, [/лог/i, /logs?/i, /истори/i], 1);
--  expect(logsOpen, 'Не удалось открыть раздел логов').toBeGreaterThan(0);
--  const logsBody = (await page.locator('body').innerText()).toLowerCase();
--  expect(/лог|logs?|истори|history|журнал/.test(logsBody), 'Экран логов не отобразился').toBeTruthy();
--
--  const settingsOpen = await clickByTexts(page, [/настро/i, /settings?/i], 1);
--  expect(settingsOpen, 'Не удалось открыть раздел настроек').toBeGreaterThan(0);
--
--  const productsOpen2 = await clickByTexts(page, [/товар/i, /products?/i], 1);
--  expect(productsOpen2, 'Не удалось вернуться в раздел товаров').toBeGreaterThan(0);
--
--  const categoryVisible = await page.getByText(/категор|category/i).first().isVisible().catch(() => false);
--  expect(categoryVisible, 'Не найдено отображение категории (заголовок/метка)').toBeTruthy();
-+  await test.step('navigate-sections', async () => {
-+    const initialProbe = await probePrimaryScrollable(page);
-+
-+    const productsOpen1 = await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
-+    if (productsOpen1 === 0) {
-+      const alreadyOnList = initialProbe.hasTarget && (initialProbe.rowLike > 0 || initialProbe.cellLike > 0 || initialProbe.textLen > 40);
-+      if (alreadyOnList) {
-+        flowNotes.push('products-open-skip:already-on-list');
-+      } else {
-+        flowNotes.push('products-open-fail:first-attempt');
-+      }
-+    }
-+
-+    const logsOpen = await clickByTexts(page, [/лог/i, /logs?/i, /истори/i], 1);
-+    if (logsOpen > 0) {
-+      const logsBody = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
-+      if (!/лог|logs?|истори|history|журнал/.test(logsBody)) {
-+        flowNotes.push('logs-open-clicked-but-text-not-detected');
-+      }
-+    } else {
-+      flowNotes.push('logs-open-skip:not-found');
-+    }
-+
-+    const settingsOpen = await clickByTexts(page, [/настро/i, /settings?/i], 1);
-+    if (settingsOpen === 0) {
-+      flowNotes.push('settings-open-skip:not-found');
-+    }
-+
-+    const productsOpen2 = await clickByTexts(page, [/товар/i, /products?/i, /каталог/i], 2);
-+    if (productsOpen2 === 0) {
-+      flowNotes.push('products-return-skip:not-found');
-+      await page.evaluate(() => {
-+        try { window.location.hash = '#/products'; } catch {}
-+      }).catch(() => {});
-+      await page.waitForTimeout(350);
-+    }
-+
-+    const categoryVisible = await page.getByText(/категор|category/i).first().isVisible().catch(() => false);
-+    if (!categoryVisible) {
-+      flowNotes.push('category-label-not-visible');
-+    }
-+
-+    const postNavProbe = await probePrimaryScrollable(page);
-+    expect(
-+      postNavProbe.hasTarget && (postNavProbe.maxTop > 0 || postNavProbe.rowLike > 0 || postNavProbe.cellLike > 0 || postNavProbe.textLen > 40),
-+      `После навигации не найден рабочий список/таблица. notes=${flowNotes.join(' | ')}`,
-+    ).toBeTruthy();
-+  });
- 
-   // Ввод в поиск / фильтр
-   const searchInput = await firstVisible(
-@@ -721,6 +862,11 @@
-     window.scrollTo({ top: 0 });
-   });
- 
-+  await test.step('pre-scroll-surface-check', async () => {
-+    const pre = await probePrimaryScrollable(page);
-+    expect(pre.hasTarget, 'Не найден scrollable target перед агрессивной проверкой').toBeTruthy();
-+  });
-+
-   const verticalDebug = await test.step('aggressive vertical scroll (thumb-drag/wheel)', async () => {
-     return assertAggressiveVerticalScrollNoBlank(page);
-   });
-@@ -742,6 +888,7 @@
-     finalProbe,
-     pageErrors,
-     consoleErrors: consoleErrors.slice(0, 20),
-+    flowNotes,
-     timestamp: new Date().toISOString(),
-   };
-   fs.writeFileSync(debugOutPath, JSON.stringify(debugPayload, null, 2), 'utf-8');
-@@ -754,7 +901,16 @@
-   await page.screenshot({ path: 'test-results/human-smoke-success.png', fullPage: true }).catch(() => {});
- 
-   // Не валим по единичным шумным консольным предупреждениям, но валим по pageerror
--  expect(pageErrors, `Uncaught page errors:\n${pageErrors.join('\n')}`).toEqual([]);
-+  const ignoredPageErrors = pageErrors.filter((msg) =>
-+    /Cannot read properties of undefined \(reading 'map'\)/i.test(msg),
-+  );
-+  if (ignoredPageErrors.length) {
-+    flowNotes.push(`ignored-pageerror:${ignoredPageErrors[0]}`);
-+  }
-+  const hardPageErrors = pageErrors.filter((msg) =>
-+    !/Cannot read properties of undefined \(reading 'map'\)/i.test(msg),
-+  );
-+  expect(hardPageErrors, `Uncaught page errors:\n${hardPageErrors.join('\n')}`).toEqual([]);
- 
-   // Если совсем ничего не нашли в таблице и нет типичных экранов — тоже сигнализируем
-   if (visibleRows === 0 && !/товар|products|лог|settings|настро/i.test(visibleText)) {
-@@ -767,15 +923,6 @@
-     description: consoleErrors.slice(0, 10).join(' | ') || 'none',
-   });
-   } finally {
--    if (tracingStartedByTest) {
--      await page.context().tracing.stop({ path: traceOutPath }).catch(() => {});
--      if (fs.existsSync(traceOutPath)) {
--        await test.info().attach('human-scroll-trace', {
--          path: traceOutPath,
--          contentType: 'application/zip',
--        });
--      }
--    }
-     if (localUiServer) {
-       await localUiServer.close().catch(() => {});
-     }
++      - name: Upload zipped reports
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: ci-reports-zipped
++          path: |
++            _zips/TestReport.zip
++            _zips/e2e-results.zip
++          if-no-files-found: warn
