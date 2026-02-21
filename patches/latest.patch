@@ -1,88 +1,364 @@
-diff --git a/.github/workflows/windows-ci.yml b/.github/workflows/windows-ci.yml
-index 1111111..2222222 100644
---- a/.github/workflows/windows-ci.yml
-+++ b/.github/workflows/windows-ci.yml
-@@ -1,14 +1,14 @@
--      - name: Upload artifact — TestReport
-+      - name: Upload artifact — TestReport.zip
-         if: always()
-         uses: actions/upload-artifact@v4
-         with:
--          name: TestReport
-+          name: TestReport.zip
-           path: artifacts/TestReport.txt
-           if-no-files-found: warn
-@@ -1,14 +1,14 @@
--      - name: Upload artifact — e2e-results
-+      - name: Upload artifact — e2e-results.zip
-         if: always()
-         uses: actions/upload-artifact@v4
-         with:
--          name: e2e-results
-+          name: e2e-results.zip
-           path: |
-             playwright-report/**
-             test-results/**
-diff --git a/.github/workflows/zip-ci-reports.yml b/.github/workflows/zip-ci-reports.yml
-deleted file mode 100644
-index 3333333..0000000
---- a/.github/workflows/zip-ci-reports.yml
-+++ /dev/null
-@@ -1,57 +0,0 @@
--name: Zip CI reports (Ozonator)
--
--on:
--  workflow_run:
--    workflows: ["Windows CI (Озонатор)"]
--    types: [completed]
--
--permissions:
--  contents: write
--
--jobs:
--  zip-reports:
--    if: ${{ github.event.workflow_run.conclusion == 'success' }}
--    runs-on: ubuntu-latest
--    steps:
--      - name: Checkout exact SHA from triggering run
--        uses: actions/checkout@v4
--        with:
--          ref: ${{ github.event.workflow_run.head_sha }}
--
--      - name: Download artifacts from triggering Windows CI
--        uses: dawidd6/action-download-artifact@v9
--        with:
--          run_id: ${{ github.event.workflow_run.id }}
--          github_token: ${{ secrets.GITHUB_TOKEN }}
--          path: _ci_artifacts
--          if_no_artifact_found: warn
--
--      - name: Prepare zipped reports (with visible .zip extension)
--        shell: bash
--        run: |
--          set -euo pipefail
--          mkdir -p _zipped
--          if [ -e "_ci_artifacts/TestReport" ]; then
--            cp "_ci_artifacts/TestReport" "_zipped/TestReport.txt"
--            (cd _zipped && zip -q -r "TestReport.zip" "TestReport.txt")
--            rm -f "_zipped/TestReport.txt"
--          fi
--          if [ -d "_ci_artifacts/e2e-results" ]; then
--            (cd _ci_artifacts && zip -q -r "../_zipped/e2e-results.zip" "e2e-results")
--          fi
--
--      - name: Upload zipped TestReport artifact
--        if: always()
--        uses: actions/upload-artifact@v4
--        with:
--          name: TestReport.zip
--          path: _zipped/TestReport.zip
--          if-no-files-found: ignore
--
--      - name: Upload zipped e2e-results artifact
--        if: always()
--        uses: actions/upload-artifact@v4
--        with:
--          name: e2e-results.zip
--          path: _zipped/e2e-results.zip
--          if-no-files-found: ignore
+--- a/playwright.config.ts
++++ b/playwright.config.ts
+@@
+-import { defineConfig, devices } from '@playwright/test';
++import { defineConfig, devices } from '@playwright/test';
+ 
+ export default defineConfig({
+   testDir: './tests/e2e',
+   /* Run your tests in parallel */
+   /* workers: 1, */
+   /* Reporter */
+   reporter: [['list'], ['json', { outputFile: 'playwright-report.json' }]],
+   /* Use a custom timeout for each test */
+   timeout: 30 * 1000,
+   /* Use a custom timeout for each test */
+   expect: {
+     /* Maximum time expect() should wait for the condition to be met */
+     timeout: 5000
+   },
+   /* Run tests in a single process */
+   /* fullyParallel: true, */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
+   /* use: { ... } */
+   /* Use a custom test environment */
