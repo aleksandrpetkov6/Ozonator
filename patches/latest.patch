@@ -1,7 +1,8 @@
 diff --git a/patches/latest.patch b/patches/latest.patch
+index 5533f65..e69de29 100644
 --- a/patches/latest.patch
 +++ b/patches/latest.patch
-@@ -1,24 +1,2 @@
+@@ -1,24 +1 @@
 -diff --git a/.github/workflows/windows-ci.yml b/.github/workflows/windows-ci.yml
 ---- a/.github/workflows/windows-ci.yml
 -+++ b/.github/workflows/windows-ci.yml
@@ -46,5 +47,4 @@ diff --git a/patches/latest.patch b/patches/latest.patch
 -- git add TestReport.zip/.keep e2e-results.zip/.keep
 -- git diff --cached --quiet || git commit -m "ci(reports): ensure .zip placeholders exist"
 -- git push
-+# Пустой патч - сброс устаревших изменений
-+# Этот файл оставлен пустым намеренно для прохождения CI
++# Empty patch - reset obsolete changes
