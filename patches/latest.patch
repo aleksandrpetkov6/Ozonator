@@ -1,35 +1,21 @@
---- electron/main/storage/db.ts
-+++ electron/main/storage/db.ts
-@@
--import Database from 'better-sqlite3';
-+// Import better-sqlite3 if available, otherwise fall back to a no-op
-+let Database: any;
-+try {
-+  Database = require('better-sqlite3');
-+} catch (e) {
-+  // If the native module is not available (e.g., on CI without build tools),
-+  // we set Database to null and will create a dummy in-memory DB later.
-+  Database = null;
-+}
- import path from 'path';
- import { app } from 'electron';
- import { getDbPath } from './secrets';
- 
- const dbPath = getDbPath();
--const db = new Database(dbPath);
-+let db: any;
-+if (Database) {
-+  db = new Database(dbPath);
-+} else {
-+  // Create a minimal in-memory mock database to avoid runtime errors
-+  db = {
-+    prepare: () => ({
-+      run: () => {},
-+      get: () => null,
-+      all: () => [],
-+    }),
-+    close: () => {},
-+  };
-+}
- 
- export default db;
+diff --git a/.github/workflows/windows-ci.yml b/.github/workflows/windows-ci.yml
+--- a/.github/workflows/windows-ci.yml
++++ b/.github/workflows/windows-ci.yml
+@@ -260,7 +260,7 @@ jobs:
+       if: always()
+       uses: actions/upload-artifact@v4
+       with:
+-        name: TestReport
++        name: TestReport.zip
+         path: |
+           artifacts/TestReport.txt
+           artifacts/TestSummary.txt
+@@ -277,7 +277,7 @@ jobs:
+       if: always()
+       uses: actions/upload-artifact@v4
+       with:
+-        name: e2e-results
++        name: e2e-results.zip
+         path: |
+           playwright-report/**
+           test-results/**
