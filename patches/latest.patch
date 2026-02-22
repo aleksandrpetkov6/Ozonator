@@ -1,8 +1,6 @@
-diff --git a/src/renderer/src/ui/App.tsx b/src/renderer/src/ui/App.tsx
-index 5dc7c8d..29fcb5b 100644
---- a/src/renderer/src/ui/App.tsx
-+++ b/src/renderer/src/ui/App.tsx
-@@ -69,7 +69,7 @@ export default function App() {
+--- a/src/renderer/src/ui/App.tsx	2026-02-22 14:24:53.000000000 +0000
++++ b/src/renderer/src/ui/App.tsx	2026-02-22 16:29:12.140759568 +0000
+@@ -69,7 +69,7 @@
            } catch {
              /* ignore */
            }
@@ -11,7 +9,7 @@ index 5dc7c8d..29fcb5b 100644
            return
          }
        }
-@@ -83,7 +83,7 @@ export default function App() {
+@@ -83,7 +83,7 @@
        const cleaned = raw.trim()
        if (cleaned) {
          setStoreName(cleaned)
@@ -20,7 +18,7 @@ index 5dc7c8d..29fcb5b 100644
          return
        }
      } catch {
-@@ -175,14 +175,6 @@ export default function App() {
+@@ -175,14 +175,6 @@
      <div className="appShell">
        <div className="topbar">
          <div className="topbarInner">
