@@ -1,5 +1,5 @@
 diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index f0ec5ce..c309eb0 100644
+index f0ec5ce..f47a1c2 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
 @@ -512,7 +512,8 @@ function onDragOverHeader(e: React.DragEvent) {
@@ -12,7 +12,22 @@ index f0ec5ce..c309eb0 100644
      const fontSize = cs.fontSize || '13px'
      const fontFamily = cs.fontFamily || 'system-ui'
      const fontWeight = cs.fontWeight || '400'
-@@ -529,14 +530,15 @@ function onDragOverHeader(e: React.DragEvent) {
+@@ -526,25 +527,49 @@ function onDragOverHeader(e: React.DragEvent) {
+   }
+ 
+   function getCellString(p: Product, colId: string) {
++    // Берем отображаемый/полный текст ячейки (title/text), если он формируется отдельно.
++    // Это убирает недомер ширины на форматируемых колонках.
++    try {
++      const rendered = (cellText as any)?.(p as any, colId as any)
++      if (rendered && typeof rendered === 'object') {
++        const full = toText((rendered as any).title)
++        if (full) return full
++        const txt = toText((rendered as any).text)
++        if (txt) return txt
++      }
++    } catch {}
++
      return toText((p as any)[colId])
    }
  
@@ -22,34 +37,37 @@ index f0ec5ce..c309eb0 100644
      if (!col) return
  
      const cap = AUTO_MAX_W[colId] ?? 320
-+    const sample = mode === 'fit' ? rows : (rows.length > 1600 ? rows.slice(0, 1600) : rows)
- 
+-
 -    let max = measureTextWidth(col.title)
 -    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
-+    // Учитываем кнопку скрытия в заголовке, чтобы двойной клик подгонял колонку без обрезания текста.
-+    let max = measureTextWidth(col.title) + 24
++    const sample = mode === 'fit' ? rows : (rows.length > 1600 ? rows.slice(0, 1600) : rows)
++
++    // Для fit-режима (двойной клик) даем дополнительный запас под иконки/паддинги/бордеры.
++    let max = measureTextWidth(col.title) + (mode === 'fit' ? 40 : 24)
      for (const p of sample) {
        const s = getCellString(p, col.id)
        if (!s) continue
-@@ -544,7 +546,11 @@ function onDragOverHeader(e: React.DragEvent) {
+-      const w = measureTextWidth(s)
++      const w = measureTextWidth(s) + (mode === 'fit' ? 28 : 0)
        if (w > max) max = w
      }
  
 -    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
-+    const rawW = Math.round(max + AUTO_PAD)
++    const safetyPad = mode === 'fit' ? (AUTO_PAD + 56) : AUTO_PAD
++    const rawW = Math.round(max + safetyPad)
 +    const nextW = mode === 'fit'
-+      ? Math.max(AUTO_MIN_W, rawW)
++      ? Math.max(AUTO_MIN_W, Math.min(4000, rawW))
 +      : Math.max(AUTO_MIN_W, Math.min(cap, rawW))
 +
      setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
    }
- 
-@@ -748,7 +754,7 @@ function onDragOverHeader(e: React.DragEvent) {
+@@ -748,7 +773,9 @@ function onDragOverHeader(e: React.DragEvent) {
                              onDoubleClick={(e) => {
                                e.preventDefault()
                                e.stopPropagation()
 -                              autoSizeColumn(id, filtered)
-+                              autoSizeColumn(id, filtered, 'fit')
++                              // После цикла dblclick/mousedown, чтобы не конфликтовать с resize-handlers.
++                              requestAnimationFrame(() => autoSizeColumn(id, filtered, 'fit'))
                              }}
                            />
                          </th>
