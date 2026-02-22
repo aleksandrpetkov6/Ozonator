@@ -1,6 +1,8 @@
---- /mnt/data/origrepo/Ozonator-main/tests/e2e/human-smoke.spec.ts	2026-02-22 13:29:14.000000000 +0000
-+++ /mnt/data/workrepo/Ozonator-main/tests/e2e/human-smoke.spec.ts	2026-02-22 14:02:38.089887140 +0000
-@@ -275,15 +275,28 @@
+diff --git a/tests/e2e/human-smoke.spec.ts b/tests/e2e/human-smoke.spec.ts
+index 8d59968..46fff21 100644
+--- a/tests/e2e/human-smoke.spec.ts
++++ b/tests/e2e/human-smoke.spec.ts
+@@ -275,15 +275,28 @@ async function installE2EMockApi(page: Page): Promise<void> {
        // ignore
      }
  
@@ -32,7 +34,7 @@
  
        return null;
      };
-@@ -310,21 +323,21 @@
+@@ -310,21 +323,21 @@ async function installE2EMockApi(page: Page): Promise<void> {
      };
  
      const fallbackApi: Record<string, any> = {
@@ -64,7 +66,7 @@
        netCheck: async () => ({ online: true }),
        'net:check': async () => ({ online: true }),
        invoke: async (channel: string) => byName(channel),
-@@ -503,6 +516,32 @@
+@@ -503,6 +516,32 @@ async function probePrimaryScrollable(page: Page, move?: { top?: number; left?:
  }
  
  
@@ -97,7 +99,7 @@
  type ScrollbarGeometry = {
    ok: boolean;
    reason?: string;
-@@ -737,6 +776,13 @@
+@@ -737,6 +776,13 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
      }
    });
  
@@ -111,7 +113,7 @@
    // Переходы по типичным вкладкам/экранам + проверки, что экраны реально открылись
    await test.step('navigate-sections', async () => {
      const initialProbe = await probePrimaryScrollable(page);
-@@ -884,6 +930,7 @@
+@@ -884,6 +930,7 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
      ui,
      runtimeBaseUrl: baseUrl,
      bootProbe,
