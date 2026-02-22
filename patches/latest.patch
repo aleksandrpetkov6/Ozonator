@@ -1,35 +1,55 @@
---- a/src/renderer/src/ui/App.tsx	2026-02-22 14:24:53.000000000 +0000
-+++ b/src/renderer/src/ui/App.tsx	2026-02-22 16:29:12.140759568 +0000
-@@ -69,7 +69,7 @@
-           } catch {
-             /* ignore */
-           }
--          document.title = `${baseTitle} — ${cleaned}`
-+          document.title = `${baseTitle} 🤝 ${cleaned}`
-           return
-         }
-       }
-@@ -83,7 +83,7 @@
-       const cleaned = raw.trim()
-       if (cleaned) {
-         setStoreName(cleaned)
--        document.title = `${baseTitle} — ${cleaned}`
-+        document.title = `${baseTitle} 🤝 ${cleaned}`
-         return
-       }
-     } catch {
-@@ -175,14 +175,6 @@
-     <div className="appShell">
-       <div className="topbar">
-         <div className="topbarInner">
--          <div
--            className="appTitle"
--            title={storeName ? `Подключённый магазин: ${storeName}` : 'Название магазина появится после проверки доступа'}
--          >
--            <div className="appName">Озонатор</div>
--            <div className={`appStoreName ${storeName ? '' : 'muted'}`}>{storeName || 'Название магазина'}</div>
--          </div>
--
-           <div className="topbarSlot">
-             <div className="segmented" aria-label="Навигация">
-               <NavLink to="/products">
+diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
+index f0ec5ce..c309eb0 100644
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -512,7 +512,8 @@ function onDragOverHeader(e: React.DragEvent) {
+     const ctx = canvas.getContext('2d')
+     if (!ctx) return text.length * 7
+ 
+-    const cs = window.getComputedStyle(document.body)
++    const measureEl = (headTableRef.current?.querySelector('.thTitle') as HTMLElement | null) ?? document.body
++    const cs = window.getComputedStyle(measureEl)
+     const fontSize = cs.fontSize || '13px'
+     const fontFamily = cs.fontFamily || 'system-ui'
+     const fontWeight = cs.fontWeight || '400'
+@@ -529,14 +530,15 @@ function onDragOverHeader(e: React.DragEvent) {
+     return toText((p as any)[colId])
+   }
+ 
+-  function autoSizeColumn(colId: string, rows: Product[]) {
++  function autoSizeColumn(colId: string, rows: Product[], mode: 'capped' | 'fit' = 'capped') {
+     const col = cols.find(c => String(c.id) === colId)
+     if (!col) return
+ 
+     const cap = AUTO_MAX_W[colId] ?? 320
++    const sample = mode === 'fit' ? rows : (rows.length > 1600 ? rows.slice(0, 1600) : rows)
+ 
+-    let max = measureTextWidth(col.title)
+-    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
++    // Учитываем кнопку скрытия в заголовке, чтобы двойной клик подгонял колонку без обрезания текста.
++    let max = measureTextWidth(col.title) + 24
+     for (const p of sample) {
+       const s = getCellString(p, col.id)
+       if (!s) continue
+@@ -544,7 +546,11 @@ function onDragOverHeader(e: React.DragEvent) {
+       if (w > max) max = w
+     }
+ 
+-    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
++    const rawW = Math.round(max + AUTO_PAD)
++    const nextW = mode === 'fit'
++      ? Math.max(AUTO_MIN_W, rawW)
++      : Math.max(AUTO_MIN_W, Math.min(cap, rawW))
++
+     setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
+   }
+ 
+@@ -748,7 +754,7 @@ function onDragOverHeader(e: React.DragEvent) {
+                             onDoubleClick={(e) => {
+                               e.preventDefault()
+                               e.stopPropagation()
+-                              autoSizeColumn(id, filtered)
++                              autoSizeColumn(id, filtered, 'fit')
+                             }}
+                           />
+                         </th>
