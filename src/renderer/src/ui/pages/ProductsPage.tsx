@@ -166,6 +166,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const didAutoInitRef = useRef(false)
+  const visibleSearchColsCacheRef = useRef<{ key: string; ids: string[] }>({ key: '', ids: [] })
 
   const hasStoredCols = useMemo(() => {
     try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
@@ -227,10 +228,20 @@ export default function ProductsPage({ query = '', onStats }: Props) {
     [cols]
   )
 
-  const visibleSearchCols = useMemo(
-    () => cols.filter(c => c.visible).map(c => c.id),
-    [visibleSearchKey]
-  )
+  const visibleSearchCols = useMemo(() => {
+    if (visibleSearchColsCacheRef.current.key === visibleSearchKey) {
+      return visibleSearchColsCacheRef.current.ids
+    }
+
+    const ids = cols.filter(c => c.visible).map(c => c.id as string)
+
+    visibleSearchColsCacheRef.current = {
+      key: visibleSearchKey,
+      ids,
+    }
+
+    return ids
+  }, [cols, visibleSearchKey])
 
   const filtered = useMemo(() => {
     const q = String(query ?? '').trim().toLowerCase()
@@ -250,7 +261,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
 
       return hay.includes(q)
     })
-  }, [products, query, visibleSearchKey])
+  }, [products, query, visibleSearchCols])
 
 
   useEffect(() => {
