@@ -275,15 +275,28 @@ async function installE2EMockApi(page: Page): Promise<void> {
       // ignore
     }
 
+    const productsResponse = () => ({ ok: true, products: attachListAliases([...products]) });
+    const logsResponse = () => ({ ok: true, logs: attachListAliases([...logs]) });
+
     const byName = (rawName: string) => {
       const name = String(rawName || '').toLowerCase();
 
       if (/^(on|subscribe)/.test(name)) return () => () => {};
-      if (/(products?|catalog|items?|sku)/.test(name)) return attachListAliases([...products]);
-      if (/(logs?|history|journal|sync(log|history|run)?s?)/.test(name)) return attachListAliases([...logs]);
+
+      if (/^(data:)?(get|list|load)?products?$/.test(name) || /(data:getproducts|data:listproducts|data:loadproducts)/.test(name)) {
+        return productsResponse();
+      }
+      if (/^(data:)?(get|list|load)?(synclogs?|logs?|history)$/.test(name) || /(data:getsynclog|data:getlogs|data:gethistory)/.test(name)) {
+        return logsResponse();
+      }
+
+      if (/^net:?check$/.test(name)) return { ok: true, online: true };
       if (/(secret|cred|token|config|setting)/.test(name)) return { ...secrets };
       if (/(auth|login|check)/.test(name)) return { ok: true, authorized: true, storeName: 'E2E Store' };
-      if (/(sync|refresh|reload|fetch|load)/.test(name)) return { ok: true, count: products.length, items: attachListAliases([...products]) };
+      if (/(sync|refresh|reload)/.test(name)) return { ok: true, count: products.length, itemsCount: products.length, items: attachListAliases([...products]), products: attachListAliases([...products]) };
+      if (/(logs?|history|journal|sync(log|history|run)?s?)/.test(name)) return attachListAliases([...logs]);
+      if (/(products?|catalog|items?|sku)/.test(name)) return attachListAliases([...products]);
+      if (/(fetch|load)/.test(name)) return { ok: true };
 
       return null;
     };
@@ -310,21 +323,21 @@ async function installE2EMockApi(page: Page): Promise<void> {
     };
 
     const fallbackApi: Record<string, any> = {
-      getProducts: async () => attachListAliases([...products]),
-      listProducts: async () => attachListAliases([...products]),
-      loadProducts: async () => attachListAliases([...products]),
-      getSyncLog: async () => attachListAliases([...logs]),
-      getSyncLogs: async () => attachListAliases([...logs]),
-      listLogs: async () => attachListAliases([...logs]),
-      getLogs: async () => attachListAliases([...logs]),
-      getHistory: async () => attachListAliases([...logs]),
-      listHistory: async () => attachListAliases([...logs]),
+      getProducts: async () => productsResponse(),
+      listProducts: async () => productsResponse(),
+      loadProducts: async () => productsResponse(),
+      getSyncLog: async () => logsResponse(),
+      getSyncLogs: async () => logsResponse(),
+      listLogs: async () => logsResponse(),
+      getLogs: async () => logsResponse(),
+      getHistory: async () => logsResponse(),
+      listHistory: async () => logsResponse(),
       loadSecrets: async () => ({ ...secrets }),
       getSecrets: async () => ({ ...secrets }),
       saveSecrets: async () => ({ ok: true }),
       testAuth: async () => ({ ok: true, storeName: 'E2E Store' }),
       checkAuth: async () => ({ ok: true, authorized: true }),
-      syncProducts: async () => ({ ok: true, count: products.length }),
+      syncProducts: async () => ({ ok: true, count: products.length, itemsCount: products.length, products: attachListAliases([...products]) }),
       netCheck: async () => ({ online: true }),
       'net:check': async () => ({ online: true }),
       invoke: async (channel: string) => byName(channel),
@@ -500,6 +513,32 @@ async function probePrimaryScrollable(page: Page, move?: { top?: number; left?: 
       busy,
     };
   }, move ?? {});
+}
+
+
+async function waitForProductsDataReady(page: Page, timeoutMs = 12_000): Promise<number> {
+  const started = Date.now();
+  let lastCount = 0;
+
+  while (Date.now() - started < timeoutMs) {
+    const snap = await page.evaluate(() => {
+      const bodyText = (document.body?.innerText || '').replace(/ /g, ' ');
+      const totalMatch = bodyText.match(/Всего\s*:\s*(\d+)/i);
+      const total = totalMatch ? Number(totalMatch[1]) : 0;
+      const rowLike = document.querySelectorAll('table tbody tr, [role="row"], .ag-row').length;
+      const hasEmpty = /Ничего не найдено/i.test(bodyText);
+      const busy = /загрузка|loading/i.test(bodyText);
+      return { total, rowLike, hasEmpty, busy };
+    });
+
+    if (Number.isFinite(snap.total) && snap.total > 0) return snap.total;
+    if (snap.rowLike > 1 && !snap.hasEmpty) return snap.rowLike - 1;
+
+    lastCount = Math.max(lastCount, Number.isFinite(snap.total) ? snap.total : 0);
+    await page.waitForTimeout(snap.busy ? 250 : 150);
+  }
+
+  return lastCount;
 }
 
 
@@ -737,6 +776,13 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     }
   });
 
+  const productsReadyCount = await test.step('wait-products-data', async () => {
+    const count = await waitForProductsDataReady(page, 12_000);
+    flowNotes.push(`products-ready-count:${count}`);
+    expect(count, 'Таблица товаров пустая в human-smoke: данные мока не подхватились или не успели загрузиться').toBeGreaterThan(0);
+    return count;
+  });
+
   // Переходы по типичным вкладкам/экранам + проверки, что экраны реально открылись
   await test.step('navigate-sections', async () => {
     const initialProbe = await probePrimaryScrollable(page);
@@ -884,6 +930,7 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     ui,
     runtimeBaseUrl: baseUrl,
     bootProbe,
+    productsReadyCount,
     verticalDebug,
     finalProbe,
     pageErrors,
