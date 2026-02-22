@@ -1,109 +1,8 @@
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -14,6 +14,18 @@
-     .toLowerCase()
- 
-   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on'
-+}
-+
-+function getActiveStoreClientIdOrNull(): string | null {
-+  try {
-+    const fromSecrets = String(loadSecrets().clientId ?? '').trim()
-+    if (fromSecrets) return fromSecrets
-+  } catch {
-+    // Без ключей UI всё равно может работать в seed-режиме.
-+  }
-+
-+  if (isUiTestSeedEnabled()) return UI_TEST_SEED_DEFAULT_STORE_ID
-+  return null
- }
- 
- function makeUiTestSeedProducts(storeClientId: string | null, count = 1200) {
-@@ -48,14 +60,7 @@
- function seedUiTestDataIfEnabled() {
-   if (!isUiTestSeedEnabled()) return
- 
--  let storeClientId: string | null = UI_TEST_SEED_DEFAULT_STORE_ID
--  try {
--    const secrets = loadSecrets()
--    const fromSecrets = String(secrets.clientId || '').trim()
--    if (fromSecrets) storeClientId = fromSecrets
--  } catch {
--    // Ключей может не быть — для UI-теста это нормально.
--  }
-+  const storeClientId = getActiveStoreClientIdOrNull()
- 
-   try {
-     const alreadyForTargetStore = dbGetProducts(storeClientId).length
-@@ -336,12 +341,7 @@
- 
- ipcMain.handle('data:getProducts', async () => {
-   try {
--    let storeClientId: string | null = null
--    try {
--      storeClientId = loadSecrets().clientId
--    } catch {
--      storeClientId = null
--    }
-+    const storeClientId = getActiveStoreClientIdOrNull()
- 
-     const products = dbGetProducts(storeClientId)
-     return { ok: true, products }
-@@ -352,12 +352,7 @@
- 
- ipcMain.handle('data:getSyncLog', async () => {
-   try {
--    let storeClientId: string | null = null
--    try {
--      storeClientId = loadSecrets().clientId
--    } catch {
--      storeClientId = null
--    }
-+    const storeClientId = getActiveStoreClientIdOrNull()
- 
-     const logs = dbGetSyncLog(storeClientId)
-     return { ok: true, logs }
---- a/tests/e2e/human-smoke.spec.ts
-+++ b/tests/e2e/human-smoke.spec.ts
-@@ -503,6 +503,13 @@
- }
- 
- 
-+function isSeededUiScenario(): boolean {
-+  const raw = String(process.env.TEST_UI_SEED ?? process.env.OZONATOR_TEST_UI_SEED ?? '')
-+    .trim()
-+    .toLowerCase();
-+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
-+}
-+
- type ScrollbarGeometry = {
-   ok: boolean;
-   reason?: string;
-@@ -870,6 +877,10 @@
-   const verticalDebug = await test.step('aggressive vertical scroll (thumb-drag/wheel)', async () => {
-     return assertAggressiveVerticalScrollNoBlank(page);
-   });
-+
-+  if (isSeededUiScenario() && verticalDebug.notes.includes('vertical-scroll-not-needed')) {
-+    throw new Error('FALSE_GREEN_E2E_PROXY: seeded UI scenario, но вертикальный скролл не понадобился (debug note=vertical-scroll-not-needed).');
-+  }
-   await test.step('horizontal scroll is always reachable', async () => {
-     await assertHorizontalScrollAlwaysReachable(page);
-   });
-@@ -878,6 +889,10 @@
-   const visibleRows = await page.locator('table tr, [role="row"], .ag-row').count().catch(() => 0);
-   const visibleText = (await page.locator('body').innerText()).trim();
-   expect(visibleText.length).toBeGreaterThan(0);
-+
-+  if (isSeededUiScenario() && /(?:^|\n|\r)\s*(?:Всего|Total)\s*:\s*0\b/i.test(visibleText)) {
-+    throw new Error('FALSE_GREEN_E2E_PROXY: seeded UI scenario, но в интерфейсе отображается пустая таблица ("Всего: 0").');
-+  }
- 
-   const finalProbe = await probePrimaryScrollable(page);
-   const debugPayload = {
+diff --git a/.github/workflows/windows-ci.yml b/.github/workflows/windows-ci.yml
+index faa99b1..e2142dd 100644
 --- a/.github/workflows/windows-ci.yml
 +++ b/.github/workflows/windows-ci.yml
-@@ -198,7 +198,7 @@
+@@ -198,7 +198,7 @@ jobs:
              npm i -D @playwright/test --no-save --legacy-peer-deps *>&1 | Tee-Object -FilePath logs\e2e.log -Append
              if ($LASTEXITCODE -ne 0) {
                "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -112,7 +11,7 @@
                exit 0
              }
            }
-@@ -207,12 +207,14 @@
+@@ -207,12 +207,14 @@ jobs:
            npx playwright install chromium *>&1 | Tee-Object -FilePath logs\e2e.log -Append
            if ($LASTEXITCODE -ne 0) {
              "ok=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -122,14 +21,13 @@
            }
  
            if ($hasHumanSmoke) {
--            "Running targeted synthetic UI test: tests/e2e/human-smoke.spec.ts" | Tee-Object -FilePath logs\e2e.log -Append
-+            "Running targeted synthetic UI test: tests/e2e/human-smoke.spec.ts (TEST_UI_SEED=1)" | Tee-Object -FilePath logs\e2e.log -Append
+             "Running targeted synthetic UI test: tests/e2e/human-smoke.spec.ts" | Tee-Object -FilePath logs\e2e.log -Append
 +            $env:TEST_UI_SEED = '1'
 +            $env:OZONATOR_TEST_UI_SEED = '1'
              npx playwright test tests/e2e/human-smoke.spec.ts *>&1 | Tee-Object -FilePath logs\e2e.log -Append
            } else {
              "Running default Playwright suite" | Tee-Object -FilePath logs\e2e.log -Append
-@@ -225,11 +227,11 @@
+@@ -225,11 +227,11 @@ jobs:
              }
              "ux=PASS" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
              "ok=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -143,14 +41,166 @@
            }
  
        - name: Generate 118-matrix TestReport (auto)
-@@ -240,8 +242,8 @@
+@@ -240,8 +242,8 @@ jobs:
            TYPECHECK_STATUS: ${{ steps.typecheck.outputs.ok == 'true' && 'PASS' || steps.typecheck.outputs.ok == 'false' && 'FAIL' || 'NR' }}
            UNIT_STATUS: ${{ steps.unit.outputs.ok == 'true' && 'PASS' || steps.unit.outputs.ok == 'false' && 'FAIL' || 'NR' }}
            BUILD_STATUS: ${{ steps.dist.outputs.ok == 'true' && 'PASS' || steps.dist.outputs.ok == 'false' && 'FAIL' || 'NR' }}
 -          E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran-pass') && 'PASS' || (startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
 -          SYNTHETIC_STATUS: ${{ (steps.e2e.outputs.status == 'ran-pass') && 'PASS' || (startsWith(steps.e2e.outputs.status, 'failed')) && 'FAIL' || 'NR' }}
-+          E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'true') && 'PASS' || (steps.e2e.outputs.status == 'failed') && 'FAIL' || 'NR' }}
-+          SYNTHETIC_STATUS: ${{ (steps.e2e.outputs.status == 'ran' && steps.e2e.outputs.ok == 'true') && 'PASS' || (steps.e2e.outputs.status == 'failed') && 'FAIL' || 'NR' }}
++          E2E_STATUS: ${{ (steps.e2e.outputs.status == 'ran') && 'PASS' || (steps.e2e.outputs.status == 'failed') && 'FAIL' || 'NR' }}
++          SYNTHETIC_STATUS: ${{ (steps.e2e.outputs.status == 'ran') && 'PASS' || (steps.e2e.outputs.status == 'failed') && 'FAIL' || 'NR' }}
            VISUAL_STATUS: ${{ steps.e2e.outputs.visual || 'NR' }}
            UX_PROXY_STATUS: ${{ steps.e2e.outputs.ux || 'NR' }}
            UX_STATUS: ${{ steps.e2e.outputs.ux || 'NR' }}
+diff --git a/electron/main/index.ts b/electron/main/index.ts
+index a69526d..bb4e8c0 100644
+--- a/electron/main/index.ts
++++ b/electron/main/index.ts
+@@ -6,6 +6,74 @@ import { ozonGetStoreName, ozonProductInfoList, ozonProductList, ozonTestAuth }
+ 
+ let mainWindow: BrowserWindow | null = null
+ 
++const UI_TEST_SEED_STORE_ID = 'ui-test-seed'
++
++function isUiSeedEnabled(): boolean {
++  const raw = String(process.env.TEST_UI_SEED ?? process.env.OZONATOR_TEST_UI_SEED ?? '').trim()
++  return /^(1|true|yes|on)$/i.test(raw)
++}
++
++function resolveActiveStoreClientIdForUi(): string | null {
++  try {
++    const clientId = String(loadSecrets().clientId ?? '').trim()
++    if (clientId) return clientId
++  } catch {
++    // ignore; fallback below
++  }
++
++  if (isUiSeedEnabled()) return UI_TEST_SEED_STORE_ID
++  return null
++}
++
++function seedUiTestDataIfEnabled() {
++  if (!isUiSeedEnabled()) return
++
++  const storeClientId = resolveActiveStoreClientIdForUi() ?? UI_TEST_SEED_STORE_ID
++  const existingProducts = dbGetProducts(storeClientId)
++  if (existingProducts.length > 0) return
++
++  const seededProducts = Array.from({ length: 1200 }, (_, i) => {
++    const idx = i + 1
++    return {
++      offer_id: `ui_seed_offer_${String(idx).padStart(4, '0')}`,
++      product_id: 900000 + idx,
++      sku: String(700000 + idx),
++      barcode: `4600000${String(idx).padStart(7, '0')}`,
++      brand: `UI Seed Brand ${(i % 15) + 1}`,
++      category: `Категория UI ${(i % 24) + 1}`,
++      type: `Тип ${(i % 6) + 1}`,
++      name: `UI Seed Product ${idx} — длинное название для теста интерфейса`,
++      is_visible: 1,
++      hidden_reasons: null,
++      created_at: new Date(Date.now() - i * 60_000).toISOString(),
++      archived: false,
++      store_client_id: storeClientId,
++    }
++  })
++
++  dbUpsertProducts(seededProducts)
++
++  const existingLogs = dbGetSyncLog(storeClientId)
++  if (existingLogs.length === 0) {
++    const authLogId = dbLogStart('check_auth', storeClientId)
++    dbLogFinish(authLogId, {
++      status: 'success',
++      storeClientId,
++      meta: { seeded: true, source: 'TEST_UI_SEED', step: 'check_auth' },
++    })
++
++    const syncLogId = dbLogStart('sync_products', storeClientId)
++    dbLogFinish(syncLogId, {
++      status: 'success',
++      itemsCount: seededProducts.length,
++      storeClientId,
++      meta: { seeded: true, source: 'TEST_UI_SEED', step: 'sync_products', count: seededProducts.length },
++    })
++  }
++
++  console.log(`[ui-seed] Seeded ${seededProducts.length} products for store_client_id=${storeClientId}`)
++}
++
+ function createWindow() {
+   mainWindow = new BrowserWindow({
+     width: 1200,
+@@ -61,6 +129,7 @@ app.whenReady().then(() => {
+   }
+ 
+   ensureDb()
++  seedUiTestDataIfEnabled()
+   createWindow()
+ 
+   app.on('activate', () => {
+@@ -253,14 +322,7 @@ ipcMain.handle('ozon:syncProducts', async () => {
+ 
+ ipcMain.handle('data:getProducts', async () => {
+   try {
+-    let storeClientId: string | null = null
+-    try {
+-      storeClientId = loadSecrets().clientId
+-    } catch {
+-      storeClientId = null
+-    }
+-
+-    const products = dbGetProducts(storeClientId)
++    const products = dbGetProducts(resolveActiveStoreClientIdForUi())
+     return { ok: true, products }
+   } catch (e: any) {
+     return { ok: false, error: e?.message ?? String(e), products: [] }
+@@ -269,14 +331,7 @@ ipcMain.handle('data:getProducts', async () => {
+ 
+ ipcMain.handle('data:getSyncLog', async () => {
+   try {
+-    let storeClientId: string | null = null
+-    try {
+-      storeClientId = loadSecrets().clientId
+-    } catch {
+-      storeClientId = null
+-    }
+-
+-    const logs = dbGetSyncLog(storeClientId)
++    const logs = dbGetSyncLog(resolveActiveStoreClientIdForUi())
+     return { ok: true, logs }
+   } catch (e: any) {
+     return { ok: false, error: e?.message ?? String(e), logs: [] }
+diff --git a/tests/e2e/human-smoke.spec.ts b/tests/e2e/human-smoke.spec.ts
+index 8d59968..6f5ff93 100644
+--- a/tests/e2e/human-smoke.spec.ts
++++ b/tests/e2e/human-smoke.spec.ts
+@@ -5,6 +5,7 @@ import * as path from 'node:path';
+ import { fileURLToPath, pathToFileURL } from 'node:url';
+ 
+ const NON_DESTRUCTIVE_BUTTON_BLACKLIST = /(удал|delete|remove|reset|сброс|drop|clear all|очист|logout|выйти|exit|close app|quit)/i;
++const SEEDED_UI_ASSERT_MODE = /^(1|true|yes|on)$/i.test(String(process.env.TEST_UI_SEED ?? process.env.OZONATOR_TEST_UI_SEED ?? '').trim());
+ 
+ async function firstVisible(locator: Locator, max = 10): Promise<Locator | null> {
+   const count = await locator.count();
+@@ -880,6 +881,20 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
+   expect(visibleText.length).toBeGreaterThan(0);
+ 
+   const finalProbe = await probePrimaryScrollable(page);
++
++  if (SEEDED_UI_ASSERT_MODE) {
++    const hasZeroTotalBadge = /всего\s*:\s*0\b/i.test(visibleText);
++    expect(hasZeroTotalBadge, 'Seeded human-smoke: в UI отображается "Всего: 0" (данные не подхватились)').toBeFalsy();
++    expect(
++      verticalDebug.notes.includes('vertical-scroll-not-needed'),
++      `Seeded human-smoke: вертикальный скролл не появился. notes=${verticalDebug.notes.join(' | ')}`
++    ).toBeFalsy();
++    expect(
++      Math.max(verticalDebug.base.maxTop, finalProbe.maxTop),
++      `Seeded human-smoke: ожидается прокручиваемая таблица (maxTop > 8). base=${verticalDebug.base.maxTop}, final=${finalProbe.maxTop}`
++    ).toBeGreaterThan(8);
++  }
++
+   const debugPayload = {
+     ui,
+     runtimeBaseUrl: baseUrl,
