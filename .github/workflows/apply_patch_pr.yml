@@ -32,6 +32,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.base_branch || 'main' }}
+          persist-credentials: false
 
       - name: Resolve patch path
         id: patch_path
@@ -130,6 +131,10 @@ jobs:
             echo "BRANCH is empty (branch_meta output is missing)"
             exit 1
           fi
+
+          # actions/checkout may leave auth in http.extraheader (GITHUB_TOKEN). We must clear it,
+          # otherwise git push can ignore the PAT in origin and push as GitHub App token.
+          git config --local --unset-all http.https://github.com/.extraheader || true
 
           git remote set-url origin "https://x-access-token:${PR_BOT_TOKEN}@github.com/${{ github.repository }}.git"
           git push -u origin "$BRANCH"
