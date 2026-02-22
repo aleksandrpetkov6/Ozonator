@@ -69,7 +69,7 @@ export default function App() {
           } catch {
             /* ignore */
           }
-          document.title = `${baseTitle} — ${cleaned}`
+          document.title = `${baseTitle} 🤝 ${cleaned}`
           return
         }
       }
@@ -83,7 +83,7 @@ export default function App() {
       const cleaned = raw.trim()
       if (cleaned) {
         setStoreName(cleaned)
-        document.title = `${baseTitle} — ${cleaned}`
+        document.title = `${baseTitle} 🤝 ${cleaned}`
         return
       }
     } catch {
@@ -175,14 +175,6 @@ export default function App() {
     <div className="appShell">
       <div className="topbar">
         <div className="topbarInner">
-          <div
-            className="appTitle"
-            title={storeName ? `Подключённый магазин: ${storeName}` : 'Название магазина появится после проверки доступа'}
-          >
-            <div className="appName">Озонатор</div>
-            <div className={`appStoreName ${storeName ? '' : 'muted'}`}>{storeName || 'Название магазина'}</div>
-          </div>
-
           <div className="topbarSlot">
             <div className="segmented" aria-label="Навигация">
               <NavLink to="/products">
