@@ -1,5 +1,5 @@
 diff --git a/.github/workflows/apply_patch_pr.yml b/.github/workflows/apply_patch_pr.yml
-index 69ccde2..0d51545 100644
+index 69ccde2..d53ac00 100644
 --- a/.github/workflows/apply_patch_pr.yml
 +++ b/.github/workflows/apply_patch_pr.yml
 @@ -102,7 +102,7 @@ jobs:
@@ -11,36 +11,50 @@ index 69ccde2..0d51545 100644
  
            git config user.name  "github-actions[bot]"
            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-@@ -118,6 +118,11 @@ jobs:
-         shell: bash
-         run: |
-           set -euo pipefail
+@@ -123,6 +123,11 @@ jobs:
+             exit 1
+           fi
+ 
 +          if [ -z "${BRANCH:-}" ]; then
-+            echo "BRANCH is not set (expected from Create patch branch and commit step via GITHUB_ENV)"
++            echo "BRANCH is empty or not exported from previous step"
 +            exit 1
 +          fi
 +
-           if [ -z "${PR_BOT_TOKEN:-}" ]; then
-             echo "PR_BOT_TOKEN is not configured"
-             exit 1
+           git remote set-url origin "https://x-access-token:${PR_BOT_TOKEN}@github.com/${{ github.repository }}.git"
+           git push -u origin "$BRANCH"
+ 
 diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index 27e60d8..a5b133f 100644
+index 27e60d8..6686b1a 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -228,7 +228,11 @@ export default function ProductsPage({ query = '', onStats }: Props) {
-   )
+@@ -222,15 +222,18 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+   }, [collapsedOpen, hiddenCols.length])
  
-   const visibleSearchCols = useMemo(
+   // Для поиска не учитываем ширины столбцов (чтобы ресайз не тормозил)
+-  const visibleSearchKey = useMemo(
+-    () => cols.map(c => `${c.id}:${c.visible ? 1 : 0}`).join('|'),
+-    [cols]
+-  )
++  const visibleSearchColsCacheRef = useRef<string[]>([])
++  const visibleSearchCols = useMemo(() => {
++    const next = cols.filter(c => c.visible).map(c => c.id)
++    const prev = visibleSearchColsCacheRef.current
+ 
+-  const visibleSearchCols = useMemo(
 -    () => cols.filter(c => c.visible).map(c => c.id),
-+    () => visibleSearchKey
-+      .split('|')
-+      .filter(Boolean)
-+      .filter((token) => token.endsWith(':1'))
-+      .map((token) => token.slice(0, token.lastIndexOf(':'))),
-     [visibleSearchKey]
-   )
+-    [visibleSearchKey]
+-  )
++    if (prev.length === next.length && prev.every((id, idx) => id === next[idx])) {
++      return prev
++    }
++
++    visibleSearchColsCacheRef.current = next
++    return next
++  }, [cols])
  
-@@ -250,7 +254,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+   const filtered = useMemo(() => {
+     const q = String(query ?? '').trim().toLowerCase()
+@@ -250,7 +253,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
  
        return hay.includes(q)
      })
