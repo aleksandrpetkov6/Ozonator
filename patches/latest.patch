@@ -1,11 +1,101 @@
---- a/.github/workflows/zip-ci-reports.yml	2026-02-22 07:53:25.003396649 +0000
-+++ b/.github/workflows/zip-ci-reports.yml	2026-02-22 07:53:25.003464575 +0000
-@@ -47,7 +47,7 @@
-         if: always()
-         uses: actions/upload-artifact@v4
-         with:
--          name: ci-reports-zipped
-+          name: ci-reports-zipped.zip
-           path: |
-             _zips/TestReport.zip
-             _zips/e2e-results.zip
+diff --git a/electron/main/index.ts b/electron/main/index.ts
+index a69526d..04a22cf 100644
+--- a/electron/main/index.ts
++++ b/electron/main/index.ts
+@@ -6,6 +6,88 @@ import { ozonGetStoreName, ozonProductInfoList, ozonProductList, ozonTestAuth }
+ 
+ let mainWindow: BrowserWindow | null = null
+ 
++const UI_TEST_SEED_DEFAULT_STORE_ID = 'ui-test-seed'
++
++function isUiTestSeedEnabled(): boolean {
++  const raw = String(process.env.TEST_UI_SEED ?? process.env.OZONATOR_TEST_UI_SEED ?? '')
++    .trim()
++    .toLowerCase()
++
++  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on'
++}
++
++function makeUiTestSeedProducts(storeClientId: string | null, count = 1200) {
++  const now = Date.now()
++
++  return Array.from({ length: count }, (_v, i) => {
++    const idx = i + 1
++    const createdAt = new Date(now - idx * 86_400_000).toISOString()
++    const categoryNo = (i % 18) + 1
++    const brandNo = (i % 12) + 1
++    const hidden = i % 11 === 0
++    const archived = i % 17 === 0
++
++    return {
++      offer_id: `UISEED-${String(idx).padStart(4, '0')}`,
++      product_id: 900000 + idx,
++      sku: `SEEDSKU-${String(500000 + idx)}`,
++      barcode: `4607000${String(100000 + idx)}`,
++      brand: `Brand ${brandNo}`,
++      category: `Категория ${categoryNo}`,
++      type: `Тип ${(i % 6) + 1}`,
++      name: `Тестовый товар ${idx} для проверки интерфейса (скролл / фильтр / сортировка / поиск)`,
++      is_visible: hidden ? 0 : 1,
++      hidden_reasons: hidden ? 'ui_test_hidden' : null,
++      created_at: createdAt,
++      archived,
++      store_client_id: storeClientId,
++    }
++  })
++}
++
++function seedUiTestDataIfEnabled() {
++  if (!isUiTestSeedEnabled()) return
++
++  let storeClientId: string | null = UI_TEST_SEED_DEFAULT_STORE_ID
++  try {
++    const secrets = loadSecrets()
++    const fromSecrets = String(secrets.clientId || '').trim()
++    if (fromSecrets) storeClientId = fromSecrets
++  } catch {
++    // Ключей может не быть — для UI-теста это нормально.
++  }
++
++  try {
++    const alreadyForTargetStore = dbGetProducts(storeClientId).length
++    if (alreadyForTargetStore > 0) {
++      console.info(`[ui-seed] TEST_UI_SEED=1, но данные уже есть (${alreadyForTargetStore} шт), сид не добавляю`)
++      return
++    }
++
++    const products = makeUiTestSeedProducts(storeClientId, 1200)
++    dbUpsertProducts(products)
++
++    const authLogId = dbLogStart('check_auth', storeClientId)
++    dbLogFinish(authLogId, {
++      status: 'success',
++      storeClientId,
++      meta: { seededBy: 'TEST_UI_SEED', note: 'Локальная фикстура для ручной UI-проверки' },
++    })
++
++    const syncLogId = dbLogStart('sync_products', storeClientId)
++    dbLogFinish(syncLogId, {
++      status: 'success',
++      itemsCount: products.length,
++      storeClientId,
++      meta: { seededBy: 'TEST_UI_SEED', mode: 'local_fixture', source: 'main-process' },
++    })
++
++    console.info(`[ui-seed] Добавлено ${products.length} тестовых товаров (store_client_id=${storeClientId ?? 'null'})`)
++  } catch (e: any) {
++    console.warn('[ui-seed] Не удалось подготовить локальную фикстуру UI', e?.message ?? e)
++  }
++}
++
+ function createWindow() {
+   mainWindow = new BrowserWindow({
+     width: 1200,
+@@ -61,6 +143,7 @@ app.whenReady().then(() => {
+   }
+ 
+   ensureDb()
++  seedUiTestDataIfEnabled()
+   createWindow()
+ 
+   app.on('activate', () => {
