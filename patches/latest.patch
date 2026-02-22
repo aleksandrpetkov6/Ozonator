@@ -1,44 +1,11 @@
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -166,6 +166,7 @@
-   const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
-   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
-   const didAutoInitRef = useRef(false)
-+  const visibleSearchColsCacheRef = useRef<{ key: string; ids: string[] }>({ key: '', ids: [] })
- 
-   const hasStoredCols = useMemo(() => {
-     try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
-@@ -227,10 +228,20 @@
-     [cols]
-   )
- 
--  const visibleSearchCols = useMemo(
--    () => cols.filter(c => c.visible).map(c => c.id),
--    [visibleSearchKey]
--  )
-+  const visibleSearchCols = useMemo(() => {
-+    if (visibleSearchColsCacheRef.current.key === visibleSearchKey) {
-+      return visibleSearchColsCacheRef.current.ids
-+    }
-+
-+    const ids = cols.filter(c => c.visible).map(c => c.id as string)
-+
-+    visibleSearchColsCacheRef.current = {
-+      key: visibleSearchKey,
-+      ids,
-+    }
-+
-+    return ids
-+  }, [cols, visibleSearchKey])
- 
-   const filtered = useMemo(() => {
-     const q = String(query ?? '').trim().toLowerCase()
-@@ -250,7 +261,7 @@
- 
-       return hay.includes(q)
-     })
--  }, [products, query, visibleSearchKey])
-+  }, [products, query, visibleSearchCols])
- 
- 
-   useEffect(() => {
+--- a/.github/workflows/zip-ci-reports.yml	2026-02-22 07:53:25.003396649 +0000
++++ b/.github/workflows/zip-ci-reports.yml	2026-02-22 07:53:25.003464575 +0000
+@@ -47,7 +47,7 @@
+         if: always()
+         uses: actions/upload-artifact@v4
+         with:
+-          name: ci-reports-zipped
++          name: ci-reports-zipped.zip
+           path: |
+             _zips/TestReport.zip
+             _zips/e2e-results.zip
