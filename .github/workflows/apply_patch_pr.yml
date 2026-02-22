@@ -98,11 +98,12 @@ jobs:
 
       - name: Create patch branch and commit
         if: steps.apply.outputs.status == 'APPLIED'
+        id: branch_meta
         shell: bash
         run: |
           set -euo pipefail
           BRANCH="bot/apply-patch-${{ github.run_id }}"
-          echo "branch=$BRANCH" >> "$GITHUB_ENV"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -118,8 +119,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          BRANCH="${{ steps.branch_meta.outputs.branch }}"
+
           if [ -z "${PR_BOT_TOKEN:-}" ]; then
             echo "PR_BOT_TOKEN is not configured"
+            exit 1
+          fi
+
+          if [ -z "${BRANCH:-}" ]; then
+            echo "BRANCH is empty (branch_meta output is missing)"
             exit 1
           fi
 
@@ -132,7 +140,7 @@ jobs:
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.PR_BOT_TOKEN }}
-          branch: ${{ env.BRANCH }}
+          branch: ${{ steps.branch_meta.outputs.branch }}
           base: ${{ steps.patch_path.outputs.base_branch }}
           title: "Apply patch: ${{ steps.patch_path.outputs.patch_path }}"
           body: |
@@ -151,5 +159,5 @@ jobs:
           echo "Status: ${{ steps.apply.outputs.status || 'N/A' }}"
           echo "Patch:   ${{ steps.patch_path.outputs.patch_path }}"
           echo "Base:    ${{ steps.patch_path.outputs.base_branch }}"
-          echo "Branch:  ${BRANCH:-N/A}"
+          echo "Branch:  ${{ steps.branch_meta.outputs.branch || 'N/A' }}"
           echo "PR:      ${{ steps.cpr.outputs.pull-request-url || 'N/A' }}"
