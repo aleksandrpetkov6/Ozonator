@@ -1,60 +1,39 @@
-diff --git a/.github/workflows/apply_patch_pr.yml b/.github/workflows/apply_patch_pr.yml
-index 69ccde2..d53ac00 100644
---- a/.github/workflows/apply_patch_pr.yml
-+++ b/.github/workflows/apply_patch_pr.yml
-@@ -102,7 +102,7 @@ jobs:
-         run: |
-           set -euo pipefail
-           BRANCH="bot/apply-patch-${{ github.run_id }}"
--          echo "branch=$BRANCH" >> "$GITHUB_ENV"
-+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
- 
-           git config user.name  "github-actions[bot]"
-           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-@@ -123,6 +123,11 @@ jobs:
-             exit 1
-           fi
- 
-+          if [ -z "${BRANCH:-}" ]; then
-+            echo "BRANCH is empty or not exported from previous step"
-+            exit 1
-+          fi
-+
-           git remote set-url origin "https://x-access-token:${PR_BOT_TOKEN}@github.com/${{ github.repository }}.git"
-           git push -u origin "$BRANCH"
- 
-diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index 27e60d8..6686b1a 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -222,15 +222,18 @@ export default function ProductsPage({ query = '', onStats }: Props) {
-   }, [collapsedOpen, hiddenCols.length])
+@@ -166,6 +166,7 @@
+   const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
+   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
+   const didAutoInitRef = useRef(false)
++  const visibleSearchColsCacheRef = useRef<{ key: string; ids: string[] }>({ key: '', ids: [] })
  
-   // Для поиска не учитываем ширины столбцов (чтобы ресайз не тормозил)
--  const visibleSearchKey = useMemo(
--    () => cols.map(c => `${c.id}:${c.visible ? 1 : 0}`).join('|'),
--    [cols]
--  )
-+  const visibleSearchColsCacheRef = useRef<string[]>([])
-+  const visibleSearchCols = useMemo(() => {
-+    const next = cols.filter(c => c.visible).map(c => c.id)
-+    const prev = visibleSearchColsCacheRef.current
+   const hasStoredCols = useMemo(() => {
+     try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
+@@ -227,10 +228,20 @@
+     [cols]
+   )
  
 -  const visibleSearchCols = useMemo(
 -    () => cols.filter(c => c.visible).map(c => c.id),
 -    [visibleSearchKey]
 -  )
-+    if (prev.length === next.length && prev.every((id, idx) => id === next[idx])) {
-+      return prev
++  const visibleSearchCols = useMemo(() => {
++    if (visibleSearchColsCacheRef.current.key === visibleSearchKey) {
++      return visibleSearchColsCacheRef.current.ids
 +    }
 +
-+    visibleSearchColsCacheRef.current = next
-+    return next
-+  }, [cols])
++    const ids = cols.filter(c => c.visible).map(c => c.id as string)
++
++    visibleSearchColsCacheRef.current = {
++      key: visibleSearchKey,
++      ids,
++    }
++
++    return ids
++  }, [cols, visibleSearchKey])
  
    const filtered = useMemo(() => {
      const q = String(query ?? '').trim().toLowerCase()
-@@ -250,7 +253,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
+@@ -250,7 +261,7 @@
  
        return hay.includes(q)
      })
