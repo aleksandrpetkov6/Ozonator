@@ -1,33 +1,27 @@
 diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index f0ec5ce..f47a1c2 100644
+index f0ec5ce..5dd283f 100644
 --- a/src/renderer/src/ui/pages/ProductsPage.tsx
 +++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -512,7 +512,8 @@ function onDragOverHeader(e: React.DragEvent) {
+@@ -507,12 +507,16 @@ function onDragOverHeader(e: React.DragEvent) {
+     return { text: (v == null || v === '') ? '-' : String(v) }
+   }
+ 
+-  function measureTextWidth(text: string): number {
++  function measureTextWidth(text: string, sampleEl?: HTMLElement | null): number {
+     const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'))
      const ctx = canvas.getContext('2d')
      if (!ctx) return text.length * 7
  
 -    const cs = window.getComputedStyle(document.body)
-+    const measureEl = (headTableRef.current?.querySelector('.thTitle') as HTMLElement | null) ?? document.body
++    const measureEl = sampleEl
++      ?? (bodyTableRef.current?.querySelector('.cellText') as HTMLElement | null)
++      ?? (headTableRef.current?.querySelector('.thTitle') as HTMLElement | null)
++      ?? document.body
 +    const cs = window.getComputedStyle(measureEl)
      const fontSize = cs.fontSize || '13px'
      const fontFamily = cs.fontFamily || 'system-ui'
      const fontWeight = cs.fontWeight || '400'
-@@ -526,25 +527,49 @@ function onDragOverHeader(e: React.DragEvent) {
-   }
- 
-   function getCellString(p: Product, colId: string) {
-+    // Берем отображаемый/полный текст ячейки (title/text), если он формируется отдельно.
-+    // Это убирает недомер ширины на форматируемых колонках.
-+    try {
-+      const rendered = (cellText as any)?.(p as any, colId as any)
-+      if (rendered && typeof rendered === 'object') {
-+        const full = toText((rendered as any).title)
-+        if (full) return full
-+        const txt = toText((rendered as any).text)
-+        if (txt) return txt
-+      }
-+    } catch {}
-+
+@@ -529,22 +533,30 @@ function onDragOverHeader(e: React.DragEvent) {
      return toText((p as any)[colId])
    }
  
@@ -37,37 +31,38 @@ index f0ec5ce..f47a1c2 100644
      if (!col) return
  
      const cap = AUTO_MAX_W[colId] ?? 320
--
++    const headerSampleEl = headTableRef.current?.querySelector('.thTitle') as HTMLElement | null
++    const cellSampleEl = bodyTableRef.current?.querySelector('.cellText') as HTMLElement | null
++    const sample = mode === 'fit' ? rows : (rows.length > 1600 ? rows.slice(0, 1600) : rows)
+ 
 -    let max = measureTextWidth(col.title)
 -    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
-+    const sample = mode === 'fit' ? rows : (rows.length > 1600 ? rows.slice(0, 1600) : rows)
-+
-+    // Для fit-режима (двойной клик) даем дополнительный запас под иконки/паддинги/бордеры.
-+    let max = measureTextWidth(col.title) + (mode === 'fit' ? 40 : 24)
++    // В заголовке есть кнопка скрытия и внутренние отступы: учитываем это отдельно,
++    // чтобы при двойном клике текст заголовка не обрезался.
++    let max = measureTextWidth(col.title, headerSampleEl) + 28
      for (const p of sample) {
        const s = getCellString(p, col.id)
        if (!s) continue
 -      const w = measureTextWidth(s)
-+      const w = measureTextWidth(s) + (mode === 'fit' ? 28 : 0)
++      const w = measureTextWidth(s, cellSampleEl)
        if (w > max) max = w
      }
  
 -    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
-+    const safetyPad = mode === 'fit' ? (AUTO_PAD + 56) : AUTO_PAD
-+    const rawW = Math.round(max + safetyPad)
++    const rawW = Math.round(max + AUTO_PAD)
 +    const nextW = mode === 'fit'
-+      ? Math.max(AUTO_MIN_W, Math.min(4000, rawW))
++      ? Math.max(AUTO_MIN_W, rawW)
 +      : Math.max(AUTO_MIN_W, Math.min(cap, rawW))
 +
      setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
    }
-@@ -748,7 +773,9 @@ function onDragOverHeader(e: React.DragEvent) {
+ 
+@@ -748,7 +760,7 @@ function onDragOverHeader(e: React.DragEvent) {
                              onDoubleClick={(e) => {
                                e.preventDefault()
                                e.stopPropagation()
 -                              autoSizeColumn(id, filtered)
-+                              // После цикла dblclick/mousedown, чтобы не конфликтовать с resize-handlers.
-+                              requestAnimationFrame(() => autoSizeColumn(id, filtered, 'fit'))
++                              autoSizeColumn(id, filtered, 'fit')
                              }}
                            />
                          </th>
