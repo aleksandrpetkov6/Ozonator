@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('api', {
   deleteSecrets: () => ipcRenderer.invoke('secrets:delete'),
   netCheck: () => ipcRenderer.invoke('net:check'),
 
+  getAdminSettings: () => ipcRenderer.invoke('admin:getSettings'),
+  saveAdminSettings: (payload: { logRetentionDays: number }) => ipcRenderer.invoke('admin:saveSettings', payload),
+
   testAuth: () => ipcRenderer.invoke('ozon:testAuth'),
   syncProducts: () => ipcRenderer.invoke('ozon:syncProducts'),
 
