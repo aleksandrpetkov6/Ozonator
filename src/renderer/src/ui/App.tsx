@@ -160,7 +160,6 @@ export default function App() {
     setLastError(null)
 
     if (!online) {
-      setLastError('Нет интернета')
       return
     }
 
@@ -229,8 +228,6 @@ export default function App() {
       const saved = Math.max(1, Math.trunc(Number(resp.logRetentionDays) || parsed))
       setAdminLogLifeSaved(saved)
       setAdminLogLifeDraft(String(saved))
-      setAdminNotice({ kind: 'success', text: 'Настройки сохранены. Применено сразу.' })
-
       window.dispatchEvent(new Event('ozon:logs-updated'))
     } catch (e: any) {
       setAdminNotice({ kind: 'error', text: e?.message ?? 'Не удалось сохранить настройки Админ' })
@@ -241,6 +238,7 @@ export default function App() {
 
   const adminParsed = parseLogLifeDays(adminLogLifeDraft)
   const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
+  const visibleLastError = lastError && lastError !== 'Нет интернета' ? lastError : null
 
   return (
     <div className="appShell">
@@ -294,10 +292,6 @@ export default function App() {
               🗒️
             </NavLink>
 
-            <NavLink className="iconLink" to="/admin" title="Админ">
-              🛡️
-            </NavLink>
-
             <NavLink className="iconLink" to="/settings" title="Настройки">
               ⚙️
             </NavLink>
@@ -314,9 +308,13 @@ export default function App() {
               </button>
             )}
 
+            <NavLink className="iconLink" to="/admin" title="Админ">
+              🛡️
+            </NavLink>
+
             <button
               className={`iconBtn syncBtn ${running ? 'running' : ''}`}
-              title={online ? (running ? 'Синхронизация…' : 'Синхронизировать сейчас') : 'Нет интернета'}
+              title={online ? (running ? 'Синхронизация…' : 'Синхронизировать сейчас') : 'Оффлайн'}
               onClick={() => syncNow('manual')}
               disabled={!online || running}
             >
@@ -330,7 +328,7 @@ export default function App() {
 
       <div className="pageArea">
         <div className={isProducts ? 'container containerWide' : 'container'}>
-          {lastError && <div className="notice error">{lastError}</div>}
+          {visibleLastError && <div className="notice error">{visibleLastError}</div>}
 
           <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
             <ProductsPageMemo query={productsQuery} onStats={onProductStats} />
