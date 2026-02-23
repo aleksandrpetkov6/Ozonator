@@ -102,7 +102,7 @@ type ProductInfoV2 = {
 
 type AttrValue = { value?: string; dictionary_value_id?: number }
 
-type Attribute = { id: number; values?: AttrValue[] }
+type Attribute = { id: number; name?: string; values?: AttrValue[]; [key: string]: any }
 
 type ProductAttributesV3 = {
   id?: number
@@ -113,6 +113,79 @@ type ProductAttributesV3 = {
   description_category_id?: number
   type_id?: number
   attributes?: Attribute[]
+  complex_attributes?: Array<{ attributes?: Attribute[] }>
+  [key: string]: any
+}
+
+function collectTextCandidates(input: any, out: string[] = [], depth = 0): string[] {
+  if (input == null || depth > 5) return out
+
+  if (typeof input === 'string') {
+    const t = input.trim()
+    if (t) out.push(t)
+    return out
+  }
+
+  if (typeof input === 'number' || typeof input === 'boolean') {
+    out.push(String(input))
+    return out
+  }
+
+  if (Array.isArray(input)) {
+    for (const v of input) collectTextCandidates(v, out, depth + 1)
+    return out
+  }
+
+  if (typeof input === 'object') {
+    const preferredKeys = [
+      'value', 'name', 'text', 'label',
+      'dictionary_value', 'dictionaryValue',
+      'dictionary_value_name', 'dictionaryValueName',
+      'display_value', 'displayValue',
+    ]
+    for (const k of preferredKeys) {
+      if (Object.prototype.hasOwnProperty.call(input, k)) {
+        collectTextCandidates((input as any)[k], out, depth + 1)
+      }
+    }
+  }
+
+  return out
+}
+
+function normalizeBrandText(raw: any): string | null {
+  const candidates = collectTextCandidates(raw)
+  for (const c of candidates) {
+    const t = String(c).trim()
+    if (!t) continue
+    if (/^\d+$/.test(t)) continue
+    if (t === '[object Object]') continue
+    return t
+  }
+  return null
+}
+
+function extractBrandFromAttributes(attrs: Array<any>): string | null {
+  const brandIds = new Set([85, 31])
+
+  for (const a of attrs) {
+    if (!a) continue
+    if (brandIds.has(Number((a as any).id))) {
+      const v = normalizeBrandText((a as any).values) ?? normalizeBrandText(a)
+      if (v) return v
+    }
+  }
+
+  for (const a of attrs) {
+    const name = String((a as any)?.name ?? '').trim().toLowerCase()
+    if (!name) continue
+    if (name.includes('бренд') || name === 'brand') {
+      const v = normalizeBrandText((a as any).values) ?? normalizeBrandText(a)
+      if (v) return v
+    }
+  }
+
+  return null
 }
 
 // ---------------- Helpers ----------------
@@ -301,8 +374,6 @@ async function fetchAttributesMap(
 ) {
   const map = new Map<number, { brand?: string | null; barcode?: string | null; category?: string | null; descriptionCategoryId?: number | null; typeId?: number | null }>()
 
-  // По задаче бренда используем значение attributes[].values[].value у id 85/31.
-  const BRAND_ATTR_IDS = [85, 31]
 
   // Встречаются /v3/products/info/attributes и /v4/products/info/attributes.
   // Делаем основной запрос в /v3, а /v4 используем как fallback.
@@ -363,18 +434,17 @@ async function fetchAttributesMap(
         const pid = Number((x as any).id ?? (x as any).product_id ?? (x as any).productId)
         if (!pid) continue
 
-        const attrs = Array.isArray(x.attributes) ? x.attributes : []
-
-        // Бренд: сначала по известным id, если value пустой — используем dictionary_value_id.
-        let brand: string | null = null
-        for (const id of BRAND_ATTR_IDS) {
-          const a = attrs.find(a => Number(a.id) === id)
-          const v = a?.values?.[0]
-          if (!v) continue
-          const val = (v.value ?? '').toString().trim()
-          if (val) { brand = val; break }
-          if (v.dictionary_value_id != null) { brand = String(v.dictionary_value_id); break }
+        const attrsFlat: Attribute[] = []
+        if (Array.isArray((x as any).attributes)) attrsFlat.push(...((x as any).attributes as Attribute[]))
+        if (Array.isArray((x as any).complex_attributes)) {
+          for (const ca of (x as any).complex_attributes) {
+            if (Array.isArray((ca as any)?.attributes)) attrsFlat.push(...((ca as any).attributes as Attribute[]))
+          }
         }
+
+        // Бренд: берём текст из атрибутов (в т.ч. вложенных) по id 85/31.
+        // Если у Ozon в категории другой id, дополнительно ищем атрибут по имени «Бренд/Brand».
+        let brand: string | null = extractBrandFromAttributes(attrsFlat)
 
         const barcode = x.barcode ? String(x.barcode) : null
         const category = (x.category_id != null) ? String(x.category_id) : null
