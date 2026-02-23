@@ -87,6 +87,7 @@ type ProductInfoV2 = {
   created_at?: string
   visible?: boolean
   description_category_id?: number
+  type_id?: number
   name?: string
   product_name?: string
   title?: string
@@ -103,9 +104,12 @@ type Attribute = { id: number; values?: AttrValue[] }
 
 type ProductAttributesV3 = {
   id?: number
+  product_id?: number
   offer_id?: string
   barcode?: string
   category_id?: number
+  description_category_id?: number
+  type_id?: number
   attributes?: Attribute[]
 }
 
@@ -160,8 +164,92 @@ function buildHiddenReasons(info: ProductInfoV2): string | null {
   return Array.from(new Set(parts)).slice(0, 12).join('; ')
 }
 
+
+function toNumId(v: any): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v)
+    if (Number.isFinite(n)) return n
+  }
+  return null
+}
+
+type CategoryTreeNames = { categoryName?: string | null; typeName?: string | null }
+type CategoryTreeMaps = {
+  byPair: Map<string, CategoryTreeNames>
+  byTypeId: Map<number, CategoryTreeNames>
+  byDescriptionCategoryId: Map<number, CategoryTreeNames>
+}
+
+async function fetchCategoryTreeMaps(secrets: Secrets): Promise<CategoryTreeMaps> {
+  const byPair = new Map<string, CategoryTreeNames>()
+  const byTypeId = new Map<number, CategoryTreeNames>()
+  const byDescriptionCategoryId = new Map<number, CategoryTreeNames>()
+
+  const candidates: Array<() => Promise<any>> = [
+    () => ozonPost(secrets, '/v1/description-category/tree', { language: 'DEFAULT' }),
+    () => ozonPost(secrets, '/v1/description-category/tree', {}),
+    () => ozonGet(secrets, '/v1/description-category/tree'),
+  ]
+
+  let payload: any = null
+  for (const fn of candidates) {
+    try {
+      payload = await fn()
+      break
+    } catch (e: any) {
+      const st = e?.details?.status
+      if (st && st !== 404) {
+        // пробуем следующий вариант формы запроса
+      }
+    }
+  }
+
+  if (!payload) return { byPair, byTypeId, byDescriptionCategoryId }
+
+  const seen = new Set<any>()
+  const walk = (node: any) => {
+    if (!node || typeof node !== 'object') return
+    if (seen.has(node)) return
+    seen.add(node)
+
+    if (Array.isArray(node)) {
+      for (const it of node) walk(it)
+      return
+    }
+
+    const n: any = node
+    const descriptionCategoryId = toNumId(n.description_category_id ?? n.descriptionCategoryId)
+    const typeId = toNumId(n.type_id ?? n.typeId ?? n.type?.id ?? n.type?.type_id ?? n.type?.typeId)
+    const categoryName = pickFirstString(n.category_name, n.categoryName, n.description_category_name, n.descriptionCategoryName)
+    const typeName = pickFirstString(n.type_name, n.typeName, n.type?.name, n.type?.type_name, n.type?.typeName)
+
+    if ((descriptionCategoryId || typeId) && (categoryName || typeName)) {
+      const names: CategoryTreeNames = { categoryName: categoryName ?? null, typeName: typeName ?? null }
+
+      if (descriptionCategoryId && typeId) {
+        byPair.set(`${descriptionCategoryId}:${typeId}`, names)
+      }
+
+      if (typeId && !byTypeId.has(typeId)) {
+        byTypeId.set(typeId, names)
+      }
+
+      if (descriptionCategoryId && !byDescriptionCategoryId.has(descriptionCategoryId)) {
+        byDescriptionCategoryId.set(descriptionCategoryId, names)
+      }
+    }
+
+    for (const v of Object.values(n)) walk(v)
+  }
+
+  walk(payload)
+
+  return { byPair, byTypeId, byDescriptionCategoryId }
+}
+
 async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
-  const map = new Map<number, { brand?: string | null; barcode?: string | null; category?: string | null }>()
+  const map = new Map<number, { brand?: string | null; barcode?: string | null; category?: string | null; descriptionCategoryId?: number | null; typeId?: number | null }>()
 
   // Частые id атрибута "бренд" в разных категориях/кабинетах.
   // (85 — самый распространённый, остальные — редкие вариации.)
@@ -226,12 +314,16 @@ async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
 
         const barcode = x.barcode ? String(x.barcode) : null
         const category = (x.category_id != null) ? String(x.category_id) : null
+        const descriptionCategoryId = toNumId((x as any).description_category_id ?? (x as any).descriptionCategoryId)
+        const typeId = toNumId((x as any).type_id ?? (x as any).typeId ?? (x as any).type?.id)
 
         const prev = map.get(pid) ?? {}
         map.set(pid, {
           brand: prev.brand ?? brand,
           barcode: prev.barcode ?? barcode,
           category: prev.category ?? category,
+          descriptionCategoryId: prev.descriptionCategoryId ?? descriptionCategoryId,
+          typeId: prev.typeId ?? typeId,
         })
       }
 
@@ -446,6 +538,13 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
     return extractItems(j2)
   }
 
+  let categoryTreeMaps: CategoryTreeMaps | null = null
+  try {
+    categoryTreeMaps = await fetchCategoryTreeMaps(secrets)
+  } catch {
+    categoryTreeMaps = null
+  }
+
   for (const ids of chunk(productIds, 200)) {
     const items = await fetchInfoChunk(ids)
 
@@ -455,12 +554,25 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
 
       const barcode = (x.barcode && String(x.barcode)) || (Array.isArray(x.barcodes) && x.barcodes[0]) || null
 
-      const categoryId = (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
+      const categoryId = toNumId((x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id)
+      const descriptionCategoryId = toNumId((x as any).description_category_id ?? (x as any).descriptionCategoryId)
+      const typeId = toNumId((x as any).type_id ?? (x as any).typeId ?? (x as any).type?.id)
       const brandRaw = (x as any).brand ?? (x as any).brand_name ?? (x as any).brandName ?? null
       const visibleRaw = (x as any).visible ?? (x as any).is_visible ?? (x as any).isVisible ?? (x as any).visibility?.visible ?? null
       const isVisible = (typeof visibleRaw === 'boolean') ? visibleRaw : ((visibleRaw == null) ? null : Boolean(visibleRaw))
 
       const name = pickFirstString((x as any).name, (x as any).product_name, (x as any).productName, (x as any).title)
+
+      let categoryNameFromTree: string | null = null
+      let typeNameFromTree: string | null = null
+      if (categoryTreeMaps) {
+        const pair = (descriptionCategoryId && typeId) ? categoryTreeMaps.byPair.get(`${descriptionCategoryId}:${typeId}`) : null
+        const byType = typeId ? categoryTreeMaps.byTypeId.get(typeId) : null
+        const byDesc = descriptionCategoryId ? categoryTreeMaps.byDescriptionCategoryId.get(descriptionCategoryId) : null
+        const treeNames = pair ?? byType ?? byDesc ?? null
+        categoryNameFromTree = treeNames?.categoryName ?? null
+        typeNameFromTree = treeNames?.typeName ?? null
+      }
 
       out.push({
         product_id: pid,
@@ -468,8 +580,8 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
         sku: x.sku != null ? String(x.sku) : null,
         barcode,
         brand: (brandRaw != null && String(brandRaw).trim().length) ? String(brandRaw).trim() : null,
-        category: categoryId != null ? String(categoryId) : null,
-        type: x.description_category_id != null ? String(x.description_category_id) : null,
+        category: typeNameFromTree ?? categoryNameFromTree ?? (categoryId != null ? String(categoryId) : null),
+        type: typeId != null ? String(typeId) : (descriptionCategoryId != null ? String(descriptionCategoryId) : null),
         name,
         is_visible: isVisible,
         hidden_reasons: buildHiddenReasons(x),
@@ -486,7 +598,29 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
       if (!a) continue
       if (!p.brand && a.brand) p.brand = a.brand
       if (!p.barcode && a.barcode) p.barcode = a.barcode
-      if (!p.category && a.category) p.category = a.category
+
+      const currentTypeId = toNumId(p.type)
+      const descriptionCategoryId = a.descriptionCategoryId ?? null
+      const typeId = a.typeId ?? currentTypeId
+
+      if (categoryTreeMaps) {
+        const pair = (descriptionCategoryId && typeId) ? categoryTreeMaps.byPair.get(`${descriptionCategoryId}:${typeId}`) : null
+        const byType = typeId ? categoryTreeMaps.byTypeId.get(typeId) : null
+        const byDesc = descriptionCategoryId ? categoryTreeMaps.byDescriptionCategoryId.get(descriptionCategoryId) : null
+        const treeNames = pair ?? byType ?? byDesc ?? null
+
+        if (!p.category) {
+          p.category = treeNames?.typeName ?? treeNames?.categoryName ?? a.category ?? p.category
+        } else if (p.category === '-' || /^\d+$/.test(String(p.category))) {
+          p.category = treeNames?.typeName ?? treeNames?.categoryName ?? p.category
+        }
+
+        if ((!p.type || p.type === '-') && typeId != null) {
+          p.type = String(typeId)
+        }
+      } else if (!p.category && a.category) {
+        p.category = a.category
+      }
     }
   } catch {
     // атрибуты не критичны — если упали, оставляем базовые поля
