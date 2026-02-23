@@ -111,15 +111,68 @@ function formatDateTimeRu(v: any): string {
   const mi = String(d.getMinutes()).padStart(2, '0')
   const ss = String(d.getSeconds()).padStart(2, '0')
 
-  return `${dd}.${mm}.${yy}. ${hh}.${mi}.${ss}.`
+  return `${dd}.${mm}.${yy} ${hh}.${mi}.${ss}`
+}
+
+const VISIBILITY_REASON_MAP_RU: Record<string, string> = {
+  double_without_merger_offer: 'Дубль товара без объединения карточек',
+  image_absent_with_shipment: 'Нет изображения при наличии отгрузок',
+  image_absent: 'Нет изображения',
+  no_stock: 'Нет остатков',
+  empty_stock: 'Нет остатков',
+  archived: 'Товар в архиве',
+  disabled_by_seller: 'Скрыт продавцом',
+  blocked: 'Заблокирован',
+  banned: 'Заблокирован',
+  moderation_failed: 'Не пройдена модерация',
+  content_moderation_failed: 'Не пройдена модерация контента',
+  price_not_set: 'Не указана цена',
+  barcode_absent: 'Не указан штрихкод',
+}
+
+function normalizeVisibilityFlag(v: any): boolean | null {
+  if (v === true || v === 1) return true
+  if (v === false || v === 0) return false
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase()
+    if (s === 'true' || s === '1') return true
+    if (s === 'false' || s === '0') return false
+  }
+  return null
+}
+
+function translateVisibilityReasonItemRu(v: any): string {
+  const raw = String(v ?? '').trim()
+  if (!raw) return ''
+
+  if (/^[a-z0-9_]+$/i.test(raw)) {
+    const code = raw.toLowerCase()
+    if (VISIBILITY_REASON_MAP_RU[code]) return VISIBILITY_REASON_MAP_RU[code]
+    return `Причина Ozon (${code})`
+  }
+
+  return raw
+}
+
+function translateVisibilityReasonsRu(v: any): string {
+  if (v == null) return ''
+  const raw = String(v).trim()
+  if (!raw) return ''
+
+  const parts = raw
+    .split(/\s*;\s*/)
+    .map((s) => translateVisibilityReasonItemRu(s))
+    .filter(Boolean)
+
+  return Array.from(new Set(parts)).join('; ')
 }
 
 function visibilityText(p: Product): string {
-  const v = p.is_visible
-  if (v === true || v === 1) return 'true'
-  if (v === false || v === 0) return 'false'
-  if (p.hidden_reasons && String(p.hidden_reasons).trim()) return 'false'
-  return '-'
+  const v = normalizeVisibilityFlag(p.is_visible)
+  if (v === true) return 'Виден'
+  if (v === false) return 'Скрыт'
+  if (translateVisibilityReasonsRu(p.hidden_reasons)) return 'Скрыт'
+  return 'Неизвестно'
 }
 
 let PRODUCTS_CACHE: Product[] | null = null
@@ -259,6 +312,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
         .map((colId) => {
           if (colId === 'archived') return ''
           if (colId === 'is_visible') return visibilityText(p)
+          if (colId === 'hidden_reasons') return translateVisibilityReasonsRu(p.hidden_reasons)
           if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
           if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
           return toText((p as any)[colId])
@@ -506,14 +560,19 @@ function onDragOverHeader(e: React.DragEvent) {
 
     if (colId === 'is_visible') {
       const txt = visibilityText(p)
-      const title = (p.hidden_reasons && String(p.hidden_reasons).trim()) ? String(p.hidden_reasons) : undefined
-      return { text: txt, title }
+      const reasonsRu = translateVisibilityReasonsRu(p.hidden_reasons)
+      return { text: txt, title: reasonsRu || undefined }
+    }
+
+    if (colId === 'hidden_reasons') {
+      const reasonsRu = translateVisibilityReasonsRu(p.hidden_reasons)
+      return { text: reasonsRu || '-', title: reasonsRu || undefined }
     }
 
     const v = (p as any)[colId]
     if (colId === 'created_at' || colId === 'updated_at') {
       const f = formatDateTimeRu(v)
-      return { text: f || '-', title: (v == null || v === '') ? undefined : String(v) }
+      return { text: f || '-', title: f || undefined }
     }
     return { text: (v == null || v === '') ? '-' : String(v) }
   }
@@ -539,6 +598,7 @@ function onDragOverHeader(e: React.DragEvent) {
   function getCellString(p: Product, colId: ColDef['id']): string {
     if (colId === 'archived') return ''
     if (colId === 'is_visible') return visibilityText(p)
+    if (colId === 'hidden_reasons') return translateVisibilityReasonsRu(p.hidden_reasons)
     if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
     if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
     if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
