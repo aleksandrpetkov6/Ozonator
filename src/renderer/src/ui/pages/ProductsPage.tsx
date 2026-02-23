@@ -739,6 +739,11 @@ function onDragOverHeader(e: React.DragEvent) {
   const topSpace = startRow * ROW_H
   const bottomSpace = Math.max(0, (totalRows - endRow) * ROW_H)
 
+  const getHeaderTitleText = (c: ColDef): string => {
+    if (String(c.id) === 'offer_id') return `${c.title} ${totalRows}`
+    return c.title
+  }
+
   return (
     <div className="productsCard">
       <div className="productsTableArea">
@@ -776,7 +781,6 @@ function onDragOverHeader(e: React.DragEvent) {
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
                         showCol(String(c.id))
-                        setCollapsedOpen(false)
                       }}
                     >
                       {c.title}
@@ -810,7 +814,7 @@ function onDragOverHeader(e: React.DragEvent) {
                         >
                           <div className="thInner">
                             <button className="colToggle" onClick={() => hideCol(id)} title="Скрыть">−</button>
-                            <span className="thTitle" title={c.title}>{c.title}</span>
+                            <span className="thTitle" title={getHeaderTitleText(c)}>{getHeaderTitleText(c)}</span>
                           </div>
                           <div
                             className="thResizer"
