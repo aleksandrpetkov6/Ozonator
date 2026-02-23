@@ -99,24 +99,23 @@ export default function SettingsPage() {
     <div className="card">
       <div className="h1">Настройки</div>
 
-      <div className="row" style={{ marginTop: 12 }}>
-        <div className="col">
+      <div className="row" style={{ marginTop: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div className="col" style={{ flex: '0 1 360px', minWidth: 240 }}>
+          <div style={{ height: 22, marginBottom: 6 }} />
           {err ? (
             <span className="pill pillError">{err}</span>
           ) : storeName ? (
-            <span className="pill" title="Название магазина">Магазин: {storeName}</span>
+            <span className="pill" title={storeName}>{storeName}</span>
           ) : (
-            <span className="small muted">Название магазина появится после проверки доступа</span>
+            <span className="small muted">Название появится после проверки доступа</span>
           )}
         </div>
-      </div>
 
-      <div className="row" style={{ marginTop: 12 }}>
-        <div className="col field">
+        <div className="col field" style={{ minWidth: 220 }}>
           <label>Client-Id</label>
           <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="например 55201" />
         </div>
-        <div className="col field">
+        <div className="col field" style={{ minWidth: 220 }}>
           <label>Api-Key</label>
           <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="например 9c70..." />
         </div>
