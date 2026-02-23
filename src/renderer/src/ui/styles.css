@@ -871,3 +871,95 @@ button:disabled{
 .tableHeadX::-webkit-scrollbar{ height: 0; width: 0; }
 
 .tableBody tr:first-child td{ border-top: none; }
+
+.topbarSaveBtn{
+  height: 32px;
+  border-radius: 12px;
+  border: 1px solid rgba(10,132,255,.28);
+  background: rgba(10,132,255,.10);
+  color: #0a64d6;
+  font-weight: 700;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: transform .12s ease, box-shadow .16s ease, background .16s ease;
+}
+
+.topbarSaveBtn:hover:not(:disabled){
+  background: rgba(10,132,255,.14);
+  transform: translateY(-1px);
+  box-shadow: var(--shadowSoft);
+}
+
+.topbarSaveBtn:active:not(:disabled){
+  transform: translateY(0) scale(.99);
+}
+
+.topbarSaveBtn.isDirty{
+  border-color: rgba(10,132,255,.40);
+  background: rgba(10,132,255,.16);
+}
+
+.topbarSaveBtn:disabled{
+  opacity: .6;
+  cursor: default;
+}
+
+.adminWrap{
+  padding: 12px;
+}
+
+.adminCard{
+  max-width: 720px;
+}
+
+.adminCardHead{
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.adminCardIcon{
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hairline);
+  background: rgba(255,255,255,.72);
+}
+
+.adminTitle{
+  font-size: 18px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.adminSub{
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.adminGrid{
+  display: grid;
+  gap: 12px;
+}
+
+.adminField{
+  display: grid;
+  gap: 8px;
+}
+
+.adminFieldLabel{
+  font-weight: 650;
+}
+
+.adminNumberInput{
+  max-width: 220px;
+}
+
+.adminHint{
+  color: var(--muted);
+  font-size: 12px;
+}
