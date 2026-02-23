@@ -175,7 +175,16 @@ export default function App() {
     <div className="appShell">
       <div className="topbar">
         <div className="topbarInner">
-          <div className="topbarSlot">
+          <div className="topbarLeft">
+            <NavLink
+              end
+              to="/"
+              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+              title="Товары"
+            >
+              Товары
+            </NavLink>
+
             {isProducts && (
               <div className="topbarSearch">
                 <div className="searchWrap">
