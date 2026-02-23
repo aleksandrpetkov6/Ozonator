@@ -50,7 +50,7 @@ a{ color: inherit; text-decoration: none; }
   max-width: none;
   margin: 0;
   overflow: hidden;
-  padding: 18px 18px 26px;
+  padding: 0 0 12px;
   height: 100%;
   overflow: auto;
 }
@@ -443,6 +443,14 @@ button:disabled{
   transform: scale(.98);
 }
 
+.logsCard{
+  padding: 0;
+}
+
+.logsCard .table{
+  margin-top: 0;
+}
+
 /* Products table density (вкладка «Товары») */
 .productsCard .table th,
 .productsCard .table td{
@@ -453,6 +461,12 @@ button:disabled{
 .logsCard .table th,
 .logsCard .table td{
   padding: 2px 4px;
+}
+
+.logsCard .table th{
+  padding-top: 1px;
+  padding-bottom: 1px;
+  line-height: 1.1;
 }
 
 .pillError{
