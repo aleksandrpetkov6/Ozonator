@@ -1,25 +1,76 @@
-import { app } from 'electron'
-import { join } from 'path'
+import { existsSync, rmSync, statSync } from 'fs'
 import Database from 'better-sqlite3'
 import type { ProductRow } from '../types'
+import { ensurePersistentStorageReady, getLifecycleMarkerPath, getPersistentDbPath } from './paths'
 
 let db: Database.Database | null = null
 
+const DEFAULT_LOG_RETENTION_DAYS = 30
+const MAX_JSON_LEN = 20000
+
+type AppLogType =
+  | 'check_auth'
+  | 'sync_products'
+  | 'app_install'
+  | 'app_update'
+  | 'app_reinstall'
+  | 'app_uninstall'
+  | 'admin_settings'
+
 function dbPath() {
-  return join(app.getPath('userData'), 'app.db')
+  return getPersistentDbPath()
 }
 
-/**
- * Инициализация БД + миграции.
- * Важно: эту функцию вызывает electron/main/index.ts при старте приложения.
- */
+function mustDb(): Database.Database {
+  if (!db) throw new Error('DB not initialized (call ensureDb() first)')
+  return db
+}
+
+function getSettingValue(key: string): string | null {
+  const row = mustDb().prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value?: string } | undefined
+  return typeof row?.value === 'string' ? row.value : null
+}
+
+function setSettingValue(key: string, value: string) {
+  mustDb().prepare(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run(key, value, new Date().toISOString())
+}
+
+function parsePositiveInt(value: unknown, fallback: number): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  const i = Math.trunc(n)
+  if (i <= 0) return fallback
+  return i
+}
+
+function normalizeRetentionDays(value: unknown): number {
+  const n = parsePositiveInt(value, DEFAULT_LOG_RETENTION_DAYS)
+  return Math.min(3650, Math.max(1, n))
+}
+
+function safeJson(value: any): string | null {
+  if (value == null) return null
+  try {
+    return JSON.stringify(value).slice(0, MAX_JSON_LEN)
+  } catch {
+    return JSON.stringify({ unserializable: true }).slice(0, MAX_JSON_LEN)
+  }
+}
+
 export function ensureDb() {
   if (db) return
+
+  ensurePersistentStorageReady()
 
   db = new Database(dbPath())
   db.pragma('journal_mode = WAL')
 
-  // Базовая схема
   db.exec(`
     CREATE TABLE IF NOT EXISTS products (
       offer_id TEXT PRIMARY KEY,
@@ -43,9 +94,14 @@ export function ensureDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_sync_log_started_at ON sync_log(started_at);
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `)
 
-  // Миграции: добавляем недостающие колонки в products (для расширенного экрана «Товары»)
   const cols = new Set(
     (db.prepare('PRAGMA table_info(products)').all() as any[]).map((r) => String(r.name))
   )
@@ -64,24 +120,97 @@ export function ensureDb() {
   add('is_visible', 'INTEGER NULL')
   add('hidden_reasons', 'TEXT NULL')
   add('created_at', 'TEXT NULL')
-
-  // Чтобы не смешивать товары разных магазинов при смене ключей
   add('store_client_id', 'TEXT NULL')
 
-  // Логи: фильтрация по магазину
   const logCols = new Set(
     (db.prepare('PRAGMA table_info(sync_log)').all() as any[]).map((r) => String(r.name))
   )
   if (!logCols.has('store_client_id')) {
     db.exec(`ALTER TABLE sync_log ADD COLUMN store_client_id TEXT NULL;`)
-    logCols.add('store_client_id')
   }
 
+  if (getSettingValue('log_retention_days') == null) {
+    setSettingValue('log_retention_days', String(DEFAULT_LOG_RETENTION_DAYS))
+  }
+
+  dbPruneLogsByRetention()
 }
 
-function mustDb(): Database.Database {
-  if (!db) throw new Error('DB not initialized (call ensureDb() first)')
-  return db
+export function dbGetAdminSettings() {
+  const raw = getSettingValue('log_retention_days')
+  return {
+    logRetentionDays: normalizeRetentionDays(raw ?? DEFAULT_LOG_RETENTION_DAYS),
+  }
+}
+
+export function dbSaveAdminSettings(input: { logRetentionDays: number }) {
+  const logRetentionDays = normalizeRetentionDays(input.logRetentionDays)
+  setSettingValue('log_retention_days', String(logRetentionDays))
+  dbPruneLogsByRetention()
+
+  dbLogEvent('admin_settings', {
+    status: 'success',
+    meta: { logRetentionDays },
+  })
+
+  return { logRetentionDays }
+}
+
+export function dbPruneLogsByRetention() {
+  const days = dbGetAdminSettings().logRetentionDays
+  const cutoffMs = Date.now() - (days * 24 * 60 * 60 * 1000)
+  const cutoffIso = new Date(cutoffMs).toISOString()
+
+  mustDb().prepare(`
+    DELETE FROM sync_log
+    WHERE COALESCE(finished_at, started_at) < ?
+  `).run(cutoffIso)
+}
+
+export function dbIngestLifecycleMarkers(args: { appVersion: string }) {
+  const uninstallMarker = getLifecycleMarkerPath('uninstall')
+  const installMarker = getLifecycleMarkerPath('installer')
+
+  if (existsSync(uninstallMarker)) {
+    const at = statSync(uninstallMarker).mtime.toISOString()
+    dbLogEvent('app_uninstall', {
+      status: 'success',
+      startedAt: at,
+      finishedAt: at,
+      meta: { source: 'nsis-marker' },
+    })
+    try { rmSync(uninstallMarker, { force: true }) } catch {}
+  }
+
+  if (existsSync(installMarker)) {
+    const at = statSync(installMarker).mtime.toISOString()
+    const prevVersion = getSettingValue('app_version_last_seen')
+
+    const type: AppLogType = !prevVersion
+      ? 'app_install'
+      : (prevVersion === args.appVersion ? 'app_reinstall' : 'app_update')
+
+    dbLogEvent(type, {
+      status: 'success',
+      startedAt: at,
+      finishedAt: at,
+      meta: {
+        source: 'nsis-marker',
+        appVersion: args.appVersion,
+        previousVersion: prevVersion,
+      },
+    })
+
+    try { rmSync(installMarker, { force: true }) } catch {}
+  }
+
+  // Если приложение уже существовало до внедрения маркеров — просто зафиксируем текущую версию,
+  // чтобы следующие события корректно определялись как обновление/переустановка.
+  if (!getSettingValue('app_version_last_seen')) {
+    setSettingValue('app_version_last_seen', args.appVersion)
+  } else {
+    setSettingValue('app_version_last_seen', args.appVersion)
+  }
 }
 
 export function dbUpsertProducts(items: Array<{
@@ -232,29 +361,62 @@ export function dbLogFinish(id: number, args: {
     finishedAt,
     args.itemsCount ?? null,
     args.errorMessage ?? null,
-    args.errorDetails ? JSON.stringify(args.errorDetails).slice(0, 20000) : null,
-    args.meta ? JSON.stringify(args.meta).slice(0, 20000) : null,
+    safeJson(args.errorDetails),
+    safeJson(args.meta),
     args.storeClientId ?? null,
     id
   )
+
+  dbPruneLogsByRetention()
+}
+
+export function dbLogEvent(type: AppLogType, args?: {
+  status?: 'success' | 'error'
+  startedAt?: string
+  finishedAt?: string | null
+  itemsCount?: number | null
+  errorMessage?: string | null
+  errorDetails?: any
+  meta?: any
+  storeClientId?: string | null
+}) {
+  const now = new Date().toISOString()
+  const startedAt = args?.startedAt ?? now
+  const finishedAt = args?.finishedAt ?? startedAt
+
+  mustDb().prepare(`
+    INSERT INTO sync_log (
+      type, status, started_at, finished_at, items_count, error_message, error_details, meta, store_client_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    type,
+    args?.status ?? 'success',
+    startedAt,
+    finishedAt,
+    args?.itemsCount ?? null,
+    args?.errorMessage ?? null,
+    safeJson(args?.errorDetails),
+    safeJson(args?.meta),
+    args?.storeClientId ?? null,
+  )
+
+  dbPruneLogsByRetention()
 }
 
 export function dbGetSyncLog(storeClientId?: string | null) {
   if (storeClientId) {
     return mustDb().prepare(`
-      SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
+      SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta, store_client_id
       FROM sync_log
-      WHERE store_client_id = ?
+      WHERE store_client_id = ? OR store_client_id IS NULL
       ORDER BY id DESC
-      LIMIT 500
     `).all(storeClientId)
   }
 
   return mustDb().prepare(`
-    SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta
+    SELECT id, type, status, started_at, finished_at, items_count, error_message, error_details, meta, store_client_id
     FROM sync_log
     ORDER BY id DESC
-    LIMIT 500
   `).all()
 }
 
