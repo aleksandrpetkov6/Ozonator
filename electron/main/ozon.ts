@@ -233,6 +233,7 @@ async function fetchCategoryTreeMaps(secrets: Secrets): Promise<CategoryTreeMaps
   const byDescriptionCategoryId = new Map<number, CategoryTreeNames>()
 
   const candidates: Array<() => Promise<any>> = [
+    () => ozonPost(secrets, '/v1/description-category/tree', { language: 'RU' }),
     () => ozonPost(secrets, '/v1/description-category/tree', { language: 'DEFAULT' }),
     () => ozonPost(secrets, '/v1/description-category/tree', {}),
     () => ozonGet(secrets, '/v1/description-category/tree'),
