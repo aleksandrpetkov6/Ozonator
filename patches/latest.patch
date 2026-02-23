@@ -1,137 +1,217 @@
-diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
-index e271975..b8db7b6 100644
 --- a/electron/main/ozon.ts
 +++ b/electron/main/ozon.ts
-@@ -109,6 +109,22 @@ type ProductAttributesV3 = {
+@@ -109,8 +109,144 @@
    attributes?: Attribute[]
  }
  
-+type DescriptionTreeName = {
-+  categoryName: string | null
-+  typeName: string | null
++type CategoryTreeLabel = {
++  category_name: string | null
++  type_name: string | null
++  category_id: number | null
++  type_id: number | null
++  description_category_id: number | null
 +}
 +
-+type DescriptionTreeMaps = {
-+  byDescriptionCategoryId: Map<number, DescriptionTreeName>
-+  byTypeId: Map<number, DescriptionTreeName>
++type CategoryTreeMaps = {
++  byTypeId: Map<number, CategoryTreeLabel>
++  byDescriptionCategoryId: Map<number, CategoryTreeLabel>
++  byPair: Map<string, CategoryTreeLabel>
++  byCategoryId: Map<number, CategoryTreeLabel>
 +}
 +
-+let descriptionTreeCache: {
-+  clientId: string
-+  loadedAt: number
-+  maps: DescriptionTreeMaps
-+} | null = null
++const categoryTreeCache = new Map<string, CategoryTreeMaps>()
 +
  // ---------------- Helpers ----------------
  
- function chunk<T>(arr: T[], size: number) {
-@@ -247,6 +263,85 @@ async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
-   return map
- }
- 
-+function mergeDescriptionTreeName(prev: DescriptionTreeName | undefined, next: DescriptionTreeName): DescriptionTreeName {
-+  const categoryName = prev?.categoryName ?? next.categoryName ?? null
-+  const typeName = prev?.typeName ?? next.typeName ?? null
-+  return { categoryName, typeName }
-+}
-+
-+function asNodeList(x: any): any[] {
-+  if (Array.isArray(x)) return x
-+  if (Array.isArray(x?.result)) return x.result
-+  if (Array.isArray(x?.data)) return x.data
-+  if (Array.isArray(x?.items)) return x.items
-+  return []
-+}
-+
-+async function fetchDescriptionTreeMaps(secrets: Secrets): Promise<DescriptionTreeMaps> {
-+  const cached = descriptionTreeCache
-+  if (cached && cached.clientId === secrets.clientId && (Date.now() - cached.loadedAt) < 6 * 60 * 60 * 1000) {
-+    return cached.maps
-+  }
-+
-+  let json: any
-+  try {
-+    json = await ozonPost(secrets, '/v1/description-category/tree', { language: 'DEFAULT' })
-+  } catch (e1) {
-+    try {
-+      json = await ozonPost(secrets, '/v1/description-category/tree', {})
-+    } catch {
-+      throw e1
++function numOrNull(...vals: any[]): number | null {
++  for (const v of vals) {
++    if (typeof v === 'number' && Number.isFinite(v)) return v
++    if (typeof v === 'string' && v.trim() !== '') {
++      const n = Number(v)
++      if (Number.isFinite(n)) return n
 +    }
 +  }
++  return null
++}
 +
-+  const maps: DescriptionTreeMaps = {
-+    byDescriptionCategoryId: new Map<number, DescriptionTreeName>(),
-+    byTypeId: new Map<number, DescriptionTreeName>(),
++function makeCategoryTreeMaps(): CategoryTreeMaps {
++  return {
++    byTypeId: new Map<number, CategoryTreeLabel>(),
++    byDescriptionCategoryId: new Map<number, CategoryTreeLabel>(),
++    byPair: new Map<string, CategoryTreeLabel>(),
++    byCategoryId: new Map<number, CategoryTreeLabel>(),
 +  }
++}
 +
-+  const visit = (node: any, inheritedCategoryName: string | null = null) => {
-+    if (!node || typeof node !== 'object') return
++function saveCategoryTreeLabel(maps: CategoryTreeMaps, label: CategoryTreeLabel) {
++  const hasAnyName = Boolean((label.type_name && label.type_name.trim()) || (label.category_name && label.category_name.trim()))
++  if (!hasAnyName) return
++
++  if (label.type_id != null) maps.byTypeId.set(label.type_id, label)
++  if (label.description_category_id != null) maps.byDescriptionCategoryId.set(label.description_category_id, label)
++  if (label.category_id != null) maps.byCategoryId.set(label.category_id, label)
++  if (label.description_category_id != null && label.type_id != null) {
++    maps.byPair.set(`${label.description_category_id}:${label.type_id}`, label)
++  }
++}
++
++function extractCategoryTreeMapsFromJson(root: any): CategoryTreeMaps {
++  const maps = makeCategoryTreeMaps()
++  const seen = new Set<any>()
++
++  function walk(node: any, inheritedCategoryName: string | null = null) {
++    if (node == null) return
++    if (typeof node !== 'object') return
++    if (seen.has(node)) return
++    seen.add(node)
++
++    if (Array.isArray(node)) {
++      for (const item of node) walk(item, inheritedCategoryName)
++      return
++    }
 +
 +    const categoryName = pickFirstString(
 +      (node as any).category_name,
 +      (node as any).categoryName,
 +      inheritedCategoryName,
 +    )
-+    const typeName = pickFirstString((node as any).type_name, (node as any).typeName)
-+    const nameObj: DescriptionTreeName = { categoryName, typeName }
 +
-+    const descriptionCategoryId = Number(
-+      (node as any).description_category_id ??
-+      (node as any).descriptionCategoryId ??
-+      (node as any).category_id ??
-+      (node as any).categoryId ?? 0,
++    const typeName = pickFirstString(
++      (node as any).type_name,
++      (node as any).typeName,
++      (node as any).type?.name,
++      (node as any).type?.title,
 +    )
-+    if (descriptionCategoryId > 0) {
-+      const prev = maps.byDescriptionCategoryId.get(descriptionCategoryId)
-+      maps.byDescriptionCategoryId.set(descriptionCategoryId, mergeDescriptionTreeName(prev, nameObj))
++
++    const label: CategoryTreeLabel = {
++      category_name: categoryName,
++      type_name: typeName,
++      category_id: numOrNull(
++        (node as any).category_id,
++        (node as any).categoryId,
++        (node as any).category?.id,
++      ),
++      type_id: numOrNull(
++        (node as any).type_id,
++        (node as any).typeId,
++        (node as any).type?.id,
++      ),
++      description_category_id: numOrNull(
++        (node as any).description_category_id,
++        (node as any).descriptionCategoryId,
++        (node as any).description_category?.id,
++      ),
 +    }
 +
-+    const typeId = Number((node as any).type_id ?? (node as any).typeId ?? 0)
-+    if (typeId > 0) {
-+      const prev = maps.byTypeId.get(typeId)
-+      maps.byTypeId.set(typeId, mergeDescriptionTreeName(prev, nameObj))
++    saveCategoryTreeLabel(maps, label)
++
++    for (const value of Object.values(node)) {
++      if (value && typeof value === 'object') walk(value, categoryName)
 +    }
-+
-+    const children = asNodeList((node as any).children)
-+    for (const child of children) visit(child, categoryName ?? inheritedCategoryName)
 +  }
 +
-+  for (const root of asNodeList(json)) visit(root, null)
-+
-+  descriptionTreeCache = {
-+    clientId: secrets.clientId,
-+    loadedAt: Date.now(),
-+    maps,
-+  }
-+
++  walk(root, null)
 +  return maps
 +}
 +
- function pickFirstString(...vals: any[]): string | null {
-   for (const v of vals) {
-     if (typeof v === 'string' && v.trim()) return v.trim()
-@@ -492,5 +587,23 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
-     // атрибуты не критичны — если упали, оставляем базовые поля
-   }
- 
-+  try {
-+    const treeMaps = await fetchDescriptionTreeMaps(secrets)
-+    for (const p of out) {
-+      const typeKey = Number(p.type ?? 0)
-+      const categoryKey = Number(p.category ?? 0)
++async function fetchCategoryTreeMaps(secrets: Secrets): Promise<CategoryTreeMaps> {
++  const cacheKey = secrets.clientId || '__default__'
++  const cached = categoryTreeCache.get(cacheKey)
++  if (cached) return cached
 +
-+      const names = (typeKey > 0 ? treeMaps.byDescriptionCategoryId.get(typeKey) : undefined)
-+        ?? (typeKey > 0 ? treeMaps.byTypeId.get(typeKey) : undefined)
-+        ?? (categoryKey > 0 ? treeMaps.byDescriptionCategoryId.get(categoryKey) : undefined)
-+        ?? (categoryKey > 0 ? treeMaps.byTypeId.get(categoryKey) : undefined)
++  const attempts: Array<() => Promise<any>> = [
++    () => ozonPost(secrets, '/v1/description-category/tree', {}),
++    () => ozonPost(secrets, '/v1/description-category/tree', { language: 'DEFAULT' }),
++    () => ozonGet(secrets, '/v1/description-category/tree'),
++  ]
 +
-+      const displayCategory = names?.typeName ?? names?.categoryName ?? null
-+      if (displayCategory) p.category = displayCategory
++  for (const call of attempts) {
++    try {
++      const json = await call()
++      const maps = extractCategoryTreeMapsFromJson(json)
++      categoryTreeCache.set(cacheKey, maps)
++      return maps
++    } catch {
++      // попробуем следующий вариант ответа/метода
 +    }
-+  } catch {
-+    // дерево категорий не критично — оставляем текущее значение (id или null)
 +  }
 +
-   return out
- }
++  // Дерево категорий — необязательное обогащение; основной синк не должен падать из-за него.
++  const empty = makeCategoryTreeMaps()
++  categoryTreeCache.set(cacheKey, empty)
++  return empty
++}
++
+ function chunk<T>(arr: T[], size: number) {
+   const out: T[][] = []
+   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+@@ -422,6 +558,13 @@
+ 
+   const out: OzonProductInfo[] = []
+ 
++  let treeMaps = makeCategoryTreeMaps()
++  try {
++    treeMaps = await fetchCategoryTreeMaps(secrets)
++  } catch {
++    treeMaps = makeCategoryTreeMaps()
++  }
++
+   function extractItems(json: any): ProductInfoV2[] {
+     const r = json?.result
+     if (Array.isArray(r)) return r as any
+@@ -455,21 +598,52 @@
+ 
+       const barcode = (x.barcode && String(x.barcode)) || (Array.isArray(x.barcodes) && x.barcodes[0]) || null
+ 
+-      const categoryId = (x as any).category_id ?? (x as any).categoryId ?? (x as any).category?.id ?? null
++      const categoryId = numOrNull((x as any).category_id, (x as any).categoryId, (x as any).category?.id)
++      const descriptionCategoryId = numOrNull(
++        (x as any).description_category_id,
++        (x as any).descriptionCategoryId,
++        (x as any).description_category?.id,
++      )
++      const typeId = numOrNull(
++        (x as any).type_id,
++        (x as any).typeId,
++        (x as any).type?.id,
++      )
++
++      let treeLabel: CategoryTreeLabel | undefined
++      if (descriptionCategoryId != null && typeId != null) {
++        treeLabel = treeMaps.byPair.get(`${descriptionCategoryId}:${typeId}`)
++      }
++      if (!treeLabel && typeId != null) {
++        treeLabel = treeMaps.byTypeId.get(typeId)
++      }
++      if (!treeLabel && descriptionCategoryId != null) {
++        treeLabel = treeMaps.byDescriptionCategoryId.get(descriptionCategoryId)
++      }
++      if (!treeLabel && categoryId != null) {
++        treeLabel = treeMaps.byCategoryId.get(categoryId)
++      }
++
+       const brandRaw = (x as any).brand ?? (x as any).brand_name ?? (x as any).brandName ?? null
+       const visibleRaw = (x as any).visible ?? (x as any).is_visible ?? (x as any).isVisible ?? (x as any).visibility?.visible ?? null
+       const isVisible = (typeof visibleRaw === 'boolean') ? visibleRaw : ((visibleRaw == null) ? null : Boolean(visibleRaw))
+ 
+       const name = pickFirstString((x as any).name, (x as any).product_name, (x as any).productName, (x as any).title)
+ 
++      const categoryLabel = pickFirstString(
++        treeLabel?.type_name,
++        treeLabel?.category_name,
++        categoryId != null ? String(categoryId) : null,
++      )
++
+       out.push({
+         product_id: pid,
+         offer_id: String(x.offer_id ?? ''),
+         sku: x.sku != null ? String(x.sku) : null,
+         barcode,
+         brand: (brandRaw != null && String(brandRaw).trim().length) ? String(brandRaw).trim() : null,
+-        category: categoryId != null ? String(categoryId) : null,
+-        type: x.description_category_id != null ? String(x.description_category_id) : null,
++        category: categoryLabel,
++        type: (typeId != null ? String(typeId) : (descriptionCategoryId != null ? String(descriptionCategoryId) : null)),
+         name,
+         is_visible: isVisible,
+         hidden_reasons: buildHiddenReasons(x),
