@@ -170,17 +170,33 @@ function extractBrandFromAttributes(attrs: Array<any>): string | null {
 
   for (const a of attrs) {
     if (!a) continue
-    if (brandIds.has(Number((a as any).id))) {
-      const v = normalizeBrandText((a as any).values) ?? normalizeBrandText(a)
-      if (v) return v
-    }
+    if (!brandIds.has(Number((a as any).id))) continue
+
+    const values = Array.isArray((a as any).values) ? (a as any).values : []
+
+    // Основной контракт для бренда:
+    // attributes[].id (85/31) -> values[0].value
+    const direct = normalizeBrandText((values[0] as any)?.value)
+    if (direct) return direct
+
+    // Fallback: иногда структура values отличается (словарные/нестандартные формы).
+    const fromValues = normalizeBrandText(values)
+    if (fromValues) return fromValues
+
+    const fromAttr = normalizeBrandText(a)
+    if (fromAttr) return fromAttr
   }
 
+  // Последний fallback: поиск по названию атрибута, если в категории id отличается.
   for (const a of attrs) {
     const name = String((a as any)?.name ?? '').trim().toLowerCase()
     if (!name) continue
     if (name.includes('бренд') || name === 'brand') {
-      const v = normalizeBrandText((a as any).values) ?? normalizeBrandText(a)
+      const values = Array.isArray((a as any).values) ? (a as any).values : []
+      const direct = normalizeBrandText((values[0] as any)?.value)
+      if (direct) return direct
+
+      const v = normalizeBrandText(values) ?? normalizeBrandText(a)
       if (v) return v
     }
   }
@@ -375,15 +391,29 @@ async function fetchAttributesMap(
   const map = new Map<number, { brand?: string | null; barcode?: string | null; category?: string | null; descriptionCategoryId?: number | null; typeId?: number | null }>()
 
 
-  // Встречаются /v3/products/info/attributes и /v4/products/info/attributes.
-  // Делаем основной запрос в /v3, а /v4 используем как fallback.
+  // Бренд для существующего товара тянем через метод характеристик:
+  // основной путь: /v4/product/info/attributes (singular),
+  // fallback: /v3/product/info/attributes,
+  // затем оставляем совместимые fallback на старые plural-варианты.
   async function callWithFallback(body: any) {
-    try {
-      return await ozonPost(secrets, '/v3/products/info/attributes', body)
-    } catch (e: any) {
-      if (e?.details?.status !== 404) throw e
-      return await ozonPost(secrets, '/v4/products/info/attributes', body)
+    const endpoints = [
+      '/v4/product/info/attributes',
+      '/v3/product/info/attributes',
+      '/v4/products/info/attributes',
+      '/v3/products/info/attributes',
+    ] as const
+
+    let lastErr: any = null
+    for (const endpoint of endpoints) {
+      try {
+        return await ozonPost(secrets, endpoint, body)
+      } catch (e: any) {
+        lastErr = e
+        if (e?.details?.status !== 404) throw e
+      }
     }
+
+    throw lastErr ?? normalizeError('Ozon attributes endpoint not available')
   }
 
   for (const pack of chunk(lookupItems, 900)) {
