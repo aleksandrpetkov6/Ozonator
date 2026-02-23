@@ -328,6 +328,14 @@ input:focus{
   box-shadow: var(--focus);
 }
 
+/* Hide number spinners where browser may still apply them */
+.adminNumberInput::-webkit-outer-spin-button,
+.adminNumberInput::-webkit-inner-spin-button{
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+
 button{
   border-radius: 999px;
   padding: 10px 14px;
@@ -912,38 +920,9 @@ button:disabled{
   max-width: 720px;
 }
 
-.adminCardHead{
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.adminCardIcon{
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--hairline);
-  background: rgba(255,255,255,.72);
-}
-
-.adminTitle{
-  font-size: 18px;
-  font-weight: 760;
-  letter-spacing: -0.02em;
-}
-
-.adminSub{
-  font-size: 12px;
-  color: var(--muted);
-}
-
 .adminGrid{
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .adminField{
@@ -951,15 +930,22 @@ button:disabled{
   gap: 8px;
 }
 
+.adminFieldInline{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .adminFieldLabel{
-  font-weight: 650;
+  font-weight: 400;
+  color: rgba(28,28,30,.88);
 }
 
 .adminNumberInput{
-  max-width: 220px;
-}
-
-.adminHint{
-  color: var(--muted);
-  font-size: 12px;
+  width: 56px;
+  min-width: 56px;
+  max-width: 56px;
+  text-align: center;
+  padding-left: 8px;
+  padding-right: 8px;
 }
