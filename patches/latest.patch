@@ -1,68 +1,135 @@
-diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
-index f0ec5ce..5dd283f 100644
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -507,12 +507,16 @@ function onDragOverHeader(e: React.DragEvent) {
-     return { text: (v == null || v === '') ? '-' : String(v) }
-   }
+--- a/electron/main/ozon.ts
++++ b/electron/main/ozon.ts
+@@ -254,6 +254,105 @@
+   return null
+ }
  
--  function measureTextWidth(text: string): number {
-+  function measureTextWidth(text: string, sampleEl?: HTMLElement | null): number {
-     const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'))
-     const ctx = canvas.getContext('2d')
-     if (!ctx) return text.length * 7
- 
--    const cs = window.getComputedStyle(document.body)
-+    const measureEl = sampleEl
-+      ?? (bodyTableRef.current?.querySelector('.cellText') as HTMLElement | null)
-+      ?? (headTableRef.current?.querySelector('.thTitle') as HTMLElement | null)
-+      ?? document.body
-+    const cs = window.getComputedStyle(measureEl)
-     const fontSize = cs.fontSize || '13px'
-     const fontFamily = cs.fontFamily || 'system-ui'
-     const fontWeight = cs.fontWeight || '400'
-@@ -529,22 +533,30 @@ function onDragOverHeader(e: React.DragEvent) {
-     return toText((p as any)[colId])
-   }
- 
--  function autoSizeColumn(colId: string, rows: Product[]) {
-+  function autoSizeColumn(colId: string, rows: Product[], mode: 'capped' | 'fit' = 'capped') {
-     const col = cols.find(c => String(c.id) === colId)
-     if (!col) return
- 
-     const cap = AUTO_MAX_W[colId] ?? 320
-+    const headerSampleEl = headTableRef.current?.querySelector('.thTitle') as HTMLElement | null
-+    const cellSampleEl = bodyTableRef.current?.querySelector('.cellText') as HTMLElement | null
-+    const sample = mode === 'fit' ? rows : (rows.length > 1600 ? rows.slice(0, 1600) : rows)
- 
--    let max = measureTextWidth(col.title)
--    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
-+    // В заголовке есть кнопка скрытия и внутренние отступы: учитываем это отдельно,
-+    // чтобы при двойном клике текст заголовка не обрезался.
-+    let max = measureTextWidth(col.title, headerSampleEl) + 28
-     for (const p of sample) {
-       const s = getCellString(p, col.id)
-       if (!s) continue
--      const w = measureTextWidth(s)
-+      const w = measureTextWidth(s, cellSampleEl)
-       if (w > max) max = w
-     }
- 
--    const nextW = Math.max(AUTO_MIN_W, Math.min(cap, Math.round(max + AUTO_PAD)))
-+    const rawW = Math.round(max + AUTO_PAD)
-+    const nextW = mode === 'fit'
-+      ? Math.max(AUTO_MIN_W, rawW)
-+      : Math.max(AUTO_MIN_W, Math.min(cap, rawW))
++function toIntOrNull(v: any): number | null {
++  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v)
++  if (typeof v === 'string' && v.trim() !== '') {
++    const n = Number(v)
++    if (Number.isFinite(n)) return Math.trunc(n)
++  }
++  return null
++}
 +
-     setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: nextW } : c))
++type DescriptionTreeMaps = {
++  categoryNameById: Map<number, string>
++  typeNameById: Map<number, string>
++}
++
++const DESC_TREE_CACHE_TTL_MS = 60 * 60 * 1000
++const descTreeCache = new Map<string, { expiresAt: number; maps: DescriptionTreeMaps }>()
++
++function parseDescriptionCategoryTree(json: any): DescriptionTreeMaps {
++  const categoryNameById = new Map<number, string>()
++  const typeNameById = new Map<number, string>()
++
++  const root = json?.result ?? json?.data ?? json
++  const queue: Array<{ node: any; ctxCategoryName: string | null }> = [{ node: root, ctxCategoryName: null }]
++  const seen = new Set<any>()
++
++  for (let guard = 0; queue.length && guard < 50000; guard++) {
++    const { node, ctxCategoryName } = queue.shift()!
++    if (node == null) continue
++
++    if (Array.isArray(node)) {
++      for (const item of node) queue.push({ node: item, ctxCategoryName })
++      continue
++    }
++
++    if (typeof node !== 'object') continue
++    if (seen.has(node)) continue
++    seen.add(node)
++
++    const categoryId = toIntOrNull((node as any).category_id ?? (node as any).categoryId)
++    const categoryName = pickFirstString((node as any).category_name, (node as any).categoryName) ?? ctxCategoryName
++
++    if (categoryId != null && categoryName && !categoryNameById.has(categoryId)) {
++      categoryNameById.set(categoryId, categoryName)
++    }
++
++    const typeId = toIntOrNull(
++      (node as any).description_category_id ??
++      (node as any).descriptionCategoryId ??
++      (node as any).type_id ??
++      (node as any).typeId
++    )
++    const typeName = pickFirstString(
++      (node as any).type_name,
++      (node as any).typeName,
++      (node as any).description_category_name,
++      (node as any).descriptionCategoryName
++    )
++
++    if (typeId != null && typeName && !typeNameById.has(typeId)) {
++      typeNameById.set(typeId, typeName)
++    }
++
++    for (const v of Object.values(node)) {
++      if (v && typeof v === 'object') queue.push({ node: v, ctxCategoryName: categoryName })
++    }
++  }
++
++  return { categoryNameById, typeNameById }
++}
++
++async function fetchDescriptionCategoryTreeMaps(secrets: Secrets): Promise<DescriptionTreeMaps> {
++  const cacheKey = String(secrets.clientId || 'default')
++  const now = Date.now()
++  const cached = descTreeCache.get(cacheKey)
++  if (cached && cached.expiresAt > now) return cached.maps
++
++  const attempts: Array<() => Promise<any>> = [
++    () => ozonPost(secrets, '/v1/description-category/tree', {}),
++    () => ozonPost(secrets, '/v1/description-category/tree', { language: 'DEFAULT' }),
++    () => ozonGet(secrets, '/v1/description-category/tree'),
++  ]
++
++  let lastErr: any = null
++  for (const call of attempts) {
++    try {
++      const json = await call()
++      const maps = parseDescriptionCategoryTree(json)
++      if (maps.typeNameById.size || maps.categoryNameById.size) {
++        descTreeCache.set(cacheKey, { expiresAt: now + DESC_TREE_CACHE_TTL_MS, maps })
++      }
++      return maps
++    } catch (e) {
++      lastErr = e
++    }
++  }
++
++  throw lastErr ?? normalizeError('Ozon API error: description category tree unavailable')
++}
++
+ function isReasonableStoreName(s: string): boolean {
+   const t = s.trim()
+   if (!t) return false
+@@ -492,5 +591,26 @@
+     // атрибуты не критичны — если упали, оставляем базовые поля
    }
  
-@@ -748,7 +760,7 @@ function onDragOverHeader(e: React.DragEvent) {
-                             onDoubleClick={(e) => {
-                               e.preventDefault()
-                               e.stopPropagation()
--                              autoSizeColumn(id, filtered)
-+                              autoSizeColumn(id, filtered, 'fit')
-                             }}
-                           />
-                         </th>
++  // Категория в UI: показываем type_name (через /v1/description-category/tree).
++  // Если type_name не найден, используем category_name как мягкий fallback вместо id.
++  try {
++    const treeMaps = await fetchDescriptionCategoryTreeMaps(secrets)
++    for (const p of out) {
++      const typeId = toIntOrNull(p.type)
++      const categoryId = toIntOrNull(p.category)
++
++      const typeName = (typeId != null) ? treeMaps.typeNameById.get(typeId) : undefined
++      if (typeName) {
++        p.category = typeName
++        continue
++      }
++
++      const categoryName = (categoryId != null) ? treeMaps.categoryNameById.get(categoryId) : undefined
++      if (categoryName) p.category = categoryName
++    }
++  } catch {
++    // дерево категорий не критично — оставляем текущие значения
++  }
++
+   return out
+ }
