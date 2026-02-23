@@ -15,6 +15,11 @@ type LogRow = {
 const TYPE_RU: Record<string, string> = {
   sync_products: 'Синхронизация товаров',
   check_auth: 'Проверка доступа',
+  app_install: 'Установка программы',
+  app_update: 'Обновление программы',
+  app_reinstall: 'Переустановка программы',
+  app_uninstall: 'Удаление программы',
+  admin_settings: 'Настройки Админ',
 }
 
 const STATUS_RU: Record<string, string> = {
@@ -58,6 +63,17 @@ function detailsRu(meta?: string | null): string {
       const upd = (typeof m?.updated === 'number') ? m.updated : 0
       const add = (typeof m?.added === 'number') ? m.added : 0
       return `обновлено: ${upd}, новых: ${add}`
+    }
+
+    if (typeof m?.logRetentionDays === 'number') {
+      return `жизнь лога: ${m.logRetentionDays} дн.`
+    }
+
+    if (m?.appVersion || m?.previousVersion) {
+      const parts: string[] = []
+      if (m?.appVersion) parts.push(`версия: ${m.appVersion}`)
+      if (m?.previousVersion) parts.push(`было: ${m.previousVersion}`)
+      return parts.join(', ') || meta
     }
 
     // Старый формат — fallback
