@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import SettingsPage from './pages/SettingsPage'
 import ProductsPage from './pages/ProductsPage'
 import LogsPage from './pages/LogsPage'
+import AdminPage from './pages/AdminPage'
 
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
@@ -30,6 +31,16 @@ function useOnline() {
   return online
 }
 
+function parseLogLifeDays(value: string): number | null {
+  const trimmed = String(value ?? '').trim()
+  if (!trimmed) return null
+  const n = Number(trimmed)
+  if (!Number.isFinite(n)) return null
+  const i = Math.trunc(n)
+  if (i <= 0) return null
+  return i
+}
+
 export default function App() {
   const location = useLocation()
   const online = useOnline()
@@ -47,8 +58,17 @@ export default function App() {
   const [productsTotal, setProductsTotal] = useState(0)
   const [productsFiltered, setProductsFiltered] = useState(0)
 
+  const [adminLoading, setAdminLoading] = useState(true)
+  const [adminSaving, setAdminSaving] = useState(false)
+  const [adminLogLifeDraft, setAdminLogLifeDraft] = useState('')
+  const [adminLogLifeSaved, setAdminLogLifeSaved] = useState<number>(30)
+  const [adminNotice, setAdminNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+
   const pathname = location.pathname || '/'
-  const isProducts = !pathname.startsWith('/logs') && !pathname.startsWith('/settings')
+  const isLogs = pathname.startsWith('/logs')
+  const isSettings = pathname.startsWith('/settings')
+  const isAdmin = pathname.startsWith('/admin')
+  const isProducts = !isLogs && !isSettings && !isAdmin
 
   const onProductStats = useCallback((s: { total: number; filtered: number }) => {
     setProductsTotal(s.total)
@@ -56,7 +76,6 @@ export default function App() {
   }, [])
 
   async function refreshStoreName() {
-    // 1) Пробуем secrets
     try {
       const resp = await window.api.loadSecrets()
       if (resp.ok) {
@@ -77,7 +96,6 @@ export default function App() {
       // ignore
     }
 
-    // 2) Fallback: localStorage (если storeName не сохраняется в secrets)
     try {
       const raw = localStorage.getItem(STORE_NAME_LS_KEY) ?? ''
       const cleaned = raw.trim()
@@ -101,6 +119,34 @@ export default function App() {
     return () => window.removeEventListener('ozon:store-updated', onStore)
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadAdmin() {
+      setAdminLoading(true)
+      try {
+        const resp = await window.api.getAdminSettings()
+        if (cancelled) return
+        if (!resp.ok) throw new Error(resp.error ?? 'Не удалось загрузить настройки Админ')
+
+        const days = Math.max(1, Math.trunc(Number(resp.logRetentionDays) || 30))
+        setAdminLogLifeSaved(days)
+        setAdminLogLifeDraft(String(days))
+        setAdminNotice(null)
+      } catch (e: any) {
+        if (cancelled) return
+        setAdminNotice({ kind: 'error', text: e?.message ?? 'Не удалось загрузить настройки Админ' })
+      } finally {
+        if (!cancelled) setAdminLoading(false)
+      }
+    }
+
+    loadAdmin()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const dotState = useMemo(() => {
     if (!online) return 'offline'
     if (running) return 'running'
@@ -113,13 +159,11 @@ export default function App() {
 
     setLastError(null)
 
-    // если офлайн — не пытаемся
     if (!online) {
       setLastError('Нет интернета')
       return
     }
 
-    // ключи должны быть сохранены
     const st = await window.api.secretsStatus()
     if (!st.hasSecrets) {
       if (reason === 'manual') setLastError('Ключи не сохранены. Откройте Настройки.')
@@ -134,8 +178,6 @@ export default function App() {
         setLastError(resp.error ?? 'Ошибка синхронизации')
       } else {
         setLastError(null)
-
-        // Обновляем список товаров + лог + имя магазина (если подтянулось)
         window.dispatchEvent(new Event('ozon:products-updated'))
         window.dispatchEvent(new Event('ozon:logs-updated'))
         window.dispatchEvent(new Event('ozon:store-updated'))
@@ -145,7 +187,6 @@ export default function App() {
     }
   }
 
-  // Автосинхронизация: при запуске и затем каждый час
   useEffect(() => {
     let cancelled = false
 
@@ -170,6 +211,36 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online])
+
+  const saveAdmin = useCallback(async () => {
+    const parsed = parseLogLifeDays(adminLogLifeDraft)
+    if (!parsed) {
+      setAdminNotice({ kind: 'error', text: 'Поле «Жизнь лога» должно быть целым числом больше 0.' })
+      return
+    }
+
+    setAdminSaving(true)
+    setAdminNotice(null)
+
+    try {
+      const resp = await window.api.saveAdminSettings({ logRetentionDays: parsed })
+      if (!resp.ok) throw new Error(resp.error ?? 'Не удалось сохранить настройки Админ')
+
+      const saved = Math.max(1, Math.trunc(Number(resp.logRetentionDays) || parsed))
+      setAdminLogLifeSaved(saved)
+      setAdminLogLifeDraft(String(saved))
+      setAdminNotice({ kind: 'success', text: 'Настройки сохранены. Применено сразу.' })
+
+      window.dispatchEvent(new Event('ozon:logs-updated'))
+    } catch (e: any) {
+      setAdminNotice({ kind: 'error', text: e?.message ?? 'Не удалось сохранить настройки Админ' })
+    } finally {
+      setAdminSaving(false)
+    }
+  }, [adminLogLifeDraft])
+
+  const adminParsed = parseLogLifeDays(adminLogLifeDraft)
+  const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
 
   return (
     <div className="appShell">
@@ -223,9 +294,25 @@ export default function App() {
               🗒️
             </NavLink>
 
+            <NavLink className="iconLink" to="/admin" title="Админ">
+              🛡️
+            </NavLink>
+
             <NavLink className="iconLink" to="/settings" title="Настройки">
               ⚙️
             </NavLink>
+
+            {isAdmin && (
+              <button
+                type="button"
+                className={`topbarSaveBtn${adminDirty ? ' isDirty' : ''}`}
+                onClick={saveAdmin}
+                disabled={adminLoading || adminSaving}
+                title={adminSaving ? 'Сохранение…' : 'Сохранить настройки Админ'}
+              >
+                {adminSaving ? 'Сохранение…' : 'Сохранить'}
+              </button>
+            )}
 
             <button
               className={`iconBtn syncBtn ${running ? 'running' : ''}`}
@@ -245,20 +332,33 @@ export default function App() {
         <div className={isProducts ? 'container containerWide' : 'container'}>
           {lastError && <div className="notice error">{lastError}</div>}
 
-          {/* Страницы держим смонтированными — переключение без перезагрузки тяжёлой таблицы */}
           <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
             <ProductsPageMemo query={productsQuery} onStats={onProductStats} />
           </div>
 
-          <div style={{ display: pathname.startsWith('/logs') ? 'block' : 'none', height: '100%' }}>
+          <div style={{ display: isLogs ? 'block' : 'none', height: '100%' }}>
             <LogsPage />
           </div>
 
-          <div style={{ display: pathname.startsWith('/settings') ? 'block' : 'none', height: '100%' }}>
+          <div style={{ display: isAdmin ? 'block' : 'none', height: '100%' }}>
+            <AdminPage
+              loading={adminLoading}
+              saving={adminSaving}
+              logLifeDaysValue={adminLogLifeDraft}
+              onChangeLogLifeDays={(v) => {
+                setAdminLogLifeDraft(v)
+                if (adminNotice) setAdminNotice(null)
+              }}
+              notice={adminNotice}
+              currentSavedDays={adminLogLifeSaved}
+            />
+          </div>
+
+          <div style={{ display: isSettings ? 'block' : 'none', height: '100%' }}>
             <SettingsPage />
           </div>
 
-          {/* пока не показываем filtered рядом, но оставили стейт под быстрые итерации */}
+          {productsTotal /* noop */ && false}
           {productsFiltered /* noop */ && false}
         </div>
       </div>
