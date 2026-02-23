@@ -176,10 +176,6 @@ export default function App() {
       <div className="topbar">
         <div className="topbarInner">
           <div className="topbarSlot">
-            <div className="pageTitle" aria-label="Товары">
-              Товары {productsTotal}
-            </div>
-
             {isProducts && (
               <div className="topbarSearch">
                 <div className="searchWrap">
