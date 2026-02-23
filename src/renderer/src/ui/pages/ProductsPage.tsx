@@ -35,6 +35,7 @@ const DEFAULT_COLS: ColDef[] = [
   { id: 'barcode', title: 'Штрихкод', w: 170, visible: true },
   { id: 'type', title: 'Тип', w: 220, visible: true },
   { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
+  { id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: true },
   { id: 'created_at', title: 'Создан', w: 180, visible: true },
   { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
 ]
@@ -47,6 +48,7 @@ const AUTO_MAX_W: Record<string, number> = {
   barcode: 260,
   brand: 220,
   is_visible: 180,
+  hidden_reasons: 440,
   created_at: 240,
   updated_at: 240,
   type: 320,
@@ -96,12 +98,28 @@ function toText(v: any): string {
   try { return JSON.stringify(v) } catch { return String(v) }
 }
 
+function formatDateTimeRu(v: any): string {
+  if (v == null || v === '') return ''
+
+  const d = (v instanceof Date) ? v : new Date(v)
+  if (Number.isNaN(d.getTime())) return String(v)
+
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const yy = String(d.getFullYear()).slice(-2)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  const ss = String(d.getSeconds()).padStart(2, '0')
+
+  return `${dd}.${mm}.${yy}. ${hh}.${mi}.${ss}.`
+}
+
 function visibilityText(p: Product): string {
   const v = p.is_visible
-  if (v === true || v === 1) return 'Виден'
-  if (v === false || v === 0) return 'Скрыт'
-  if (p.hidden_reasons && String(p.hidden_reasons).trim()) return 'Скрыт'
-  return 'Неизвестно'
+  if (v === true || v === 1) return 'true'
+  if (v === false || v === 0) return 'false'
+  if (p.hidden_reasons && String(p.hidden_reasons).trim()) return 'false'
+  return '-'
 }
 
 let PRODUCTS_CACHE: Product[] | null = null
@@ -493,6 +511,10 @@ function onDragOverHeader(e: React.DragEvent) {
     }
 
     const v = (p as any)[colId]
+    if (colId === 'created_at' || colId === 'updated_at') {
+      const f = formatDateTimeRu(v)
+      return { text: f || '-', title: (v == null || v === '') ? undefined : String(v) }
+    }
     return { text: (v == null || v === '') ? '-' : String(v) }
   }
 
@@ -519,6 +541,7 @@ function onDragOverHeader(e: React.DragEvent) {
     if (colId === 'is_visible') return visibilityText(p)
     if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
     if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+    if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
     return toText((p as any)[colId])
   }
 
