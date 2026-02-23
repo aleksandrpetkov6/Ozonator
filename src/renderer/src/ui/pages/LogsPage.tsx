@@ -92,7 +92,7 @@ export default function LogsPage() {
 
   return (
     <div className="card logsCard">
-      <table className="table" style={{ marginTop: 10 }}>
+      <table className="table">
         <thead>
           <tr>
             <th></th>
