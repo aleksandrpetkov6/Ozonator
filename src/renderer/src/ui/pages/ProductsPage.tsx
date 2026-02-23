@@ -29,11 +29,10 @@ type Props = {
 const DEFAULT_COLS: ColDef[] = [
   { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
   { id: 'name', title: 'Наименование', w: 320, visible: true },
-  { id: 'category', title: 'Категория', w: 280, visible: true },
   { id: 'brand', title: 'Бренд', w: 180, visible: true },
   { id: 'sku', title: 'SKU', w: 140, visible: true },
   { id: 'barcode', title: 'Штрихкод', w: 170, visible: true },
-  { id: 'type', title: 'Тип', w: 220, visible: true },
+  { id: 'type', title: 'Категория', w: 280, visible: true },
   { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
   { id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: true },
   { id: 'created_at', title: 'Создан', w: 180, visible: true },
@@ -51,8 +50,7 @@ const AUTO_MAX_W: Record<string, number> = {
   hidden_reasons: 440,
   created_at: 240,
   updated_at: 240,
-  type: 320,
-  category: 380,
+  type: 380,
   name: 460,
 }
 
@@ -742,9 +740,9 @@ function onDragOverHeader(e: React.DragEvent) {
   const bottomSpace = Math.max(0, (totalRows - endRow) * ROW_H)
 
   return (
-    <div className="card productsCard">
+    <div className="productsCard">
       <div className="productsTableArea">
-        <div className="tableWrap" style={{ marginTop: 4, position: 'relative' }}>
+        <div className="tableWrap" style={{ marginTop: 0, position: 'relative' }}>
           <div className="resizeIndicator" ref={resizeIndicatorRef} style={{ display: 'none' }} />
           {hiddenCols.length > 0 && (
             <div className="collapsedCorner" style={{ position: 'absolute', top: 6, right: 6, zIndex: 5 }}>
@@ -766,7 +764,7 @@ function onDragOverHeader(e: React.DragEvent) {
                   className="collapsedMenu"
                   ref={collapsedMenuRef}
                   role="menu"
-                  style={{ position: 'absolute', top: 0, right: 'calc(100% + 6px)', zIndex: 6 }}
+                  style={{ position: 'absolute', top: 0, right: 'calc(100% + 6px)', left: 'auto', zIndex: 6 }}
                 >
                   {hiddenCols.map(c => (
                     <button
