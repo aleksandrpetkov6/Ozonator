@@ -496,16 +496,20 @@ function onDragOverHeader(e: React.DragEvent) {
     return { text: (v == null || v === '') ? '-' : String(v) }
   }
 
-  function measureTextWidth(text: string): number {
+  function measureTextWidth(text: string, kind: 'cell' | 'header' = 'cell'): number {
     const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'))
     const ctx = canvas.getContext('2d')
     if (!ctx) return text.length * 7
 
-    const cs = window.getComputedStyle(document.body)
-    const fontSize = cs.fontSize || '13px'
-    const fontFamily = cs.fontFamily || 'system-ui'
+    const probe = document.querySelector(kind === 'header' ? '.thTitle' : '.cellText') as HTMLElement | null
+    const cs = window.getComputedStyle(probe ?? document.body)
+    const fontStyle = cs.fontStyle || 'normal'
+    const fontVariant = cs.fontVariant || 'normal'
     const fontWeight = cs.fontWeight || '400'
-    ctx.font = `${fontWeight} ${fontSize} ${fontFamily}`
+    const fontSize = cs.fontSize || '13px'
+    const lineHeight = cs.lineHeight && cs.lineHeight !== 'normal' ? `/${cs.lineHeight}` : ''
+    const fontFamily = cs.fontFamily || 'system-ui'
+    ctx.font = `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize}${lineHeight} ${fontFamily}`
 
     return ctx.measureText(text).width
   }
@@ -518,18 +522,20 @@ function onDragOverHeader(e: React.DragEvent) {
     return toText((p as any)[colId])
   }
 
-  function autoSizeColumn(colId: string, rows: Product[]) {
+  function autoSizeColumn(colId: string, rows: Product[], mode: 'default' | 'fit' = 'default') {
     const col = cols.find(c => String(c.id) === colId)
     if (!col) return
 
-    const cap = AUTO_MAX_W[colId] ?? 320
+    const headerExtra = 44 // кнопка скрытия + внутренние отступы в th
+    const baseCap = AUTO_MAX_W[colId] ?? 320
+    const cap = mode === 'fit' ? 4000 : baseCap
 
-    let max = measureTextWidth(col.title)
-    const sample = rows.length > 1600 ? rows.slice(0, 1600) : rows
+    let max = measureTextWidth(col.title, 'header') + headerExtra
+    const sample = mode === 'fit' ? rows : (rows.length > 1600 ? rows.slice(0, 1600) : rows)
     for (const p of sample) {
       const s = getCellString(p, col.id)
       if (!s) continue
-      const w = measureTextWidth(s)
+      const w = measureTextWidth(s, 'cell')
       if (w > max) max = w
     }
 
@@ -737,7 +743,7 @@ function onDragOverHeader(e: React.DragEvent) {
                             onDoubleClick={(e) => {
                               e.preventDefault()
                               e.stopPropagation()
-                              autoSizeColumn(id, filtered)
+                              autoSizeColumn(id, filtered, 'fit')
                             }}
                           />
                         </th>
