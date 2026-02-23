@@ -14,7 +14,6 @@ export default function AdminPage(props: Props) {
     loading,
     saving,
     logLifeDaysValue,
-    currentSavedDays,
     onChangeLogLifeDays,
     notice,
   } = props
@@ -22,37 +21,26 @@ export default function AdminPage(props: Props) {
   return (
     <div className="adminWrap">
       <div className="card adminCard">
-        <div className="adminCardHead">
-          <div className="adminCardIcon" aria-hidden>🛡️</div>
-          <div>
-            <div className="adminTitle">Админ</div>
-            <div className="adminSub">Служебные настройки приложения</div>
-          </div>
-        </div>
-
-        {notice && <div className={`notice ${notice.kind === 'error' ? 'error' : ''}`}>{notice.text}</div>}
+        {notice?.kind === 'error' && <div className="notice error">{notice.text}</div>}
 
         {loading ? (
           <div className="muted">Загрузка настроек…</div>
         ) : (
           <div className="adminGrid">
-            <label className="adminField">
+            <label className="adminField adminFieldInline">
               <span className="adminFieldLabel">Жизнь лога</span>
               <input
-                type="number"
-                min={1}
-                step={1}
+                type="text"
                 inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={3}
                 className="searchInput adminNumberInput"
                 value={logLifeDaysValue}
-                onChange={(e) => onChangeLogLifeDays(e.target.value)}
-                placeholder="Например: 10"
+                onChange={(e) => onChangeLogLifeDays(e.target.value.replace(/\D+/g, '').slice(0, 3))}
+                placeholder="10"
                 disabled={saving}
+                aria-label="Жизнь лога"
               />
-              <span className="adminHint">
-                Срок хранения записей в днях. На следующий день после истечения срока старые записи удаляются автоматически.
-              </span>
-              <span className="adminHint">Сейчас сохранено: {currentSavedDays} дн.</span>
             </label>
           </div>
         )}
