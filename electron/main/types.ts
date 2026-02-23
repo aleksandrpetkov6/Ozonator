@@ -33,8 +33,16 @@ export type ProductRow = {
 
 export type SyncLogRow = {
   id: number
-  type: 'check_auth' | 'sync_products'
-  status: 'success' | 'error'
+  type:
+    | 'check_auth'
+    | 'sync_products'
+    | 'app_install'
+    | 'app_update'
+    | 'app_reinstall'
+    | 'app_uninstall'
+    | 'admin_settings'
+    | string
+  status: 'pending' | 'success' | 'error' | string
   started_at: string
   finished_at: string | null
   items_count: number | null
