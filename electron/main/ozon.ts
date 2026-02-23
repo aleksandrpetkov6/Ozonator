@@ -88,6 +88,8 @@ type ProductInfoV2 = {
   visible?: boolean
   description_category_id?: number
   type_id?: number
+  visibility_details?: any
+  visibilityDetails?: any
   name?: string
   product_name?: string
   title?: string
@@ -133,30 +135,74 @@ function stringifyReason(x: any): string {
   return String(x)
 }
 
+function collectReasonPartsFromAny(src: any, out: string[]) {
+  if (src == null) return
+
+  if (Array.isArray(src)) {
+    for (const it of src) collectReasonPartsFromAny(it, out)
+    return
+  }
+
+  if (typeof src === 'string' || typeof src === 'number' || typeof src === 'boolean') {
+    const s = String(src).trim()
+    if (s) out.push(s)
+    return
+  }
+
+  if (typeof src === 'object') {
+    const obj = src as any
+    const direct = pickFirstString(
+      obj.reason,
+      obj.message,
+      obj.text,
+      obj.name,
+      obj.error,
+      obj.description,
+      obj.title,
+      obj.code,
+    )
+    if (direct) {
+      out.push(direct)
+      return
+    }
+
+    for (const v of Object.values(obj)) {
+      if (v == null) continue
+      if (typeof v === 'object') collectReasonPartsFromAny(v, out)
+      else {
+        const sv = String(v).trim()
+        if (sv) out.push(sv)
+      }
+    }
+    return
+  }
+
+  const fallback = stringifyReason(src).trim()
+  if (fallback) out.push(fallback)
+}
+
 function buildHiddenReasons(info: ProductInfoV2): string | null {
   const parts: string[] = []
 
-  const dr = info.status?.decline_reasons
-  if (Array.isArray(dr)) {
-    for (const r of dr) {
-      const s = stringifyReason(r).trim()
-      if (s) parts.push(s)
-    }
-  }
+  // Основной источник по задаче: visibility_details.reasons из /v3/product/info/list.
+  const vis = (info as any).visibility_details ?? (info as any).visibilityDetails
+  collectReasonPartsFromAny(vis?.reasons, parts)
 
-  const ie = info.status?.item_errors
-  if (Array.isArray(ie)) {
-    for (const r of ie) {
-      const s = stringifyReason(r).trim()
-      if (s) parts.push(s)
+  // Fallback на старые поля — только если visibility_details.reasons пустой.
+  if (!parts.length) {
+    const dr = info.status?.decline_reasons
+    if (Array.isArray(dr)) {
+      for (const r of dr) collectReasonPartsFromAny(r, parts)
     }
-  }
 
-  const e = info.errors
-  if (Array.isArray(e)) {
-    for (const r of e) {
-      const s = stringifyReason(r).trim()
-      if (s) parts.push(s)
+    const ie = info.status?.item_errors
+    if (Array.isArray(ie)) {
+      for (const r of ie) collectReasonPartsFromAny(r, parts)
+    }
+
+    const e = info.errors
+    if (Array.isArray(e)) {
+      for (const r of e) collectReasonPartsFromAny(r, parts)
     }
   }
 
@@ -248,12 +294,14 @@ async function fetchCategoryTreeMaps(secrets: Secrets): Promise<CategoryTreeMaps
   return { byPair, byTypeId, byDescriptionCategoryId }
 }
 
-async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
+async function fetchAttributesMap(
+  secrets: Secrets,
+  lookupItems: Array<{ product_id?: number | null; offer_id?: string | null }>
+) {
   const map = new Map<number, { brand?: string | null; barcode?: string | null; category?: string | null; descriptionCategoryId?: number | null; typeId?: number | null }>()
 
-  // Частые id атрибута "бренд" в разных категориях/кабинетах.
-  // (85 — самый распространённый, остальные — редкие вариации.)
-  const BRAND_ATTR_IDS = [85, 8229, 31, 10096]
+  // По задаче бренда используем значение attributes[].values[].value у id 85/31.
+  const BRAND_ATTR_IDS = [85, 31]
 
   // Встречаются /v3/products/info/attributes и /v4/products/info/attributes.
   // Делаем основной запрос в /v3, а /v4 используем как fallback.
@@ -266,11 +314,26 @@ async function fetchAttributesMap(secrets: Secrets, productIds: number[]) {
     }
   }
 
-  for (const ids of chunk(productIds, 900)) {
+  for (const pack of chunk(lookupItems, 900)) {
+    const ids = Array.from(new Set(pack
+      .map((x) => toNumId((x as any)?.product_id))
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+    ))
+    const offerIds = Array.from(new Set(pack
+      .map((x) => (typeof (x as any)?.offer_id === 'string' ? (x as any).offer_id.trim() : ''))
+      .filter((v): v is string => Boolean(v))
+    ))
+
+    if (!ids.length && !offerIds.length) continue
+
     let last_id = ''
     for (let guard = 0; guard < 20; guard++) {
+      const filter: any = { visibility: 'ALL' }
+      if (ids.length) filter.product_id = ids
+      if (offerIds.length) filter.offer_id = offerIds
+
       const body = {
-        filter: { visibility: 'ALL', product_id: ids },
+        filter,
         limit: 1000,
         last_id,
       }
@@ -580,8 +643,8 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
         sku: x.sku != null ? String(x.sku) : null,
         barcode,
         brand: (brandRaw != null && String(brandRaw).trim().length) ? String(brandRaw).trim() : null,
-        category: typeNameFromTree ?? categoryNameFromTree ?? (categoryId != null ? String(categoryId) : null),
-        type: typeId != null ? String(typeId) : (descriptionCategoryId != null ? String(descriptionCategoryId) : null),
+        category: categoryNameFromTree ?? (categoryId != null ? String(categoryId) : null),
+        type: typeNameFromTree ?? (typeId != null ? String(typeId) : (descriptionCategoryId != null ? String(descriptionCategoryId) : null)),
         name,
         is_visible: isVisible,
         hidden_reasons: buildHiddenReasons(x),
@@ -592,11 +655,12 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
 
   // Атрибуты: бренд (и иногда barcode/category)
   try {
-    const attrMap = await fetchAttributesMap(secrets, productIds)
+    const attrLookupItems = out.map((p) => ({ product_id: p.product_id, offer_id: p.offer_id }))
+    const attrMap = await fetchAttributesMap(secrets, attrLookupItems)
     for (const p of out) {
       const a = attrMap.get(p.product_id)
       if (!a) continue
-      if (!p.brand && a.brand) p.brand = a.brand
+      if (a.brand) p.brand = a.brand
       if (!p.barcode && a.barcode) p.barcode = a.barcode
 
       const currentTypeId = toNumId(p.type)
@@ -610,16 +674,19 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
         const treeNames = pair ?? byType ?? byDesc ?? null
 
         if (!p.category) {
-          p.category = treeNames?.typeName ?? treeNames?.categoryName ?? a.category ?? p.category
+          p.category = treeNames?.categoryName ?? a.category ?? p.category
         } else if (p.category === '-' || /^\d+$/.test(String(p.category))) {
-          p.category = treeNames?.typeName ?? treeNames?.categoryName ?? p.category
+          p.category = treeNames?.categoryName ?? p.category
         }
 
-        if ((!p.type || p.type === '-') && typeId != null) {
+        if (treeNames?.typeName) {
+          if (!p.type || p.type === '-' || /^\d+$/.test(String(p.type))) p.type = treeNames.typeName
+        } else if ((!p.type || p.type === '-') && typeId != null) {
           p.type = String(typeId)
         }
-      } else if (!p.category && a.category) {
-        p.category = a.category
+      } else {
+        if (!p.category && a.category) p.category = a.category
+        if ((!p.type || p.type === '-') && typeId != null) p.type = String(typeId)
       }
     }
   } catch {
