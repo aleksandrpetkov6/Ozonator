@@ -176,11 +176,8 @@ export default function App() {
       <div className="topbar">
         <div className="topbarInner">
           <div className="topbarSlot">
-            <div className="segmented" aria-label="Навигация">
-              <NavLink to="/products">
-                <span>Товары</span>
-                <span className="segCount">Всего: {productsTotal}</span>
-              </NavLink>
+            <div className="pageTitle" aria-label="Товары">
+              Товары {productsTotal}
             </div>
 
             {isProducts && (
