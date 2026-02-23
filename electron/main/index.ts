@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net } from 'electron'
 import { join } from 'path'
-import { ensureDb, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonProductInfoList, ozonProductList, ozonTestAuth } from './ozon'
 
@@ -61,6 +61,7 @@ app.whenReady().then(() => {
   }
 
   ensureDb()
+  dbIngestLifecycleMarkers({ appVersion: app.getVersion() })
   createWindow()
 
   app.on('activate', () => {
@@ -121,6 +122,23 @@ ipcMain.handle('secrets:delete', async () => {
 
 ipcMain.handle('net:check', async () => {
   return { online: await checkInternet() }
+})
+
+ipcMain.handle('admin:getSettings', async () => {
+  try {
+    return { ok: true, ...dbGetAdminSettings() }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), logRetentionDays: 30 }
+  }
+})
+
+ipcMain.handle('admin:saveSettings', async (_e, payload: { logRetentionDays?: number }) => {
+  try {
+    const saved = dbSaveAdminSettings({ logRetentionDays: Number(payload?.logRetentionDays) })
+    return { ok: true, ...saved }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
 })
 
 ipcMain.handle('ozon:testAuth', async () => {
