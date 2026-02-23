@@ -115,64 +115,60 @@ function formatDateTimeRu(v: any): string {
 }
 
 const VISIBILITY_REASON_MAP_RU: Record<string, string> = {
-  double_without_merger_offer: 'Дубль товара без объединения карточек',
-  image_absent_with_shipment: 'Нет изображения при наличии отгрузок',
-  image_absent: 'Нет изображения',
+  double_without_merger_offer: 'Дубль товара',
+  image_absent_with_shipment: 'Нет фото в карточке товара',
+  image_absent: 'Нет фото в карточке товара',
   no_stock: 'Нет остатков',
   empty_stock: 'Нет остатков',
   archived: 'Товар в архиве',
   disabled_by_seller: 'Скрыт продавцом',
   blocked: 'Заблокирован',
   banned: 'Заблокирован',
-  moderation_failed: 'Не пройдена модерация',
-  content_moderation_failed: 'Не пройдена модерация контента',
-  price_not_set: 'Не указана цена',
-  barcode_absent: 'Не указан штрихкод',
 }
 
-function normalizeVisibilityFlag(v: any): boolean | null {
-  if (v === true || v === 1) return true
-  if (v === false || v === 0) return false
-  if (typeof v === 'string') {
-    const s = v.trim().toLowerCase()
-    if (s === 'true' || s === '1') return true
-    if (s === 'false' || s === '0') return false
+function visibilityReasonText(v: any): string {
+  if (v == null || v === '') return '-'
+  const mapOne = (s: string) => {
+    const key = s.trim()
+    if (!key) return ''
+    if (key === 'Нет изображения при наличии отгрузок') return 'Нет фото в карточке товара'
+    if (key === 'Дубль товара без объединения карточек') return 'Дубль товара'
+    if (VISIBILITY_REASON_MAP_RU[key]) return VISIBILITY_REASON_MAP_RU[key]
+    if (/^[a-z0-9_]+$/i.test(key)) return 'Другая причина скрытия'
+    return key
   }
-  return null
-}
-
-function translateVisibilityReasonItemRu(v: any): string {
-  const raw = String(v ?? '').trim()
-  if (!raw) return ''
-
-  if (/^[a-z0-9_]+$/i.test(raw)) {
-    const code = raw.toLowerCase()
-    if (VISIBILITY_REASON_MAP_RU[code]) return VISIBILITY_REASON_MAP_RU[code]
-    return `Причина Ozon (${code})`
+  let raw: any = v
+  if (typeof raw === 'string') {
+    const s = raw.trim()
+    if (!s) return '-'
+    try { raw = JSON.parse(s) } catch { raw = s }
   }
-
-  return raw
-}
-
-function translateVisibilityReasonsRu(v: any): string {
-  if (v == null) return ''
-  const raw = String(v).trim()
-  if (!raw) return ''
-
-  const parts = raw
-    .split(/\s*;\s*/)
-    .map((s) => translateVisibilityReasonItemRu(s))
-    .filter(Boolean)
-
-  return Array.from(new Set(parts)).join('; ')
+  const out: string[] = []
+  const pushVal = (val: any) => {
+    if (val == null) return
+    if (Array.isArray(val)) { for (const x of val) pushVal(x); return }
+    if (typeof val === 'object') {
+      const cand = (val.reason ?? val.code ?? val.value ?? val.name)
+      if (cand != null) pushVal(String(cand))
+      return
+    }
+    const s = String(val)
+    for (const part of s.split(',')) {
+      const mapped = mapOne(part)
+      if (mapped) out.push(mapped)
+    }
+  }
+  pushVal(raw)
+  const uniq = Array.from(new Set(out))
+  return uniq.length ? uniq.join(', ') : '-'
 }
 
 function visibilityText(p: Product): string {
-  const v = normalizeVisibilityFlag(p.is_visible)
-  if (v === true) return 'Виден'
-  if (v === false) return 'Скрыт'
-  if (translateVisibilityReasonsRu(p.hidden_reasons)) return 'Скрыт'
-  return 'Неизвестно'
+  const v = p.is_visible
+  if (v === true || v === 1) return 'Виден'
+  if (v === false || v === 0) return 'Скрыт'
+  if (p.hidden_reasons && String(p.hidden_reasons).trim()) return 'Скрыт'
+  return 'Виден'
 }
 
 let PRODUCTS_CACHE: Product[] | null = null
@@ -312,7 +308,6 @@ export default function ProductsPage({ query = '', onStats }: Props) {
         .map((colId) => {
           if (colId === 'archived') return ''
           if (colId === 'is_visible') return visibilityText(p)
-          if (colId === 'hidden_reasons') return translateVisibilityReasonsRu(p.hidden_reasons)
           if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
           if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
           return toText((p as any)[colId])
@@ -560,19 +555,19 @@ function onDragOverHeader(e: React.DragEvent) {
 
     if (colId === 'is_visible') {
       const txt = visibilityText(p)
-      const reasonsRu = translateVisibilityReasonsRu(p.hidden_reasons)
-      return { text: txt, title: reasonsRu || undefined }
-    }
-
-    if (colId === 'hidden_reasons') {
-      const reasonsRu = translateVisibilityReasonsRu(p.hidden_reasons)
-      return { text: reasonsRu || '-', title: reasonsRu || undefined }
+      const rs = visibilityReasonText(p.hidden_reasons)
+      const title = rs !== '-' ? rs : undefined
+      return { text: txt, title }
     }
 
     const v = (p as any)[colId]
+    if (colId === 'hidden_reasons') {
+      const rs = visibilityReasonText(v)
+      return { text: rs, title: rs !== '-' ? rs : undefined }
+    }
     if (colId === 'created_at' || colId === 'updated_at') {
       const f = formatDateTimeRu(v)
-      return { text: f || '-', title: f || undefined }
+      return { text: f || '-', title: (v == null || v === '') ? undefined : String(v) }
     }
     return { text: (v == null || v === '') ? '-' : String(v) }
   }
@@ -598,7 +593,7 @@ function onDragOverHeader(e: React.DragEvent) {
   function getCellString(p: Product, colId: ColDef['id']): string {
     if (colId === 'archived') return ''
     if (colId === 'is_visible') return visibilityText(p)
-    if (colId === 'hidden_reasons') return translateVisibilityReasonsRu(p.hidden_reasons)
+    if (colId === 'hidden_reasons') return visibilityReasonText((p as any)[colId])
     if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
     if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
     if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
@@ -771,7 +766,7 @@ function onDragOverHeader(e: React.DragEvent) {
                   className="collapsedMenu"
                   ref={collapsedMenuRef}
                   role="menu"
-                  style={{ position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 6 }}
+                  style={{ position: 'absolute', top: 0, right: 'calc(100% + 6px)', zIndex: 6 }}
                 >
                   {hiddenCols.map(c => (
                     <button
