@@ -97,9 +97,7 @@ export default function SettingsPage() {
 
   return (
     <div className="card">
-      <div className="h1">Настройки</div>
-
-      <div className="row" style={{ marginTop: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <div className="row" style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <div className="col" style={{ flex: '0 1 360px', minWidth: 240 }}>
           <div style={{ height: 22, marginBottom: 6 }} />
           {err ? (
