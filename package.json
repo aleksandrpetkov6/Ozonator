@@ -57,7 +57,8 @@
       "perMachine": false,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "Озонатор"
+      "shortcutName": "Озонатор",
+      "include": "build/installer.nsh"
     },
     "artifactName": "Озонатор.${ext}"
   }
