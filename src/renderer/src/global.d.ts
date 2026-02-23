@@ -10,6 +10,9 @@ declare global {
 
       netCheck: () => Promise<{ online: boolean }>
 
+      getAdminSettings: () => Promise<{ ok: boolean; error?: string; logRetentionDays: number }>
+      saveAdminSettings: (payload: { logRetentionDays: number }) => Promise<{ ok: boolean; error?: string; logRetentionDays: number }>
+
       testAuth: () => Promise<{ ok: boolean; storeName?: string | null; error?: string }>
       syncProducts: () => Promise<{ ok: boolean; itemsCount?: number; pages?: number; error?: string }>
 
