@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 
-type Product = {
+type GridRow = {
   offer_id: string
   sku?: string | null
   barcode?: string | null
@@ -13,16 +13,22 @@ type Product = {
   hidden_reasons?: string | null
   created_at?: string | null
   updated_at?: string | null
+  warehouse_id?: number | null
+  warehouse_name?: string | null
+  placement_zone?: string | null
 }
 
+type DataSet = 'products' | 'sales' | 'returns' | 'stocks'
+
 type ColDef = {
-  id: keyof Product | 'archived'
+  id: keyof GridRow | 'archived'
   title: string
   w: number
   visible: boolean
 }
 
 type Props = {
+  dataset?: DataSet
   query?: string
   onStats?: (s: { total: number; filtered: number }) => void
 }
@@ -30,19 +36,33 @@ type Props = {
 const PHOTO_PREVIEW_SIZE = 200
 const PHOTO_PREVIEW_DELAY_MS = 1000
 
-const DEFAULT_COLS: ColDef[] = [
-  { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
-  { id: 'photo_url', title: 'Фото', w: 74, visible: true },
-  { id: 'name', title: 'Наименование', w: 320, visible: true },
-  { id: 'brand', title: 'Бренд', w: 180, visible: true },
-  { id: 'sku', title: 'SKU', w: 140, visible: true },
-  { id: 'barcode', title: 'Штрихкод', w: 170, visible: true },
-  { id: 'type', title: 'Категория', w: 280, visible: true },
-  { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
-  { id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: true },
-  { id: 'created_at', title: 'Создан', w: 180, visible: true },
-  { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
-]
+function buildDefaultCols(dataset: DataSet): ColDef[] {
+  const base: ColDef[] = [
+    { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
+    { id: 'photo_url', title: 'Фото', w: 74, visible: true },
+    { id: 'name', title: 'Наименование', w: 320, visible: true },
+    { id: 'brand', title: 'Бренд', w: 180, visible: true },
+    { id: 'sku', title: 'SKU', w: 140, visible: true },
+    { id: 'barcode', title: 'Штрихкод', w: 170, visible: true },
+    { id: 'type', title: 'Категория', w: 280, visible: true },
+    { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
+    { id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: true },
+    { id: 'created_at', title: 'Создан', w: 180, visible: true },
+  ]
+
+  if (dataset === 'stocks') {
+    base.push(
+      { id: 'warehouse_name', title: 'Склад', w: 180, visible: true },
+      { id: 'placement_zone', title: 'Зона размещения', w: 220, visible: true },
+    )
+  }
+
+  if (dataset === 'products') {
+    base.push({ id: 'updated_at', title: 'Обновлён', w: 180, visible: false })
+  }
+
+  return base
+}
 
 const AUTO_MIN_W = 80
 const AUTO_PAD = 34
@@ -55,15 +75,22 @@ const AUTO_MAX_W: Record<string, number> = {
   hidden_reasons: 440,
   created_at: 240,
   updated_at: 240,
+  warehouse_name: 240,
+  placement_zone: 320,
   type: 380,
   name: 460,
   photo_url: 90,
 }
 
-function readCols(): ColDef[] {
+function colsStorageKey(dataset: DataSet) {
+  return `ozonator_cols_${dataset}`
+}
+
+function readCols(dataset: DataSet): ColDef[] {
+  const defaults = buildDefaultCols(dataset)
   try {
-    const raw = localStorage.getItem('ozonator_cols')
-    if (!raw) return DEFAULT_COLS
+    const raw = localStorage.getItem(colsStorageKey(dataset))
+    if (!raw) return defaults
 
     const parsed = JSON.parse(raw) as Partial<ColDef>[]
     const map = new Map<string, Partial<ColDef>>()
@@ -71,9 +98,8 @@ function readCols(): ColDef[] {
       if (x?.id) map.set(String(x.id), x)
     }
 
-    // Мержим с дефолтом, чтобы новые колонки появлялись автоматически
     const merged: ColDef[] = []
-    for (const d of DEFAULT_COLS) {
+    for (const d of defaults) {
       const p = map.get(String(d.id))
       merged.push({
         id: d.id,
@@ -84,15 +110,72 @@ function readCols(): ColDef[] {
       map.delete(String(d.id))
     }
 
-    // Если в localStorage были старые/лишние колонки — игнорируем
     return merged
   } catch {
-    return DEFAULT_COLS
+    return defaults
   }
 }
 
-function saveCols(cols: ColDef[]) {
-  localStorage.setItem('ozonator_cols', JSON.stringify(cols))
+function saveCols(dataset: DataSet, cols: ColDef[]) {
+  localStorage.setItem(colsStorageKey(dataset), JSON.stringify(cols))
+}
+
+const DATASET_CACHE: Record<DataSet, GridRow[] | null> = {
+  products: null,
+  sales: null,
+  returns: null,
+  stocks: null,
+}
+const DATASET_CACHE_AT: Record<DataSet, number> = {
+  products: 0,
+  sales: 0,
+  returns: 0,
+  stocks: 0,
+}
+const DATASET_INFLIGHT: Record<DataSet, Promise<GridRow[] | null> | null> = {
+  products: null,
+  sales: null,
+  returns: null,
+  stocks: null,
+}
+const PRODUCTS_CACHE_TTL_MS = 60_000
+
+async function fetchRowsCached(dataset: DataSet, force = false): Promise<GridRow[] | null> {
+  const now = Date.now()
+  if (!force && DATASET_CACHE[dataset] && (now - DATASET_CACHE_AT[dataset]) < PRODUCTS_CACHE_TTL_MS) return DATASET_CACHE[dataset]
+  if (DATASET_INFLIGHT[dataset]) return DATASET_INFLIGHT[dataset]
+
+  DATASET_INFLIGHT[dataset] = (async () => {
+    try {
+      let list: GridRow[] = []
+      if (dataset === 'products') {
+        const resp = await window.api.getProducts()
+        if (resp.ok) list = (resp.products as any) as GridRow[]
+        else return DATASET_CACHE[dataset]
+      } else if (dataset === 'sales') {
+        const resp = await window.api.getSales()
+        if (resp.ok) list = (resp.rows as any) as GridRow[]
+        else return DATASET_CACHE[dataset]
+      } else if (dataset === 'returns') {
+        const resp = await window.api.getReturns()
+        if (resp.ok) list = (resp.rows as any) as GridRow[]
+        else return DATASET_CACHE[dataset]
+      } else {
+        const resp = await window.api.getStocks()
+        if (resp.ok) list = (resp.rows as any) as GridRow[]
+        else return DATASET_CACHE[dataset]
+      }
+      DATASET_CACHE[dataset] = list
+      DATASET_CACHE_AT[dataset] = Date.now()
+      return list
+    } catch {
+      return DATASET_CACHE[dataset]
+    } finally {
+      DATASET_INFLIGHT[dataset] = null
+    }
+  })()
+
+  return DATASET_INFLIGHT[dataset]
 }
 
 function toText(v: any): string {
@@ -167,7 +250,7 @@ function visibilityReasonText(v: any): string {
   return uniq.length ? uniq.join(', ') : '-'
 }
 
-function visibilityText(p: Product): string {
+function visibilityText(p: GridRow): string {
   const v = p.is_visible
   if (v === true || v === 1) return 'Виден'
   if (v === false || v === 0) return 'Скрыт'
@@ -175,39 +258,9 @@ function visibilityText(p: Product): string {
   return 'Виден'
 }
 
-let PRODUCTS_CACHE: Product[] | null = null
-let PRODUCTS_CACHE_AT = 0
-let PRODUCTS_INFLIGHT: Promise<Product[] | null> | null = null
-const PRODUCTS_CACHE_TTL_MS = 60_000
-
-async function fetchProductsCached(force = false): Promise<Product[] | null> {
-  const now = Date.now()
-  if (!force && PRODUCTS_CACHE && (now - PRODUCTS_CACHE_AT) < PRODUCTS_CACHE_TTL_MS) return PRODUCTS_CACHE
-  if (PRODUCTS_INFLIGHT) return PRODUCTS_INFLIGHT
-
-  PRODUCTS_INFLIGHT = (async () => {
-    try {
-      const resp = await window.api.getProducts()
-      if (resp.ok) {
-        const list = (resp.products as any) as Product[]
-        PRODUCTS_CACHE = list
-        PRODUCTS_CACHE_AT = Date.now()
-        return list
-      }
-      return PRODUCTS_CACHE
-    } catch {
-      return PRODUCTS_CACHE
-    } finally {
-      PRODUCTS_INFLIGHT = null
-    }
-  })()
-
-  return PRODUCTS_INFLIGHT
-}
-
-export default function ProductsPage({ query = '', onStats }: Props) {
-  const [products, setProducts] = useState<Product[]>(() => PRODUCTS_CACHE ?? [])
-  const [cols, setCols] = useState<ColDef[]>(readCols)
+export default function ProductsPage({ dataset = 'products', query = '', onStats }: Props) {
+  const [products, setProducts] = useState<GridRow[]>(() => DATASET_CACHE[dataset] ?? [])
+  const [cols, setCols] = useState<ColDef[]>(() => readCols(dataset))
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
@@ -298,23 +351,23 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   }
 
   const hasStoredCols = useMemo(() => {
-    try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
-  }, [])
+    try { return !!localStorage.getItem(colsStorageKey(dataset)) } catch { return true }
+  }, [dataset])
 
   async function load(force = false) {
-    const list = await fetchProductsCached(force)
+    const list = await fetchRowsCached(dataset, force)
     if (Array.isArray(list)) setProducts(list)
   }
 
   useEffect(() => {
     load()
-  }, [])
+  }, [dataset])
 
   useEffect(() => {
     const onUpdated = () => load(true)
     window.addEventListener('ozon:products-updated', onUpdated)
     return () => window.removeEventListener('ozon:products-updated', onUpdated)
-  }, [])
+  }, [dataset])
 
   useEffect(() => {
     return () => {
@@ -323,9 +376,9 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   }, [])
 
   useEffect(() => {
-    const id = window.setTimeout(() => saveCols(cols), 250)
+    const id = window.setTimeout(() => saveCols(dataset, cols), 250)
     return () => window.clearTimeout(id)
-  }, [cols])
+  }, [dataset, cols])
 
   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
   const rowH = useMemo(() => (visibleCols.some(c => c.id === 'photo_url') ? 58 : 28), [visibleCols])
@@ -619,7 +672,7 @@ function onDragOverHeader(e: React.DragEvent) {
     window.addEventListener('mouseup', onUp)
   }
 
-  function cellText(p: Product, colId: ColDef['id']): { text: string; title?: string } {
+  function cellText(p: GridRow, colId: ColDef['id']): { text: string; title?: string } {
     if (colId === 'offer_id') return { text: p.offer_id }
     if (colId === 'name') return { text: (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия' }
     if (colId === 'brand') return { text: (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан' }
@@ -662,7 +715,7 @@ function onDragOverHeader(e: React.DragEvent) {
     return ctx.measureText(text).width
   }
 
-  function getCellString(p: Product, colId: ColDef['id']): string {
+  function getCellString(p: GridRow, colId: ColDef['id']): string {
     if (colId === 'archived') return ''
     if (colId === 'is_visible') return visibilityText(p)
     if (colId === 'hidden_reasons') return visibilityReasonText((p as any)[colId])
@@ -673,7 +726,7 @@ function onDragOverHeader(e: React.DragEvent) {
     return toText((p as any)[colId])
   }
 
-  function autoSizeColumn(colId: string, rows: Product[], mode: 'default' | 'fit' = 'default') {
+  function autoSizeColumn(colId: string, rows: GridRow[], mode: 'default' | 'fit' = 'default') {
     const col = cols.find(c => String(c.id) === colId)
     if (!col) return
     if (colId === 'photo_url') {
@@ -820,7 +873,7 @@ function onDragOverHeader(e: React.DragEvent) {
   const bottomSpace = Math.max(0, (totalRows - endRow) * rowH)
 
   const getHeaderTitleText = (c: ColDef): string => {
-    if (String(c.id) === 'offer_id') return `${c.title} ${totalRows}`
+    if (String(c.id) === 'offer_id' && dataset === 'products') return `${c.title} ${totalRows}`
     return c.title
   }
 
