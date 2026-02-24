@@ -53,7 +53,8 @@ function fmtDt(iso?: string | null) {
   return `${dd}.${mm}.${yy} ${hh}:${mi}:${ss}`
 }
 
-function detailsRu(meta?: string | null): string {
+function detailsRu(type?: string | null, meta?: string | null, itemsCount?: number | null): string {
+  if (type === 'app_uninstall') return '-'
   if (!meta) return '-'
   try {
     const m = JSON.parse(meta)
@@ -62,7 +63,8 @@ function detailsRu(meta?: string | null): string {
     if (typeof m?.updated === 'number' || typeof m?.added === 'number') {
       const upd = (typeof m?.updated === 'number') ? m.updated : 0
       const add = (typeof m?.added === 'number') ? m.added : 0
-      return `обновлено: ${upd}, новых: ${add}`
+      const synced = (typeof itemsCount === 'number' && Number.isFinite(itemsCount)) ? itemsCount : Math.max(0, upd + add)
+      return `синхронизировано: ${synced}, обновлено: ${upd}, новых: ${add}`
     }
 
     if (typeof m?.logRetentionDays === 'number') {
@@ -132,7 +134,7 @@ export default function LogsPage() {
               </td>
               <td className="small"><div className="cellText" title={fmtDt(l.started_at)}>{fmtDt(l.started_at)}</div></td>
               <td className="small"><div className="cellText" title={fmtDt(l.finished_at)}>{fmtDt(l.finished_at)}</div></td>
-              <td className="small"><div className="cellText" title={detailsRu(l.meta)}>{detailsRu(l.meta)}</div></td>
+              <td className="small"><div className="cellText" title={detailsRu(l.type, l.meta, l.items_count)}>{detailsRu(l.type, l.meta, l.items_count)}</div></td>
               <td className="small"><div className="cellText" title={l.error_message ?? '-'}>{l.error_message ?? '-'}</div></td>
             </tr>
           ))}
