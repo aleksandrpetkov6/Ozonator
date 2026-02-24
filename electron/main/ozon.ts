@@ -722,6 +722,9 @@ function pickWarehouseName(raw: any): string | null {
     raw?.name,
     raw?.warehouse_name,
     raw?.warehouseName,
+    raw?.warehouse,
+    raw?.warehouse_title,
+    raw?.warehouseTitle,
     raw?.title,
     raw?.place_name,
     raw?.placeName
@@ -797,24 +800,37 @@ function extractPlacementZoneItems(json: any, warehouseId: number): OzonPlacemen
   const seen = new Set<string>()
 
   for (const obj of objs) {
-    const skuRaw = obj?.sku ?? obj?.offer_sku ?? obj?.seller_sku
+    const skuRaw =
+      obj?.sku ??
+      obj?.sku_id ??
+      obj?.skuId ??
+      obj?.product_sku ??
+      obj?.productSku ??
+      obj?.item_sku ??
+      obj?.offer_sku ??
+      obj?.seller_sku
     const sku = (typeof skuRaw === 'string' || typeof skuRaw === 'number') ? String(skuRaw).trim() : ''
     if (!sku) continue
 
+    const rowWarehouseId = pickWarehouseId(obj) ?? warehouseId
     const zone = pickFirstString(
       obj?.placement_zone,
       obj?.placementZone,
+      obj?.placement_zone_name,
+      obj?.placementZoneName,
+      obj?.storage_zone,
+      obj?.storageZone,
       obj?.zone,
       obj?.zone_name,
       obj?.zoneName,
       obj?.name
     )
 
-    const key = `${warehouseId}::${sku}::${zone ?? ''}`
+    const key = `${rowWarehouseId}::${sku}::${zone ?? ''}`
     if (seen.has(key)) continue
     seen.add(key)
     out.push({
-      warehouse_id: warehouseId,
+      warehouse_id: rowWarehouseId,
       sku,
       placement_zone: zone ? zone.trim() : null,
     })
@@ -831,12 +847,25 @@ export async function ozonPlacementZoneInfo(
   const skus = Array.from(new Set((args.skus ?? []).map((x) => String(x ?? '').trim()).filter(Boolean)))
   if (!Number.isFinite(warehouseId) || warehouseId <= 0 || skus.length === 0) return []
 
-  const res = await ozonPost(secrets, '/v1/product/placement-zone/info', {
-    warehouse_id: warehouseId,
-    skus: skus.map((sku) => ({ sku })),
-  })
+  const payloads = [
+    { warehouse_id: warehouseId, skus: skus.map((sku) => ({ sku })) },
+    { warehouse_id: warehouseId, skus },
+    { warehouse_id: warehouseId, sku: skus },
+  ]
 
-  return extractPlacementZoneItems(res, warehouseId)
+  let lastErr: any = null
+  for (const payload of payloads) {
+    try {
+      const res = await ozonPost(secrets, '/v1/product/placement-zone/info', payload)
+      const rows = extractPlacementZoneItems(res, warehouseId)
+      if (rows.length > 0) return rows
+    } catch (e) {
+      lastErr = e
+    }
+  }
+
+  if (lastErr) throw lastErr
+  return []
 }
 
 export async function ozonProductList(secrets: Secrets, opts: { lastId: string; limit: number }) {
