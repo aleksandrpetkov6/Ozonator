@@ -99,7 +99,7 @@ export default function SettingsPage() {
     <div className="card">
       <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
         <div className="settingsStoreInline" title={storeName || 'Название появится после проверки доступа'}>
-          <span className="settingsStoreLabel">Магазин:</span>
+          
           {storeName ? (
             <span className="settingsStoreValue">{storeName}</span>
           ) : (
