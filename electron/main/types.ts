@@ -17,6 +17,7 @@ export type ProductRow = {
   category?: string | null
   type?: string | null
   name?: string | null
+  photo_url?: string | null
   is_visible?: number | boolean | null
   hidden_reasons?: string | null
   created_at?: string | null
