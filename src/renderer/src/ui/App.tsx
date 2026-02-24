@@ -42,6 +42,12 @@ function sanitizeDateInput(value: string): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
 }
 
+function toShortRuDate(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return ''
+  const [, m, d] = value.split('-')
+  return `${d}.${m}`
+}
+
 function readDemandForecastPeriod(): DemandForecastPeriod {
   try {
     const raw = localStorage.getItem(DEMAND_FORECAST_PERIOD_LS_KEY)
@@ -129,7 +135,6 @@ export default function App() {
   const isStocks = pathname.startsWith('/stocks')
   const isProducts = !isLogs && !isSettings && !isAdmin && !isDemandForecast && !isSales && !isReturns && !isStocks
   const isDataGridTab = isProducts || isSales || isReturns || isStocks
-  const isDateFilterTab = isSales || isReturns || isDemandForecast
   const isProductsLike = isDataGridTab || isDemandForecast
 
   const onProductStats = useCallback((s: { total: number; filtered: number }) => {
@@ -160,6 +165,15 @@ export default function App() {
       if (preset.from === demandPeriod.from && preset.to === demandPeriod.to) return days
     }
     return null
+  }, [demandPeriod.from, demandPeriod.to])
+
+  const dateTriggerLabel = useMemo(() => {
+    const from = toShortRuDate(demandPeriod.from)
+    const to = toShortRuDate(demandPeriod.to)
+    if (from && to) return `${from}—${to}`
+    if (from) return `с ${from}`
+    if (to) return `по ${to}`
+    return 'Указать промежуток'
   }, [demandPeriod.from, demandPeriod.to])
 
   useEffect(() => {
@@ -368,74 +382,202 @@ export default function App() {
               Товары
             </NavLink>
 
-            {isDateFilterTab ? (
-              <div className="topbarDateTabsSlot" ref={dateRangeRef} aria-label="Период данных">
-                <label className="topbarDateField topbarDateFieldFrom" onClick={() => setDatePresetOpen(true)}>
-                  <span>с</span>
-                  <input
-                    type="date"
-                    className="topbarDateInput"
-                    value={demandPeriod.from}
-                    onFocus={() => setDatePresetOpen(true)}
-                    onChange={(e) => setDemandPeriodField('from', e.target.value)}
-                  />
-                </label>
-                <label className="topbarDateField topbarDateFieldTo" onClick={() => setDatePresetOpen(true)}>
-                  <span>по</span>
-                  <input
-                    type="date"
-                    className="topbarDateInput"
-                    value={demandPeriod.to}
-                    onFocus={() => setDatePresetOpen(true)}
-                    onChange={(e) => setDemandPeriodField('to', e.target.value)}
-                  />
-                </label>
+            {isSales ? (
+              <div className="topbarDateChipHost topbarDateChipHostSales" ref={dateRangeRef} aria-label="Период продаж">
+                <button
+                  type="button"
+                  className={`topbarDateTrigger${datePresetOpen ? ' open' : ''}`}
+                  onClick={() => setDatePresetOpen((v) => !v)}
+                  title={dateTriggerLabel}
+                  aria-haspopup="dialog"
+                  aria-expanded={datePresetOpen}
+                >
+                  <span className="topbarDateTriggerText">{dateTriggerLabel}</span>
+                  <span className="topbarDateTriggerIcon" aria-hidden>📅</span>
+                </button>
 
                 {datePresetOpen && (
-                  <div className="topbarDatePresetPopover" role="menu" aria-label="Шаблоны периода">
-                    {DEMAND_PERIOD_PRESETS.map((days) => (
-                      <button
-                        key={days}
-                        type="button"
-                        role="menuitem"
-                        className={`topbarDatePresetBtn${demandPresetDays === days ? ' active' : ''}`}
-                        onClick={() => {
-                          applyDemandPreset(days)
-                          setDatePresetOpen(false)
-                        }}
-                      >
-                        {days} дней
-                      </button>
-                    ))}
+                  <div className="topbarDatePopover" role="dialog" aria-label="Период продаж">
+                    <div className="topbarDatePopoverFields">
+                      <label className="topbarDatePopoverField">
+                        <span>С</span>
+                        <input
+                          type="date"
+                          className="topbarDatePopoverInput"
+                          value={demandPeriod.from}
+                          onChange={(e) => setDemandPeriodField('from', e.target.value)}
+                        />
+                      </label>
+                      <label className="topbarDatePopoverField">
+                        <span>По</span>
+                        <input
+                          type="date"
+                          className="topbarDatePopoverInput"
+                          value={demandPeriod.to}
+                          onChange={(e) => setDemandPeriodField('to', e.target.value)}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="topbarDatePopoverPresets" role="menu" aria-label="Шаблоны периода">
+                      {DEMAND_PERIOD_PRESETS.map((days) => (
+                        <button
+                          key={days}
+                          type="button"
+                          role="menuitem"
+                          className={`topbarDatePresetBtn${demandPresetDays === days ? ' active' : ''}`}
+                          onClick={() => {
+                            applyDemandPreset(days)
+                            setDatePresetOpen(false)
+                          }}
+                        >
+                          {days}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
             ) : (
-              <>
-                <NavLink
-                  to="/sales"
-                  className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-                  title="Продажи"
-                >
-                  Продажи
-                </NavLink>
+              <NavLink
+                to="/sales"
+                className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+                title="Продажи"
+              >
+                Продажи
+              </NavLink>
+            )}
 
-                <NavLink
-                  to="/returns"
-                  className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-                  title="Возвраты"
+            {isReturns ? (
+              <div className="topbarDateChipHost topbarDateChipHostReturns" ref={dateRangeRef} aria-label="Период возвратов">
+                <button
+                  type="button"
+                  className={`topbarDateTrigger${datePresetOpen ? ' open' : ''}`}
+                  onClick={() => setDatePresetOpen((v) => !v)}
+                  title={dateTriggerLabel}
+                  aria-haspopup="dialog"
+                  aria-expanded={datePresetOpen}
                 >
-                  Возвраты
-                </NavLink>
+                  <span className="topbarDateTriggerText">{dateTriggerLabel}</span>
+                  <span className="topbarDateTriggerIcon" aria-hidden>📅</span>
+                </button>
 
-                <NavLink
-                  to="/forecast-demand"
-                  className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-                  title="Прогноз спроса"
+                {datePresetOpen && (
+                  <div className="topbarDatePopover" role="dialog" aria-label="Период возвратов">
+                    <div className="topbarDatePopoverFields">
+                      <label className="topbarDatePopoverField">
+                        <span>С</span>
+                        <input
+                          type="date"
+                          className="topbarDatePopoverInput"
+                          value={demandPeriod.from}
+                          onChange={(e) => setDemandPeriodField('from', e.target.value)}
+                        />
+                      </label>
+                      <label className="topbarDatePopoverField">
+                        <span>По</span>
+                        <input
+                          type="date"
+                          className="topbarDatePopoverInput"
+                          value={demandPeriod.to}
+                          onChange={(e) => setDemandPeriodField('to', e.target.value)}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="topbarDatePopoverPresets" role="menu" aria-label="Шаблоны периода">
+                      {DEMAND_PERIOD_PRESETS.map((days) => (
+                        <button
+                          key={days}
+                          type="button"
+                          role="menuitem"
+                          className={`topbarDatePresetBtn${demandPresetDays === days ? ' active' : ''}`}
+                          onClick={() => {
+                            applyDemandPreset(days)
+                            setDatePresetOpen(false)
+                          }}
+                        >
+                          {days}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <NavLink
+                to="/returns"
+                className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+                title="Возвраты"
+              >
+                Возвраты
+              </NavLink>
+            )}
+
+            {isDemandForecast ? (
+              <div className="topbarDateChipHost topbarDateChipHostForecast" ref={dateRangeRef} aria-label="Период прогноза спроса">
+                <button
+                  type="button"
+                  className={`topbarDateTrigger${datePresetOpen ? ' open' : ''}`}
+                  onClick={() => setDatePresetOpen((v) => !v)}
+                  title={dateTriggerLabel}
+                  aria-haspopup="dialog"
+                  aria-expanded={datePresetOpen}
                 >
-                  Прогноз спроса
-                </NavLink>
-              </>
+                  <span className="topbarDateTriggerText">{dateTriggerLabel}</span>
+                  <span className="topbarDateTriggerIcon" aria-hidden>📅</span>
+                </button>
+
+                {datePresetOpen && (
+                  <div className="topbarDatePopover" role="dialog" aria-label="Период прогноза спроса">
+                    <div className="topbarDatePopoverFields">
+                      <label className="topbarDatePopoverField">
+                        <span>С</span>
+                        <input
+                          type="date"
+                          className="topbarDatePopoverInput"
+                          value={demandPeriod.from}
+                          onChange={(e) => setDemandPeriodField('from', e.target.value)}
+                        />
+                      </label>
+                      <label className="topbarDatePopoverField">
+                        <span>По</span>
+                        <input
+                          type="date"
+                          className="topbarDatePopoverInput"
+                          value={demandPeriod.to}
+                          onChange={(e) => setDemandPeriodField('to', e.target.value)}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="topbarDatePopoverPresets" role="menu" aria-label="Шаблоны периода">
+                      {DEMAND_PERIOD_PRESETS.map((days) => (
+                        <button
+                          key={days}
+                          type="button"
+                          role="menuitem"
+                          className={`topbarDatePresetBtn${demandPresetDays === days ? ' active' : ''}`}
+                          onClick={() => {
+                            applyDemandPreset(days)
+                            setDatePresetOpen(false)
+                          }}
+                        >
+                          {days}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <NavLink
+                to="/forecast-demand"
+                className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+                title="Прогноз спроса"
+              >
+                Прогноз спроса
+              </NavLink>
             )}
 
             <NavLink

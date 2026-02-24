@@ -1145,3 +1145,144 @@ button:disabled{
   border-radius: 6px;
   background: #fff;
 }
+
+/* Compact date trigger in place of active tab button */
+.topbarDateChipHost{
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.topbarDateChipHostSales{ width: 88px; }
+.topbarDateChipHostReturns{ width: 96px; }
+.topbarDateChipHostForecast{ width: 134px; }
+
+.topbarDateTrigger{
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: #fff;
+  color: rgba(28,28,30,.9);
+  box-shadow: var(--shadowSoft);
+  cursor: pointer;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+
+.topbarDateTrigger:hover{
+  border-color: rgba(60,60,67,.28);
+}
+
+.topbarDateTrigger.open{
+  border-color: rgba(10,132,255,.55);
+  box-shadow: 0 0 0 3px rgba(10,132,255,.16), var(--shadowSoft);
+}
+
+.topbarDateTriggerText{
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.topbarDateTriggerIcon{
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1;
+  opacity: .75;
+}
+
+.topbarDatePopover{
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 330px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--hairline2);
+  background: rgba(255,255,255,.98);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 95;
+}
+
+.topbarDatePopoverFields{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.topbarDatePopoverField{
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.topbarDatePopoverField > span{
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(60,60,67,.72);
+  padding-left: 2px;
+  text-transform: uppercase;
+}
+
+.topbarDatePopoverInput{
+  width: 100%;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--hairline);
+  background: #fff;
+  padding: 0 8px;
+  font-size: 12px;
+  color: rgba(28,28,30,.92);
+}
+
+.topbarDatePopoverInput:focus{
+  outline: none;
+  border-color: rgba(10,132,255,.55);
+  box-shadow: 0 0 0 3px rgba(10,132,255,.14);
+}
+
+.topbarDatePopoverPresets{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(60,60,67,.10);
+}
+
+.topbarDatePresetBtn{
+  height: 26px;
+  min-width: 40px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: rgba(255,255,255,.92);
+  font-size: 12px;
+  line-height: 24px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.topbarDatePresetBtn:hover{
+  border-color: rgba(60,60,67,.28);
+}
+
+.topbarDatePresetBtn.active{
+  border-color: rgba(10,132,255,.36);
+  background: rgba(10,132,255,.10);
+  color: rgba(10,80,180,.95);
+}
