@@ -8,6 +8,24 @@ import type { Secrets } from './types'
 
 const OZON_BASE = 'https://api-seller.ozon.ru'
 
+export type OzonApiCaptureEvent = {
+  storeClientId: string | null
+  method: 'GET' | 'POST'
+  endpoint: string
+  requestBody: any
+  responseBody: any
+  httpStatus: number
+  isSuccess: boolean
+  errorMessage?: string | null
+  fetchedAt: string
+}
+
+let ozonApiCaptureHook: ((event: OzonApiCaptureEvent) => void | Promise<void>) | null = null
+
+export function setOzonApiCaptureHook(fn: ((event: OzonApiCaptureEvent) => void | Promise<void>) | null) {
+  ozonApiCaptureHook = fn
+}
+
 function headers(secrets: Secrets) {
   return {
     'Client-Id': secrets.clientId,
@@ -37,6 +55,21 @@ async function ozonRequest(secrets: Secrets, method: 'GET'|'POST', endpoint: str
 
   const text = await res.text()
   const json = await parseJsonSafe(text)
+
+  if (ozonApiCaptureHook) {
+    const fetchedAt = new Date().toISOString()
+    await ozonApiCaptureHook({
+      storeClientId: String(secrets?.clientId ?? '').trim() || null,
+      method,
+      endpoint,
+      requestBody: body ?? null,
+      responseBody: json ?? { __raw_text: text },
+      httpStatus: res.status,
+      isSuccess: res.ok,
+      errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
+      fetchedAt,
+    })
+  }
 
   if (!res.ok) {
     throw normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })

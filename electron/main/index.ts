@@ -1,8 +1,8 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net } from 'electron'
 import { join } from 'path'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
-import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList } from './ozon'
+import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -67,6 +67,19 @@ app.whenReady().then(() => {
   }
 
   ensureDb()
+  setOzonApiCaptureHook((evt) => {
+    dbRecordApiRawResponse({
+      storeClientId: evt.storeClientId,
+      method: evt.method,
+      endpoint: evt.endpoint,
+      requestBody: evt.requestBody,
+      responseBody: evt.responseBody,
+      httpStatus: evt.httpStatus,
+      isSuccess: evt.isSuccess,
+      errorMessage: evt.errorMessage ?? null,
+      fetchedAt: evt.fetchedAt,
+    })
+  })
   dbIngestLifecycleMarkers({ appVersion: app.getVersion() })
   createWindow()
 
@@ -249,31 +262,44 @@ ipcMain.handle('ozon:syncProducts', async () => {
 
     let placementRowsCount = 0
     let placementSyncError: string | null = null
+    let placementCacheKept = false
     try {
       const productsForStore = dbGetProducts(secrets.clientId)
       const skuList = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
 
       if (skuList.length > 0) {
         const warehouses = await ozonWarehouseList(secrets)
-        const allPlacementRows: Array<{ warehouse_id: number; warehouse_name?: string | null; sku: string; placement_zone?: string | null }> = []
+        if (!Array.isArray(warehouses) || warehouses.length === 0) {
+          placementSyncError = 'Ozon не вернул список складов; локальные данные по складам/зонам сохранены без перезаписи.'
+          placementCacheKept = true
+        } else {
+          const allPlacementRows: Array<{ warehouse_id: number; warehouse_name?: string | null; sku: string; placement_zone?: string | null }> = []
+          let placementApiCallCount = 0
 
-        for (const wh of warehouses) {
-          const wid = Number(wh.warehouse_id)
-          if (!Number.isFinite(wid)) continue
-          for (const part of chunk(skuList, 500)) {
-            const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
-            for (const z of zones) {
-              allPlacementRows.push({
-                warehouse_id: wid,
-                warehouse_name: wh.name ?? null,
-                sku: z.sku,
-                placement_zone: z.placement_zone ?? null,
-              })
+          for (const wh of warehouses) {
+            const wid = Number(wh.warehouse_id)
+            if (!Number.isFinite(wid)) continue
+            for (const part of chunk(skuList, 500)) {
+              placementApiCallCount += 1
+              const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
+              for (const z of zones) {
+                allPlacementRows.push({
+                  warehouse_id: wid,
+                  warehouse_name: wh.name ?? null,
+                  sku: z.sku,
+                  placement_zone: z.placement_zone ?? null,
+                })
+              }
             }
           }
-        }
 
-        placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, allPlacementRows)
+          if (allPlacementRows.length === 0 && placementApiCallCount > 0) {
+            placementSyncError = 'Ozon не вернул зоны размещения ни по одному SKU; прежние локальные данные по складам/зонам сохранены.'
+            placementCacheKept = true
+          } else {
+            placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, allPlacementRows)
+          }
+        }
       } else {
         placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, [])
       }
@@ -301,6 +327,7 @@ ipcMain.handle('ozon:syncProducts', async () => {
         storeName: loadSecrets().storeName ?? null,
         placementRowsCount,
         placementSyncError,
+        placementCacheKept,
       },
     })
 
