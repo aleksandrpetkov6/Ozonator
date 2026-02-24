@@ -32,6 +32,22 @@ export type ProductRow = {
   updated_at: string
 }
 
+
+export type ProductPlacementRow = {
+  store_client_id?: string | null
+  warehouse_id: number
+  warehouse_name?: string | null
+  sku: string
+  placement_zone?: string | null
+  updated_at: string
+}
+
+export type StockViewRow = ProductRow & {
+  warehouse_id?: number | null
+  warehouse_name?: string | null
+  placement_zone?: string | null
+}
+
 export type SyncLogRow = {
   id: number
   type:

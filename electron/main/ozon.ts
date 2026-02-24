@@ -706,6 +706,139 @@ export async function ozonGetStoreName(secrets: Secrets): Promise<string | null>
   return null
 }
 
+type OzonWarehouse = {
+  warehouse_id: number
+  name: string | null
+}
+
+export type OzonPlacementZoneInfo = {
+  warehouse_id: number
+  sku: string
+  placement_zone: string | null
+}
+
+function pickWarehouseName(raw: any): string | null {
+  const v = pickFirstString(
+    raw?.name,
+    raw?.warehouse_name,
+    raw?.warehouseName,
+    raw?.title,
+    raw?.place_name,
+    raw?.placeName
+  )
+  return v ? v.trim() : null
+}
+
+function pickWarehouseId(raw: any): number | null {
+  const cand = raw?.warehouse_id ?? raw?.warehouseId ?? raw?.id
+  const n = (typeof cand === 'number') ? cand : Number(String(cand ?? '').trim())
+  return Number.isFinite(n) ? Math.trunc(n) : null
+}
+
+function flattenObjects(root: any): any[] {
+  const out: any[] = []
+  const seen = new Set<any>()
+  const q: any[] = [root]
+  while (q.length) {
+    const cur = q.shift()
+    if (cur == null) continue
+    if (typeof cur !== 'object') continue
+    if (seen.has(cur)) continue
+    seen.add(cur)
+
+    if (Array.isArray(cur)) {
+      for (const v of cur) q.push(v)
+      continue
+    }
+
+    out.push(cur)
+    for (const v of Object.values(cur)) q.push(v)
+  }
+  return out
+}
+
+export async function ozonWarehouseList(secrets: Secrets): Promise<OzonWarehouse[]> {
+  const candidates: Array<() => Promise<any>> = [
+    () => ozonPost(secrets, '/v2/warehouse/list', {}),
+    () => ozonGet(secrets, '/v2/warehouse/list'),
+    () => ozonPost(secrets, '/v1/warehouse/list', {}),
+    () => ozonGet(secrets, '/v1/warehouse/list'),
+  ]
+
+  let lastErr: any = null
+  for (const fn of candidates) {
+    try {
+      const j = await fn()
+      const objs = flattenObjects(j)
+      const rows: OzonWarehouse[] = []
+      const seen = new Set<number>()
+      for (const obj of objs) {
+        const id = pickWarehouseId(obj)
+        if (id == null) continue
+        if (seen.has(id)) continue
+        const name = pickWarehouseName(obj)
+        seen.add(id)
+        rows.push({ warehouse_id: id, name: name ?? null })
+      }
+      if (rows.length) return rows.sort((a, b) => a.warehouse_id - b.warehouse_id)
+    } catch (e) {
+      lastErr = e
+      continue
+    }
+  }
+
+  if (lastErr) throw lastErr
+  return []
+}
+
+function extractPlacementZoneItems(json: any, warehouseId: number): OzonPlacementZoneInfo[] {
+  const objs = flattenObjects(json)
+  const out: OzonPlacementZoneInfo[] = []
+  const seen = new Set<string>()
+
+  for (const obj of objs) {
+    const skuRaw = obj?.sku ?? obj?.offer_sku ?? obj?.seller_sku
+    const sku = (typeof skuRaw === 'string' || typeof skuRaw === 'number') ? String(skuRaw).trim() : ''
+    if (!sku) continue
+
+    const zone = pickFirstString(
+      obj?.placement_zone,
+      obj?.placementZone,
+      obj?.zone,
+      obj?.zone_name,
+      obj?.zoneName,
+      obj?.name
+    )
+
+    const key = `${warehouseId}::${sku}::${zone ?? ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      warehouse_id: warehouseId,
+      sku,
+      placement_zone: zone ? zone.trim() : null,
+    })
+  }
+
+  return out
+}
+
+export async function ozonPlacementZoneInfo(
+  secrets: Secrets,
+  args: { warehouseId: number; skus: string[] }
+): Promise<OzonPlacementZoneInfo[]> {
+  const warehouseId = Math.trunc(Number(args.warehouseId))
+  const skus = Array.from(new Set((args.skus ?? []).map((x) => String(x ?? '').trim()).filter(Boolean)))
+  if (!Number.isFinite(warehouseId) || warehouseId <= 0 || skus.length === 0) return []
+
+  const res = await ozonPost(secrets, '/v1/product/placement-zone/info', {
+    warehouse_id: warehouseId,
+    skus: skus.map((sku) => ({ sku })),
+  })
+
+  return extractPlacementZoneItems(res, warehouseId)
+}
+
 export async function ozonProductList(secrets: Secrets, opts: { lastId: string; limit: number }) {
   const json = await ozonPost(secrets, '/v3/product/list', {
     filter: {},

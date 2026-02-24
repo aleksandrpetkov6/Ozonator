@@ -1,10 +1,16 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net } from 'electron'
 import { join } from 'path'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
-import { ozonGetStoreName, ozonProductInfoList, ozonProductList, ozonTestAuth } from './ozon'
+import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList } from './ozon'
 
 let mainWindow: BrowserWindow | null = null
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -241,6 +247,40 @@ ipcMain.handle('ozon:syncProducts', async () => {
     dbDeleteProductsMissingForStore(secrets.clientId, Array.from(incomingOfferIds))
     const syncedCount = dbCountProducts(secrets.clientId)
 
+    let placementRowsCount = 0
+    let placementSyncError: string | null = null
+    try {
+      const productsForStore = dbGetProducts(secrets.clientId)
+      const skuList = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
+
+      if (skuList.length > 0) {
+        const warehouses = await ozonWarehouseList(secrets)
+        const allPlacementRows: Array<{ warehouse_id: number; warehouse_name?: string | null; sku: string; placement_zone?: string | null }> = []
+
+        for (const wh of warehouses) {
+          const wid = Number(wh.warehouse_id)
+          if (!Number.isFinite(wid)) continue
+          for (const part of chunk(skuList, 500)) {
+            const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
+            for (const z of zones) {
+              allPlacementRows.push({
+                warehouse_id: wid,
+                warehouse_name: wh.name ?? null,
+                sku: z.sku,
+                placement_zone: z.placement_zone ?? null,
+              })
+            }
+          }
+        }
+
+        placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, allPlacementRows)
+      } else {
+        placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, [])
+      }
+    } catch (placementErr: any) {
+      placementSyncError = placementErr?.message ?? String(placementErr)
+    }
+
     // Обновляем storeName в фоне, если ещё не было
     if (!secrets.storeName) {
       try {
@@ -259,10 +299,12 @@ ipcMain.handle('ozon:syncProducts', async () => {
         added,
         storeClientId: secrets.clientId,
         storeName: loadSecrets().storeName ?? null,
+        placementRowsCount,
+        placementSyncError,
       },
     })
 
-    return { ok: true, itemsCount: syncedCount, pages }
+    return { ok: true, itemsCount: syncedCount, pages, placementRowsCount, placementSyncError }
   } catch (e: any) {
     dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
     return { ok: false, error: e?.message ?? String(e) }
@@ -282,6 +324,54 @@ ipcMain.handle('data:getProducts', async () => {
     return { ok: true, products }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e), products: [] }
+  }
+})
+
+ipcMain.handle('data:getSales', async () => {
+  try {
+    let storeClientId: string | null = null
+    try {
+      storeClientId = loadSecrets().clientId
+    } catch {
+      storeClientId = null
+    }
+
+    const products = dbGetProducts(storeClientId)
+    return { ok: true, rows: products }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), rows: [] }
+  }
+})
+
+ipcMain.handle('data:getReturns', async () => {
+  try {
+    let storeClientId: string | null = null
+    try {
+      storeClientId = loadSecrets().clientId
+    } catch {
+      storeClientId = null
+    }
+
+    const products = dbGetProducts(storeClientId)
+    return { ok: true, rows: products }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), rows: [] }
+  }
+})
+
+ipcMain.handle('data:getStocks', async () => {
+  try {
+    let storeClientId: string | null = null
+    try {
+      storeClientId = loadSecrets().clientId
+    } catch {
+      storeClientId = null
+    }
+
+    const rows = dbGetStockViewRows(storeClientId)
+    return { ok: true, rows }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), rows: [] }
   }
 })
 
