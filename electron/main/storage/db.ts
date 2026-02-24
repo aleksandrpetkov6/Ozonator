@@ -117,6 +117,7 @@ export function ensureDb() {
   add('category', 'TEXT NULL')
   add('type', 'TEXT NULL')
   add('name', 'TEXT NULL')
+  add('photo_url', 'TEXT NULL')
   add('is_visible', 'INTEGER NULL')
   add('hidden_reasons', 'TEXT NULL')
   add('created_at', 'TEXT NULL')
@@ -222,6 +223,7 @@ export function dbUpsertProducts(items: Array<{
   category?: string | null
   type?: string | null
   name?: string | null
+  photo_url?: string | null
   is_visible?: number | boolean | null
   hidden_reasons?: string | null
   created_at?: string | null
@@ -233,13 +235,13 @@ export function dbUpsertProducts(items: Array<{
   const stmt = mustDb().prepare(`
     INSERT INTO products (
       offer_id, product_id, sku,
-      barcode, brand, category, type, name, is_visible, hidden_reasons, created_at,
+      barcode, brand, category, type, name, photo_url, is_visible, hidden_reasons, created_at,
       store_client_id,
       archived, updated_at
     )
     VALUES (
       @offer_id, @product_id, @sku,
-      @barcode, @brand, @category, @type, @name, @is_visible, @hidden_reasons, @created_at,
+      @barcode, @brand, @category, @type, @name, @photo_url, @is_visible, @hidden_reasons, @created_at,
       @store_client_id,
       @archived, @updated_at
     )
@@ -251,6 +253,7 @@ export function dbUpsertProducts(items: Array<{
       category=excluded.category,
       type=excluded.type,
       name=excluded.name,
+      photo_url=excluded.photo_url,
       is_visible=excluded.is_visible,
       hidden_reasons=excluded.hidden_reasons,
       created_at=excluded.created_at,
@@ -275,6 +278,7 @@ export function dbUpsertProducts(items: Array<{
         category: r.category ?? null,
         type: r.type ?? null,
         name: r.name ?? null,
+        photo_url: r.photo_url ?? null,
         is_visible: vis,
         hidden_reasons: r.hidden_reasons ?? null,
         created_at: r.created_at ?? null,
@@ -300,6 +304,7 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
         category,
         type,
         name,
+        photo_url,
         is_visible,
         hidden_reasons,
         created_at,
@@ -322,6 +327,7 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
       category,
       type,
       name,
+      photo_url,
       is_visible,
       hidden_reasons,
       created_at,
