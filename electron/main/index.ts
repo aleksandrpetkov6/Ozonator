@@ -211,6 +211,7 @@ ipcMain.handle('ozon:syncProducts', async () => {
           category: info?.category ?? null,
           type: info?.type ?? null,
           name: info?.name ?? null,
+          photo_url: info?.photo_url ?? null,
           is_visible: info?.is_visible ?? null,
           hidden_reasons: info?.hidden_reasons ?? null,
           created_at: info?.created_at ?? null,
