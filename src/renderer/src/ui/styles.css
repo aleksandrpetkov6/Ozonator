@@ -768,6 +768,38 @@ button:disabled{
   text-overflow: ellipsis;
 }
 
+.photoCell{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100px;
+}
+
+.photoThumb,
+.photoThumbFallback{
+  width: 100px;
+  height: 100px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+.photoThumb{
+  display: block;
+  object-fit: cover;
+  background: var(--bg);
+}
+
+.photoThumbFallback{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+  padding: 6px;
+}
+
 .thResizer{
   position: absolute;
   top: 0;
