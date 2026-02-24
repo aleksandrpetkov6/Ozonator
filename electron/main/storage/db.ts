@@ -649,42 +649,121 @@ export function dbGetProductPlacements(storeClientId?: string | null): ProductPl
 }
 
 export function dbGetStockViewRows(storeClientId?: string | null): StockViewRow[] {
-  const sqlBase = `
-    SELECT
-      p.offer_id,
-      p.product_id,
-      p.sku,
-      p.barcode,
-      p.brand,
-      p.category,
-      p.type,
-      p.name,
-      p.photo_url,
-      p.is_visible,
-      p.hidden_reasons,
-      p.created_at,
-      p.store_client_id,
-      p.archived,
-      p.updated_at,
-      pp.warehouse_id AS warehouse_id,
-      pp.warehouse_name AS warehouse_name,
-      pp.placement_zone AS placement_zone
-    FROM products p
-    LEFT JOIN product_placements pp
-      ON pp.store_client_id = p.store_client_id
-     AND pp.sku = p.sku
-  `
+  const productsSql = storeClientId
+    ? `
+      SELECT
+        offer_id,
+        product_id,
+        sku,
+        barcode,
+        brand,
+        category,
+        type,
+        name,
+        photo_url,
+        is_visible,
+        hidden_reasons,
+        created_at,
+        store_client_id,
+        archived,
+        updated_at
+      FROM products
+      WHERE store_client_id = ?
+      ORDER BY offer_id COLLATE NOCASE ASC
+    `
+    : `
+      SELECT
+        offer_id,
+        product_id,
+        sku,
+        barcode,
+        brand,
+        category,
+        type,
+        name,
+        photo_url,
+        is_visible,
+        hidden_reasons,
+        created_at,
+        store_client_id,
+        archived,
+        updated_at
+      FROM products
+      ORDER BY COALESCE(store_client_id, '') ASC, offer_id COLLATE NOCASE ASC
+    `
 
-  if (storeClientId) {
-    return mustDb().prepare(`${sqlBase}
-      WHERE p.store_client_id = ?
-      ORDER BY p.offer_id COLLATE NOCASE ASC, COALESCE(pp.warehouse_name, '') COLLATE NOCASE ASC, COALESCE(pp.warehouse_id, 0) ASC
-    `).all(storeClientId) as any
+  const placementsSql = storeClientId
+    ? `
+      SELECT store_client_id, warehouse_id, warehouse_name, sku, placement_zone
+      FROM product_placements
+      WHERE store_client_id = ?
+      ORDER BY sku COLLATE NOCASE ASC, COALESCE(warehouse_name, '') COLLATE NOCASE ASC, warehouse_id ASC
+    `
+    : `
+      SELECT store_client_id, warehouse_id, warehouse_name, sku, placement_zone
+      FROM product_placements
+      ORDER BY COALESCE(store_client_id, '') ASC, sku COLLATE NOCASE ASC, COALESCE(warehouse_name, '') COLLATE NOCASE ASC, warehouse_id ASC
+    `
+
+  const products = (storeClientId
+    ? mustDb().prepare(productsSql).all(storeClientId)
+    : mustDb().prepare(productsSql).all()) as ProductRow[]
+
+  const placementRows = (storeClientId
+    ? mustDb().prepare(placementsSql).all(storeClientId)
+    : mustDb().prepare(placementsSql).all()) as ProductPlacementRow[]
+
+  const placementsBySku = new Map<string, ProductPlacementRow[]>()
+  for (const row of placementRows) {
+    const sku = String(row?.sku ?? '').trim()
+    if (!sku) continue
+    const storeKey = String(row?.store_client_id ?? '').trim()
+    const mapKey = `${storeKey}::${sku}`
+    const list = placementsBySku.get(mapKey)
+    if (list) list.push(row)
+    else placementsBySku.set(mapKey, [row])
   }
 
-  return mustDb().prepare(`${sqlBase}
-    ORDER BY COALESCE(p.store_client_id, '') ASC, p.offer_id COLLATE NOCASE ASC, COALESCE(pp.warehouse_name, '') COLLATE NOCASE ASC, COALESCE(pp.warehouse_id, 0) ASC
-  `).all() as any
+  const out: StockViewRow[] = []
+  for (const product of products) {
+    const sku = String(product?.sku ?? '').trim()
+    const storeKey = String(product?.store_client_id ?? '').trim()
+    const mapKey = `${storeKey}::${sku}`
+    const placements = sku ? (placementsBySku.get(mapKey) ?? []) : []
+
+    if (placements.length === 0) {
+      out.push({
+        ...product,
+        warehouse_id: null,
+        warehouse_name: null,
+        placement_zone: null,
+      })
+      continue
+    }
+
+    const zoneBuckets = new Map<string, ProductPlacementRow[]>()
+    for (const placement of placements) {
+      const zone = String(placement?.placement_zone ?? '').trim()
+      const bucketKey = zone
+      const bucket = zoneBuckets.get(bucketKey)
+      if (bucket) bucket.push(placement)
+      else zoneBuckets.set(bucketKey, [placement])
+    }
+
+    const bucketLists = Array.from(zoneBuckets.values())
+    const rowsToShow = bucketLists.length <= 1 ? [placements[0]] : bucketLists.map((bucket) => bucket[0]).filter(Boolean)
+
+    for (const placement of rowsToShow) {
+      out.push({
+        ...product,
+        warehouse_id: placement?.warehouse_id ?? null,
+        warehouse_name: placement?.warehouse_name ?? null,
+        placement_zone: placement?.placement_zone ?? null,
+      })
+    }
+  }
+
+  return out
 }
 
 export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
