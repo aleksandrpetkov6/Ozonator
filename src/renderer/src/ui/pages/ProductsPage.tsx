@@ -8,6 +8,7 @@ type Product = {
   category?: string | null
   type?: string | null
   name?: string | null
+  photo_url?: string | null
   is_visible?: number | boolean | null
   hidden_reasons?: string | null
   created_at?: string | null
@@ -28,6 +29,7 @@ type Props = {
 
 const DEFAULT_COLS: ColDef[] = [
   { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
+  { id: 'photo_url', title: 'Фото', w: 120, visible: true },
   { id: 'name', title: 'Наименование', w: 320, visible: true },
   { id: 'brand', title: 'Бренд', w: 180, visible: true },
   { id: 'sku', title: 'SKU', w: 140, visible: true },
@@ -52,6 +54,7 @@ const AUTO_MAX_W: Record<string, number> = {
   updated_at: 240,
   type: 380,
   name: 460,
+  photo_url: 120,
 }
 
 function readCols(): ColDef[] {
@@ -257,6 +260,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   }, [cols])
 
   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
+  const rowH = useMemo(() => (visibleCols.some(c => c.id === 'photo_url') ? 108 : 28), [visibleCols])
   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
 
   useEffect(() => {
@@ -308,6 +312,7 @@ export default function ProductsPage({ query = '', onStats }: Props) {
           if (colId === 'is_visible') return visibilityText(p)
           if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
           if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+          if (colId === 'photo_url') return ''
           return toText((p as any)[colId])
         })
         .join(' ')
@@ -550,6 +555,7 @@ function onDragOverHeader(e: React.DragEvent) {
     if (colId === 'offer_id') return { text: p.offer_id }
     if (colId === 'name') return { text: (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия' }
     if (colId === 'brand') return { text: (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан' }
+    if (colId === 'photo_url') return { text: '', title: (p.photo_url && String(p.photo_url).trim()) ? String(p.photo_url).trim() : 'Нет фото' }
 
     if (colId === 'is_visible') {
       const txt = visibilityText(p)
@@ -594,6 +600,7 @@ function onDragOverHeader(e: React.DragEvent) {
     if (colId === 'hidden_reasons') return visibilityReasonText((p as any)[colId])
     if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
     if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+    if (colId === 'photo_url') return ''
     if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
     return toText((p as any)[colId])
   }
@@ -601,6 +608,10 @@ function onDragOverHeader(e: React.DragEvent) {
   function autoSizeColumn(colId: string, rows: Product[], mode: 'default' | 'fit' = 'default') {
     const col = cols.find(c => String(c.id) === colId)
     if (!col) return
+    if (colId === 'photo_url') {
+      setCols(prev => prev.map(c => String(c.id) === colId ? { ...c, w: 120 } : c))
+      return
+    }
 
     const headerExtra = 44 // кнопка скрытия + внутренние отступы в th
     const baseCap = AUTO_MAX_W[colId] ?? 320
@@ -630,6 +641,7 @@ function onDragOverHeader(e: React.DragEvent) {
     // авто-подгоняем только видимые дефолтные столбцы
     const next = cols.map((c) => {
       if (!c.visible) return c
+      if (String(c.id) === 'photo_url') return { ...c, w: 120 }
       const cap = AUTO_MAX_W[String(c.id)] ?? 320
 
       let max = measureTextWidth(c.title)
@@ -702,19 +714,17 @@ function onDragOverHeader(e: React.DragEvent) {
     return () => ro.disconnect()
   }, [])
 
-  const ROW_H = 28
-
   useEffect(() => {
     const body = bodyScrollRef.current
     if (!body) return
 
     const viewH = bodyViewportH || 600
-    const viewportRows = Math.max(1, Math.ceil(viewH / ROW_H))
+    const viewportRows = Math.max(1, Math.ceil(viewH / rowH))
     const windowStepRows = Math.max(12, Math.ceil(viewportRows / 2))
 
     const onScroll = () => {
       const nextTop = Math.max(0, body.scrollTop || 0)
-      const anchorRow = Math.floor(nextTop / ROW_H)
+      const anchorRow = Math.floor(nextTop / rowH)
       const nextWindowAnchorRow = Math.floor(anchorRow / windowStepRows) * windowStepRows
       setBodyWindowAnchorRow((prev) => (prev === nextWindowAnchorRow ? prev : nextWindowAnchorRow))
     }
@@ -725,19 +735,19 @@ function onDragOverHeader(e: React.DragEvent) {
     return () => {
       body.removeEventListener('scroll', onScroll)
     }
-  }, [bodyViewportH])
+  }, [bodyViewportH, rowH])
 
   const totalRows = filtered.length
   const viewH = bodyViewportH || 600
-  const viewportRows = Math.max(1, Math.ceil(viewH / ROW_H))
+  const viewportRows = Math.max(1, Math.ceil(viewH / rowH))
   const OVERSCAN = Math.max(64, viewportRows * 3)
   const WINDOW_STEP_ROWS = Math.max(12, Math.ceil(viewportRows / 2))
   const startRow = Math.max(0, bodyWindowAnchorRow - OVERSCAN)
   const endRow = Math.min(totalRows, bodyWindowAnchorRow + viewportRows + (OVERSCAN * 2) + WINDOW_STEP_ROWS)
 
   const visibleRows = useMemo(() => filtered.slice(startRow, endRow), [filtered, startRow, endRow])
-  const topSpace = startRow * ROW_H
-  const bottomSpace = Math.max(0, (totalRows - endRow) * ROW_H)
+  const topSpace = startRow * rowH
+  const bottomSpace = Math.max(0, (totalRows - endRow) * rowH)
 
   const getHeaderTitleText = (c: ColDef): string => {
     if (String(c.id) === 'offer_id') return `${c.title} ${totalRows}`
@@ -855,6 +865,34 @@ function onDragOverHeader(e: React.DragEvent) {
                       {visibleCols.map(c => {
                         const id = String(c.id)
                         const { text, title } = cellText(p, c.id)
+                        if (id === 'photo_url') {
+                          const url = (p.photo_url && String(p.photo_url).trim()) ? String(p.photo_url).trim() : ''
+                          return (
+                            <td key={id}>
+                              <div className="photoCell" title={title}>
+                                {url ? (
+                                  <>
+                                    <img
+                                      className="photoThumb"
+                                      src={url}
+                                      alt={p.offer_id}
+                                      loading="lazy"
+                                      onError={(e) => {
+                                        const img = e.currentTarget
+                                        img.style.display = 'none'
+                                        const fb = img.parentElement?.querySelector<HTMLElement>('.photoThumbFallback')
+                                        if (fb) fb.style.display = 'flex'
+                                      }}
+                                    />
+                                    <div className="photoThumbFallback" style={{ display: 'none' }}>Нет фото</div>
+                                  </>
+                                ) : (
+                                  <div className="photoThumbFallback">Нет фото</div>
+                                )}
+                              </div>
+                            </td>
+                          )
+                        }
                         return (
                           <td key={id}>
                             <div className="cellText" title={title ?? text}>{text}</div>
