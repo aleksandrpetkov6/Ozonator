@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net } from 'electron'
 import { join } from 'path'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonProductInfoList, ozonProductList, ozonTestAuth } from './ozon'
 
@@ -177,7 +177,7 @@ ipcMain.handle('ozon:syncProducts', async () => {
     const secrets = loadSecrets()
 
     const existingOfferIds = new Set(dbGetProducts(secrets.clientId).map((p: any) => p.offer_id))
-    let processed = 0
+    const incomingOfferIds = new Set<string>()
     let added = 0
 
     let lastId = ''
@@ -190,7 +190,6 @@ ipcMain.handle('ozon:syncProducts', async () => {
       const { items, lastId: next, total: totalMaybe } = await ozonProductList(secrets, { lastId, limit })
       pages += 1
       // items.length — сколько пришло с API
-      // processed/added — считаем как обновлено/новых
       total += items.length
 
       const ids = items.map(i => i.product_id).filter(Boolean) as number[]
@@ -220,9 +219,9 @@ ipcMain.handle('ozon:syncProducts', async () => {
         }
       })
 
-      processed += enriched.length
       for (const it of enriched) {
         const offer = String((it as any).offer_id)
+        if (offer) incomingOfferIds.add(offer)
         if (!existingOfferIds.has(offer)) {
           existingOfferIds.add(offer)
           added += 1
@@ -239,6 +238,9 @@ ipcMain.handle('ozon:syncProducts', async () => {
       if (typeof totalMaybe === 'number' && total >= totalMaybe) break
     }
 
+    dbDeleteProductsMissingForStore(secrets.clientId, Array.from(incomingOfferIds))
+    const syncedCount = dbCountProducts(secrets.clientId)
+
     // Обновляем storeName в фоне, если ещё не было
     if (!secrets.storeName) {
       try {
@@ -249,21 +251,18 @@ ipcMain.handle('ozon:syncProducts', async () => {
       }
     }
 
-    const updated = Math.max(0, processed - added)
-
     dbLogFinish(logId, {
       status: 'success',
-      itemsCount: total,
+      itemsCount: syncedCount,
       storeClientId: secrets.clientId,
       meta: {
-        updated,
         added,
         storeClientId: secrets.clientId,
         storeName: loadSecrets().storeName ?? null,
       },
     })
 
-    return { ok: true, itemsCount: total, pages }
+    return { ok: true, itemsCount: syncedCount, pages }
   } catch (e: any) {
     dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
     return { ok: false, error: e?.message ?? String(e) }
