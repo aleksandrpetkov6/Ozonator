@@ -14,6 +14,7 @@ type DemandForecastPeriod = {
   to: string
 }
 
+
 function toDateInputValue(date: Date): string {
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, '0')
@@ -119,8 +120,13 @@ export default function App() {
   const isSettings = pathname.startsWith('/settings')
   const isAdmin = pathname.startsWith('/admin')
   const isDemandForecast = pathname.startsWith('/forecast-demand')
-  const isProducts = !isLogs && !isSettings && !isAdmin && !isDemandForecast
-  const isProductsLike = isProducts || isDemandForecast
+  const isSales = pathname.startsWith('/sales')
+  const isReturns = pathname.startsWith('/returns')
+  const isStocks = pathname.startsWith('/stocks')
+  const isProducts = !isLogs && !isSettings && !isAdmin && !isDemandForecast && !isSales && !isReturns && !isStocks
+  const isDataGridTab = isProducts || isSales || isReturns || isStocks
+  const isDateFilterTab = isProducts || isSales || isReturns
+  const isProductsLike = isDataGridTab || isDemandForecast
 
   const onProductStats = useCallback((s: { total: number; filtered: number }) => {
     setProductsTotal(s.total)
@@ -331,6 +337,53 @@ export default function App() {
               Товары
             </NavLink>
 
+            <NavLink
+              to="/sales"
+              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+              title="Продажи"
+            >
+              Продажи
+            </NavLink>
+
+            <NavLink
+              to="/returns"
+              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+              title="Возвраты"
+            >
+              Возвраты
+            </NavLink>
+
+            <NavLink
+              to="/stocks"
+              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+              title="Остатки"
+            >
+              Остатки
+            </NavLink>
+
+            {isDateFilterTab && (
+              <div className="compactDateBar" aria-label="Период данных">
+                <label className="compactDateField">
+                  <span>с</span>
+                  <input
+                    type="date"
+                    className="compactDateInput"
+                    value={demandPeriod.from}
+                    onChange={(e) => setDemandPeriodField('from', e.target.value)}
+                  />
+                </label>
+                <label className="compactDateField">
+                  <span>по</span>
+                  <input
+                    type="date"
+                    className="compactDateInput"
+                    value={demandPeriod.to}
+                    onChange={(e) => setDemandPeriodField('to', e.target.value)}
+                  />
+                </label>
+              </div>
+            )}
+
             {isDemandForecast ? (
               <div className="forecastPeriodBar" aria-label="Период прогноза спроса">
                 <span className="forecastPeriodLabel">Период</span>
@@ -457,11 +510,23 @@ export default function App() {
           {visibleLastError && <div className="notice error">{visibleLastError}</div>}
 
           <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
-            <ProductsPageMemo query={productsQuery} onStats={onProductStats} />
+            <ProductsPageMemo key="products" dataset="products" query={productsQuery} onStats={onProductStats} />
+          </div>
+
+          <div style={{ display: isSales ? 'block' : 'none', height: '100%' }}>
+            <ProductsPageMemo key="sales" dataset="sales" query={productsQuery} onStats={onProductStats} />
+          </div>
+
+          <div style={{ display: isReturns ? 'block' : 'none', height: '100%' }}>
+            <ProductsPageMemo key="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
+          </div>
+
+          <div style={{ display: isStocks ? 'block' : 'none', height: '100%' }}>
+            <ProductsPageMemo key="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
           </div>
 
           <div style={{ display: isDemandForecast ? 'block' : 'none', height: '100%' }}>
-            <ProductsPageMemo query={productsQuery} onStats={onProductStats} />
+            <ProductsPageMemo key="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
           </div>
 
           <div style={{ display: isLogs ? 'block' : 'none', height: '100%' }}>
