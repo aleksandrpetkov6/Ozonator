@@ -68,7 +68,9 @@ export default function App() {
   const isLogs = pathname.startsWith('/logs')
   const isSettings = pathname.startsWith('/settings')
   const isAdmin = pathname.startsWith('/admin')
-  const isProducts = !isLogs && !isSettings && !isAdmin
+  const isDemandForecast = pathname.startsWith('/forecast-demand')
+  const isProducts = !isLogs && !isSettings && !isAdmin && !isDemandForecast
+  const isProductsLike = isProducts || isDemandForecast
 
   const onProductStats = useCallback((s: { total: number; filtered: number }) => {
     setProductsTotal(s.total)
@@ -254,7 +256,15 @@ export default function App() {
               Товары
             </NavLink>
 
-            {isProducts && (
+            <NavLink
+              to="/forecast-demand"
+              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+              title="Прогноз спроса"
+            >
+              Прогноз спроса
+            </NavLink>
+
+            {isProductsLike && (
               <div className="topbarSearch">
                 <div className="searchWrap">
                   <input
@@ -327,10 +337,14 @@ export default function App() {
       </div>
 
       <div className="pageArea">
-        <div className={isProducts ? 'container containerWide' : 'container'}>
+        <div className={isProductsLike ? 'container containerWide' : 'container'}>
           {visibleLastError && <div className="notice error">{visibleLastError}</div>}
 
           <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
+            <ProductsPageMemo query={productsQuery} onStats={onProductStats} />
+          </div>
+
+          <div style={{ display: isDemandForecast ? 'block' : 'none', height: '100%' }}>
             <ProductsPageMemo query={productsQuery} onStats={onProductStats} />
           </div>
 
