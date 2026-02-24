@@ -7,6 +7,55 @@ import AdminPage from './pages/AdminPage'
 
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
+const DEMAND_FORECAST_PERIOD_LS_KEY = 'ozonator_demand_forecast_period_v1'
+
+type DemandForecastPeriod = {
+  from: string
+  to: string
+}
+
+function toDateInputValue(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function getPresetDemandPeriod(days: number): DemandForecastPeriod {
+  const end = new Date()
+  end.setHours(0, 0, 0, 0)
+  end.setDate(end.getDate() - 1)
+
+  const start = new Date(end)
+  start.setDate(end.getDate() - (days - 1))
+
+  return {
+    from: toDateInputValue(start),
+    to: toDateInputValue(end)
+  }
+}
+
+function sanitizeDateInput(value: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
+}
+
+function readDemandForecastPeriod(): DemandForecastPeriod {
+  try {
+    const raw = localStorage.getItem(DEMAND_FORECAST_PERIOD_LS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<DemandForecastPeriod>
+      const from = sanitizeDateInput(String(parsed.from ?? ''))
+      const to = sanitizeDateInput(String(parsed.to ?? ''))
+      if (from || to) {
+        return { from, to }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return getPresetDemandPeriod(90)
+}
 
 const ProductsPageMemo = React.memo(ProductsPage)
 
@@ -57,6 +106,7 @@ export default function App() {
   const [productsQuery, setProductsQuery] = useState('')
   const [productsTotal, setProductsTotal] = useState(0)
   const [productsFiltered, setProductsFiltered] = useState(0)
+  const [demandPeriod, setDemandPeriod] = useState<DemandForecastPeriod>(() => readDemandForecastPeriod())
 
   const [adminLoading, setAdminLoading] = useState(true)
   const [adminSaving, setAdminSaving] = useState(false)
@@ -76,6 +126,31 @@ export default function App() {
     setProductsTotal(s.total)
     setProductsFiltered(s.filtered)
   }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DEMAND_FORECAST_PERIOD_LS_KEY, JSON.stringify(demandPeriod))
+    } catch {
+      // ignore
+    }
+  }, [demandPeriod])
+
+  const setDemandPeriodField = useCallback((field: keyof DemandForecastPeriod, value: string) => {
+    const normalized = sanitizeDateInput(value)
+    setDemandPeriod((prev) => ({ ...prev, [field]: normalized }))
+  }, [])
+
+  const applyDemandPreset = useCallback((days: number) => {
+    setDemandPeriod(getPresetDemandPeriod(days))
+  }, [])
+
+  const demandPresetDays = useMemo(() => {
+    for (const days of [30, 90, 180, 365]) {
+      const preset = getPresetDemandPeriod(days)
+      if (preset.from === demandPeriod.from && preset.to === demandPeriod.to) return days
+    }
+    return null
+  }, [demandPeriod.from, demandPeriod.to])
 
   async function refreshStoreName() {
     try {
@@ -256,13 +331,54 @@ export default function App() {
               Товары
             </NavLink>
 
-            <NavLink
-              to="/forecast-demand"
-              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-              title="Прогноз спроса"
-            >
-              Прогноз спроса
-            </NavLink>
+            {isDemandForecast ? (
+              <div className="forecastPeriodBar" aria-label="Период прогноза спроса">
+                <span className="forecastPeriodLabel">Период</span>
+
+                <div className="forecastPeriodDates">
+                  <label className="forecastDateField">
+                    <span>с</span>
+                    <input
+                      type="date"
+                      className="forecastDateInput"
+                      value={demandPeriod.from}
+                      onChange={(e) => setDemandPeriodField('from', e.target.value)}
+                    />
+                  </label>
+
+                  <label className="forecastDateField">
+                    <span>по</span>
+                    <input
+                      type="date"
+                      className="forecastDateInput"
+                      value={demandPeriod.to}
+                      onChange={(e) => setDemandPeriodField('to', e.target.value)}
+                    />
+                  </label>
+                </div>
+
+                <div className="forecastPresetGroup" role="group" aria-label="Шаблоны периода">
+                  {[30, 90, 180, 365].map((days) => (
+                    <button
+                      key={days}
+                      type="button"
+                      className={`forecastPresetBtn${demandPresetDays === days ? ' active' : ''}`}
+                      onClick={() => applyDemandPreset(days)}
+                    >
+                      {days} дней
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <NavLink
+                to="/forecast-demand"
+                className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+                title="Прогноз спроса"
+              >
+                Прогноз спроса
+              </NavLink>
+            )}
 
             {isProductsLike && (
               <div className="topbarSearch">
