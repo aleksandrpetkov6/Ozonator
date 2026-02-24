@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('api', {
   syncProducts: () => ipcRenderer.invoke('ozon:syncProducts'),
 
   getProducts: () => ipcRenderer.invoke('data:getProducts'),
+  getSales: () => ipcRenderer.invoke('data:getSales'),
+  getReturns: () => ipcRenderer.invoke('data:getReturns'),
+  getStocks: () => ipcRenderer.invoke('data:getStocks'),
   getSyncLog: () => ipcRenderer.invoke('data:getSyncLog'),
   clearLogs: () => ipcRenderer.invoke('data:clearLogs'),
 })
