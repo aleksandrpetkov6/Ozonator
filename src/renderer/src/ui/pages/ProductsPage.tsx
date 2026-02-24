@@ -694,6 +694,16 @@ function onDragOverHeader(e: React.DragEvent) {
       const f = formatDateTimeRu(v)
       return { text: f || '-', title: (v == null || v === '') ? undefined : String(v) }
     }
+    if (colId === 'warehouse_name') {
+      const rawName = (p.warehouse_name == null ? '' : String(p.warehouse_name)).trim()
+      if (rawName) return { text: rawName }
+      const rawId = (p.warehouse_id == null ? '' : String(p.warehouse_id)).trim()
+      return { text: rawId ? `Склад #${rawId}` : 'Нет данных синхронизации' }
+    }
+    if (colId === 'placement_zone') {
+      const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
+      return { text: zone || 'Нет данных синхронизации' }
+    }
     return { text: (v == null || v === '') ? '-' : String(v) }
   }
 
@@ -722,6 +732,16 @@ function onDragOverHeader(e: React.DragEvent) {
     if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
     if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
     if (colId === 'photo_url') return ''
+    if (colId === 'warehouse_name') {
+      const rawName = (p.warehouse_name == null ? '' : String(p.warehouse_name)).trim()
+      if (rawName) return rawName
+      const rawId = (p.warehouse_id == null ? '' : String(p.warehouse_id)).trim()
+      return rawId ? `Склад #${rawId}` : 'Нет данных синхронизации'
+    }
+    if (colId === 'placement_zone') {
+      const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
+      return zone || 'Нет данных синхронизации'
+    }
     if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
     return toText((p as any)[colId])
   }
