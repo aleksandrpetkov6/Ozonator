@@ -1,6 +1,6 @@
 import { existsSync, rmSync, statSync } from 'fs'
 import Database from 'better-sqlite3'
-import type { ProductRow } from '../types'
+import type { ProductPlacementRow, ProductRow, StockViewRow } from '../types'
 import { ensurePersistentStorageReady, getLifecycleMarkerPath, getPersistentDbPath } from './paths'
 
 let db: Database.Database | null = null
@@ -101,6 +101,18 @@ export function ensureDb() {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS product_placements (
+      store_client_id TEXT NOT NULL,
+      warehouse_id INTEGER NOT NULL,
+      warehouse_name TEXT NULL,
+      sku TEXT NOT NULL,
+      placement_zone TEXT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (store_client_id, warehouse_id, sku)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_product_placements_store_sku ON product_placements(store_client_id, sku);
   `)
 
   const cols = new Set(
@@ -307,6 +319,108 @@ export function dbUpsertProducts(items: Array<{
   })
 
   tx(items as any[])
+}
+
+export function dbReplaceProductPlacementsForStore(storeClientId: string, items: Array<{
+  warehouse_id: number
+  warehouse_name?: string | null
+  sku: string
+  placement_zone?: string | null
+}>): number {
+  const cleanStore = String(storeClientId ?? '').trim()
+  if (!cleanStore) return 0
+
+  const now = new Date().toISOString()
+  const delStmt = mustDb().prepare('DELETE FROM product_placements WHERE store_client_id = ?')
+  const insStmt = mustDb().prepare(`
+    INSERT INTO product_placements (
+      store_client_id, warehouse_id, warehouse_name, sku, placement_zone, updated_at
+    ) VALUES (
+      @store_client_id, @warehouse_id, @warehouse_name, @sku, @placement_zone, @updated_at
+    )
+    ON CONFLICT(store_client_id, warehouse_id, sku) DO UPDATE SET
+      warehouse_name = excluded.warehouse_name,
+      placement_zone = excluded.placement_zone,
+      updated_at = excluded.updated_at
+  `)
+
+  const tx = mustDb().transaction((rows: any[]) => {
+    delStmt.run(cleanStore)
+    for (const r of rows) {
+      const sku = String(r?.sku ?? '').trim()
+      const wid = Number(r?.warehouse_id)
+      if (!sku || !Number.isFinite(wid)) continue
+      insStmt.run({
+        store_client_id: cleanStore,
+        warehouse_id: Math.trunc(wid),
+        warehouse_name: r?.warehouse_name == null ? null : String(r.warehouse_name),
+        sku,
+        placement_zone: r?.placement_zone == null ? null : String(r.placement_zone),
+        updated_at: now,
+      })
+    }
+  })
+
+  tx(items as any[])
+
+  const row = mustDb().prepare('SELECT COUNT(*) as cnt FROM product_placements WHERE store_client_id = ?').get(cleanStore) as { cnt?: number } | undefined
+  return Number(row?.cnt ?? 0)
+}
+
+export function dbGetProductPlacements(storeClientId?: string | null): ProductPlacementRow[] {
+  if (storeClientId) {
+    return mustDb().prepare(`
+      SELECT store_client_id, warehouse_id, warehouse_name, sku, placement_zone, updated_at
+      FROM product_placements
+      WHERE store_client_id = ?
+      ORDER BY sku COLLATE NOCASE ASC, warehouse_id ASC
+    `).all(storeClientId) as any
+  }
+
+  return mustDb().prepare(`
+    SELECT store_client_id, warehouse_id, warehouse_name, sku, placement_zone, updated_at
+    FROM product_placements
+    ORDER BY store_client_id ASC, sku COLLATE NOCASE ASC, warehouse_id ASC
+  `).all() as any
+}
+
+export function dbGetStockViewRows(storeClientId?: string | null): StockViewRow[] {
+  const sqlBase = `
+    SELECT
+      p.offer_id,
+      p.product_id,
+      p.sku,
+      p.barcode,
+      p.brand,
+      p.category,
+      p.type,
+      p.name,
+      p.photo_url,
+      p.is_visible,
+      p.hidden_reasons,
+      p.created_at,
+      p.store_client_id,
+      p.archived,
+      p.updated_at,
+      pp.warehouse_id AS warehouse_id,
+      pp.warehouse_name AS warehouse_name,
+      pp.placement_zone AS placement_zone
+    FROM products p
+    LEFT JOIN product_placements pp
+      ON pp.store_client_id = p.store_client_id
+     AND pp.sku = p.sku
+  `
+
+  if (storeClientId) {
+    return mustDb().prepare(`${sqlBase}
+      WHERE p.store_client_id = ?
+      ORDER BY p.offer_id COLLATE NOCASE ASC, COALESCE(pp.warehouse_name, '') COLLATE NOCASE ASC, COALESCE(pp.warehouse_id, 0) ASC
+    `).all(storeClientId) as any
+  }
+
+  return mustDb().prepare(`${sqlBase}
+    ORDER BY COALESCE(p.store_client_id, '') ASC, p.offer_id COLLATE NOCASE ASC, COALESCE(pp.warehouse_name, '') COLLATE NOCASE ASC, COALESCE(pp.warehouse_id, 0) ASC
+  `).all() as any
 }
 
 export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
