@@ -7,6 +7,7 @@ let db: Database.Database | null = null
 
 const DEFAULT_LOG_RETENTION_DAYS = 30
 const MAX_JSON_LEN = 20000
+const REINSTALL_UNINSTALL_SUPPRESS_WINDOW_MS = 10 * 60 * 1000
 
 type AppLogType =
   | 'check_auth'
@@ -172,19 +173,30 @@ export function dbIngestLifecycleMarkers(args: { appVersion: string }) {
   const uninstallMarker = getLifecycleMarkerPath('uninstall')
   const installMarker = getLifecycleMarkerPath('installer')
 
-  if (existsSync(uninstallMarker)) {
-    const at = statSync(uninstallMarker).mtime.toISOString()
+  const uninstallExists = existsSync(uninstallMarker)
+  const installExists = existsSync(installMarker)
+
+  const uninstallAt = uninstallExists ? statSync(uninstallMarker).mtime : null
+  const installAt = installExists ? statSync(installMarker).mtime : null
+
+  const suppressUninstallAsPartOfReinstall = (() => {
+    if (!uninstallAt || !installAt) return false
+    const diff = installAt.getTime() - uninstallAt.getTime()
+    return diff >= 0 && diff <= REINSTALL_UNINSTALL_SUPPRESS_WINDOW_MS
+  })()
+
+  if (uninstallAt && !suppressUninstallAsPartOfReinstall) {
+    const at = uninstallAt.toISOString()
     dbLogEvent('app_uninstall', {
       status: 'success',
       startedAt: at,
       finishedAt: at,
       meta: { source: 'nsis-marker' },
     })
-    try { rmSync(uninstallMarker, { force: true }) } catch {}
   }
 
-  if (existsSync(installMarker)) {
-    const at = statSync(installMarker).mtime.toISOString()
+  if (installAt) {
+    const at = installAt.toISOString()
     const prevVersion = getSettingValue('app_version_last_seen')
 
     const type: AppLogType = !prevVersion
@@ -201,7 +213,12 @@ export function dbIngestLifecycleMarkers(args: { appVersion: string }) {
         previousVersion: prevVersion,
       },
     })
+  }
 
+  if (uninstallExists) {
+    try { rmSync(uninstallMarker, { force: true }) } catch {}
+  }
+  if (installExists) {
     try { rmSync(installMarker, { force: true }) } catch {}
   }
 
@@ -337,6 +354,30 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
     FROM products
     ORDER BY offer_id COLLATE NOCASE ASC
   `).all() as any
+}
+
+export function dbCountProducts(storeClientId?: string | null): number {
+  if (storeClientId) {
+    const row = mustDb().prepare(`SELECT COUNT(*) AS cnt FROM products WHERE store_client_id = ?`).get(storeClientId) as { cnt: number }
+    return Number(row?.cnt ?? 0)
+  }
+
+  const row = mustDb().prepare(`SELECT COUNT(*) AS cnt FROM products`).get() as { cnt: number }
+  return Number(row?.cnt ?? 0)
+}
+
+export function dbDeleteProductsMissingForStore(storeClientId: string, keepOfferIds: string[]) {
+  const uniq = Array.from(new Set((keepOfferIds ?? []).map((v) => String(v)).filter(Boolean)))
+
+  if (uniq.length === 0) {
+    const info = mustDb().prepare(`DELETE FROM products WHERE store_client_id = ?`).run(storeClientId)
+    return Number(info.changes ?? 0)
+  }
+
+  const placeholders = uniq.map(() => '?').join(', ')
+  const sql = `DELETE FROM products WHERE store_client_id = ? AND offer_id NOT IN (${placeholders})`
+  const info = mustDb().prepare(sql).run(storeClientId, ...uniq)
+  return Number(info.changes ?? 0)
 }
 
 export function dbLogStart(type: 'check_auth' | 'sync_products', storeClientId?: string | null): number {
