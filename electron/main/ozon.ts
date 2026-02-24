@@ -71,6 +71,7 @@ export type OzonProductInfo = {
   category: string | null
   type: string | null
   name: string | null
+  photo_url: string | null
   is_visible: boolean | number | null
   hidden_reasons: string | null
   created_at: string | null
@@ -85,6 +86,10 @@ type ProductInfoV2 = {
   barcodes?: string[]
   category_id?: number
   created_at?: string
+  archived?: boolean
+  primary_image?: string
+  image?: string
+  images?: Array<string | { url?: string; file_name?: string; default?: string }> | null
   visible?: boolean
   description_category_id?: number
   type_id?: number
@@ -510,6 +515,43 @@ function pickFirstString(...vals: any[]): string | null {
   return null
 }
 
+function normalizePhotoUrl(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const s = v.trim()
+  if (!s) return null
+  if (s.startsWith('//')) return `https:${s}`
+  return s
+}
+
+function extractPhotoUrl(x: ProductInfoV2): string | null {
+  const direct = pickFirstString(
+    x.primary_image,
+    x.image,
+    (x as any).primaryImage,
+    (x as any).image_url,
+    (x as any).imageUrl,
+    (x as any).photo,
+    (x as any).photo_url,
+    (x as any).picture,
+  )
+  if (direct) return normalizePhotoUrl(direct)
+
+  const rawImages = Array.isArray(x.images) ? x.images : []
+  for (const item of rawImages) {
+    if (typeof item === 'string') {
+      const v = normalizePhotoUrl(item)
+      if (v) return v
+      continue
+    }
+    if (!item || typeof item !== 'object') continue
+    const v = normalizePhotoUrl((item as any).url)
+      ?? normalizePhotoUrl((item as any).file_name)
+      ?? normalizePhotoUrl((item as any).default)
+    if (v) return v
+  }
+  return null
+}
+
 function isReasonableStoreName(s: string): boolean {
   const t = s.trim()
   if (!t) return false
@@ -747,6 +789,7 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
         category: categoryNameFromTree ?? (categoryId != null ? String(categoryId) : null),
         type: typeNameFromTree ?? (typeId != null ? String(typeId) : (descriptionCategoryId != null ? String(descriptionCategoryId) : null)),
         name,
+        photo_url: extractPhotoUrl(x),
         is_visible: isVisible,
         hidden_reasons: buildHiddenReasons(x),
         created_at: x.created_at ?? null,
