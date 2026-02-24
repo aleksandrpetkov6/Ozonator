@@ -29,7 +29,7 @@ type Props = {
 
 const DEFAULT_COLS: ColDef[] = [
   { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
-  { id: 'photo_url', title: 'Фото', w: 120, visible: true },
+  { id: 'photo_url', title: 'Фото', w: 80, visible: true },
   { id: 'name', title: 'Наименование', w: 320, visible: true },
   { id: 'brand', title: 'Бренд', w: 180, visible: true },
   { id: 'sku', title: 'SKU', w: 140, visible: true },
@@ -54,7 +54,7 @@ const AUTO_MAX_W: Record<string, number> = {
   updated_at: 240,
   type: 380,
   name: 460,
-  photo_url: 120,
+  photo_url: 80,
 }
 
 function readCols(): ColDef[] {
@@ -234,6 +234,10 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const didAutoInitRef = useRef(false)
+  const photoHoverTimerRef = useRef<number | null>(null)
+  const photoHoverLastPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+  const photoHoverPendingRef = useRef<{ url: string; title: string } | null>(null)
+  const [photoPreview, setPhotoPreview] = useState<{ url: string; title: string; x: number; y: number } | null>(null)
 
   const hasStoredCols = useMemo(() => {
     try { return !!localStorage.getItem('ozonator_cols') } catch { return true }
@@ -255,12 +259,29 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   }, [])
 
   useEffect(() => {
+    const clearPreviewNow = () => {
+      if (photoHoverTimerRef.current != null) {
+        window.clearTimeout(photoHoverTimerRef.current)
+        photoHoverTimerRef.current = null
+      }
+      photoHoverPendingRef.current = null
+      setPhotoPreview(prev => (prev ? null : prev))
+    }
+
+    window.addEventListener('scroll', clearPreviewNow, true)
+    return () => {
+      window.removeEventListener('scroll', clearPreviewNow, true)
+      clearPreviewNow()
+    }
+  }, [])
+
+  useEffect(() => {
     const id = window.setTimeout(() => saveCols(cols), 250)
     return () => window.clearTimeout(id)
   }, [cols])
 
   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
-  const rowH = useMemo(() => (visibleCols.some(c => c.id === 'photo_url') ? 108 : 28), [visibleCols])
+  const rowH = useMemo(() => (visibleCols.some(c => c.id === 'photo_url') ? 60 : 28), [visibleCols])
   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
 
   useEffect(() => {
@@ -326,6 +347,59 @@ export default function ProductsPage({ query = '', onStats }: Props) {
   useEffect(() => {
     onStats?.({ total: products.length, filtered: filtered.length })
   }, [products.length, filtered.length, onStats])
+
+  function clearPhotoHoverTimer() {
+    if (photoHoverTimerRef.current != null) {
+      window.clearTimeout(photoHoverTimerRef.current)
+      photoHoverTimerRef.current = null
+    }
+  }
+
+  function getPhotoPreviewPos(clientX: number, clientY: number) {
+    const size = 200
+    const margin = 12
+    const offsetX = 16
+    const offsetY = 16
+
+    let x = clientX + offsetX
+    let y = clientY - size - offsetY
+
+    const maxX = Math.max(margin, window.innerWidth - size - margin)
+    const maxY = Math.max(margin, window.innerHeight - size - margin)
+
+    if (y < margin) y = Math.min(maxY, clientY + offsetY)
+    if (x > maxX) x = maxX
+    if (y > maxY) y = maxY
+    if (x < margin) x = margin
+    if (y < margin) y = margin
+
+    return { x, y }
+  }
+
+  function hidePhotoPreview() {
+    clearPhotoHoverTimer()
+    photoHoverPendingRef.current = null
+    setPhotoPreview(prev => (prev ? null : prev))
+  }
+
+  function onPhotoMouseEnter(e: React.MouseEvent, url: string, title: string) {
+    photoHoverLastPosRef.current = { x: e.clientX, y: e.clientY }
+    clearPhotoHoverTimer()
+    photoHoverPendingRef.current = { url, title }
+    photoHoverTimerRef.current = window.setTimeout(() => {
+      const pending = photoHoverPendingRef.current
+      if (!pending) return
+      const { x, y } = getPhotoPreviewPos(photoHoverLastPosRef.current.x, photoHoverLastPosRef.current.y)
+      setPhotoPreview({ ...pending, x, y })
+      photoHoverTimerRef.current = null
+    }, 1000)
+  }
+
+  function onPhotoMouseMove(e: React.MouseEvent) {
+    photoHoverLastPosRef.current = { x: e.clientX, y: e.clientY }
+    const pos = getPhotoPreviewPos(e.clientX, e.clientY)
+    setPhotoPreview(prev => (prev ? { ...prev, ...pos } : prev))
+  }
 
   function hideCol(id: string) {
     setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: false } : c))
@@ -641,7 +715,7 @@ function onDragOverHeader(e: React.DragEvent) {
     // авто-подгоняем только видимые дефолтные столбцы
     const next = cols.map((c) => {
       if (!c.visible) return c
-      if (String(c.id) === 'photo_url') return { ...c, w: 120 }
+      if (String(c.id) === 'photo_url') return { ...c, w: 80 }
       const cap = AUTO_MAX_W[String(c.id)] ?? 320
 
       let max = measureTextWidth(c.title)
@@ -868,8 +942,14 @@ function onDragOverHeader(e: React.DragEvent) {
                         if (id === 'photo_url') {
                           const url = (p.photo_url && String(p.photo_url).trim()) ? String(p.photo_url).trim() : ''
                           return (
-                            <td key={id}>
-                              <div className="photoCell" title={title}>
+                            <td key={id} className="tdPhoto">
+                              <div
+                                className="photoCell"
+                                onMouseEnter={url ? (e) => onPhotoMouseEnter(e, url, p.offer_id) : undefined}
+                                onMouseMove={url ? onPhotoMouseMove : undefined}
+                                onMouseLeave={hidePhotoPreview}
+                                onMouseDown={hidePhotoPreview}
+                              >
                                 {url ? (
                                   <>
                                     <img
@@ -878,6 +958,7 @@ function onDragOverHeader(e: React.DragEvent) {
                                       alt={p.offer_id}
                                       loading="lazy"
                                       onError={(e) => {
+                                        hidePhotoPreview()
                                         const img = e.currentTarget
                                         img.style.display = 'none'
                                         const fb = img.parentElement?.querySelector<HTMLElement>('.photoThumbFallback')
@@ -919,7 +1000,15 @@ function onDragOverHeader(e: React.DragEvent) {
             </div>
           </div>
         </div>
-      </div>
+      {photoPreview && (
+        <div className="photoHoverPreview" style={{ left: photoPreview.x, top: photoPreview.y }} aria-hidden>
+          <img
+            src={photoPreview.url}
+            alt={photoPreview.title}
+            onError={() => setPhotoPreview(null)}
+          />
+        </div>
+      )}
     </div>
   )
 }
