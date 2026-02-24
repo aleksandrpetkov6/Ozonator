@@ -1004,7 +1004,7 @@ function onDragOverHeader(e: React.DragEvent) {
                   )}
 
                   {visibleRows.map(p => (
-                    <tr key={p.offer_id}>
+                    <tr key={dataset === 'stocks' ? `${p.offer_id}__${p.sku ?? ''}__${p.warehouse_id ?? ''}__${(p.placement_zone ?? '').toString().trim()}` : p.offer_id}>
                       {visibleCols.map(c => {
                         const id = String(c.id)
                         const { text, title } = cellText(p, c.id)
