@@ -54,17 +54,16 @@ function fmtDt(iso?: string | null) {
 }
 
 function detailsRu(type?: string | null, meta?: string | null, itemsCount?: number | null): string {
-  if (type === 'app_uninstall') return '-'
+  if (type === 'app_uninstall') return ''
   if (!meta) return '-'
   try {
     const m = JSON.parse(meta)
 
-    // Новый формат: показываем только обновлено + новых
+    // Для синхронизации показываем только количество синхронизированных и новых.
     if (typeof m?.updated === 'number' || typeof m?.added === 'number') {
-      const upd = (typeof m?.updated === 'number') ? m.updated : 0
       const add = (typeof m?.added === 'number') ? m.added : 0
-      const synced = (typeof itemsCount === 'number' && Number.isFinite(itemsCount)) ? itemsCount : Math.max(0, upd + add)
-      return `синхронизировано: ${synced}, обновлено: ${upd}, новых: ${add}`
+      const synced = (typeof itemsCount === 'number' && Number.isFinite(itemsCount)) ? itemsCount : Math.max(0, add)
+      return `синхронизировано: ${synced}, новых: ${add}`
     }
 
     if (typeof m?.logRetentionDays === 'number') {
@@ -72,6 +71,9 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
     }
 
     if (m?.appVersion || m?.previousVersion) {
+      if (m?.appVersion && (type === 'app_install' || type === 'app_reinstall' || type === 'app_update')) {
+        return `версия: ${m.appVersion}`
+      }
       const parts: string[] = []
       if (m?.appVersion) parts.push(`версия: ${m.appVersion}`)
       if (m?.previousVersion) parts.push(`было: ${m.previousVersion}`)
