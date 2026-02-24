@@ -368,22 +368,6 @@ export default function App() {
               Товары
             </NavLink>
 
-            <NavLink
-              to="/sales"
-              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-              title="Продажи"
-            >
-              Продажи
-            </NavLink>
-
-            <NavLink
-              to="/returns"
-              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-              title="Возвраты"
-            >
-              Возвраты
-            </NavLink>
-
             {isDateFilterTab ? (
               <div className="topbarDateTabsSlot" ref={dateRangeRef} aria-label="Период данных">
                 <label className="topbarDateField topbarDateFieldFrom" onClick={() => setDatePresetOpen(true)}>
@@ -427,24 +411,40 @@ export default function App() {
                 )}
               </div>
             ) : (
-              <NavLink
-                to="/stocks"
-                className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-                title="Остатки"
-              >
-                Остатки
-              </NavLink>
+              <>
+                <NavLink
+                  to="/sales"
+                  className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+                  title="Продажи"
+                >
+                  Продажи
+                </NavLink>
+
+                <NavLink
+                  to="/returns"
+                  className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+                  title="Возвраты"
+                >
+                  Возвраты
+                </NavLink>
+
+                <NavLink
+                  to="/forecast-demand"
+                  className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+                  title="Прогноз спроса"
+                >
+                  Прогноз спроса
+                </NavLink>
+              </>
             )}
 
-            {isDateFilterTab ? null : (
-              <NavLink
-                to="/forecast-demand"
-                className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-                title="Прогноз спроса"
-              >
-                Прогноз спроса
-              </NavLink>
-            )}
+            <NavLink
+              to="/stocks"
+              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+              title="Остатки"
+            >
+              Остатки
+            </NavLink>
 
             {isProductsLike && (
               <div className="topbarSearch">

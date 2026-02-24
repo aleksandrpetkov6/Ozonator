@@ -194,6 +194,113 @@ a{ color: inherit; text-decoration: none; }
   box-shadow: var(--shadowSoft);
 }
 
+.topbarDateTabsSlot{
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.topbarDateField{
+  height: 34px;
+  min-width: 0;
+  width: 132px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: rgba(255,255,255,.78);
+  cursor: text;
+  transition: box-shadow .16s ease, border-color .16s ease, background .16s ease;
+}
+
+.topbarDateField:hover{
+  background: rgba(255,255,255,.92);
+  border-color: rgba(60,60,67,.26);
+}
+
+.topbarDateField:focus-within{
+  background: #fff;
+  border-color: rgba(10,132,255,.55);
+  box-shadow: 0 0 0 3px rgba(10,132,255,.18);
+}
+
+.topbarDateField > span{
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  color: rgba(60,60,67,.72);
+  text-transform: lowercase;
+}
+
+input.topbarDateInput{
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+  font-size: 12px;
+  color: rgba(28,28,30,.92);
+}
+
+input.topbarDateInput:focus{
+  border: 0;
+  box-shadow: none;
+}
+
+input.topbarDateInput::-webkit-calendar-picker-indicator{
+  opacity: .8;
+  cursor: pointer;
+  margin-left: 4px;
+}
+
+.topbarDatePresetPopover{
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--hairline2);
+  background: rgba(255,255,255,.96);
+  box-shadow: var(--shadowSoft);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 90;
+}
+
+.topbarDatePresetBtn{
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: rgba(255,255,255,.9);
+  font-size: 12px;
+  line-height: 24px;
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+.topbarDatePresetBtn.active{
+  border-color: rgba(10,132,255,.36);
+  background: rgba(10,132,255,.10);
+  color: rgba(10,80,180,.95);
+}
+
+
 .iconLink,
 .iconBtn{
   width: 32px;
