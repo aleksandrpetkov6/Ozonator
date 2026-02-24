@@ -97,15 +97,13 @@ export default function SettingsPage() {
 
   return (
     <div className="card">
-      <div className="row" style={{ alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <div className="col" style={{ flex: '0 1 360px', minWidth: 240 }}>
-          <div style={{ height: 22, marginBottom: 6 }} />
-          {err ? (
-            <span className="pill pillError">{err}</span>
-          ) : storeName ? (
-            <span className="pill" title={storeName}>{storeName}</span>
+      <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="settingsStoreInline" title={storeName || 'Название появится после проверки доступа'}>
+          <span className="settingsStoreLabel">Магазин:</span>
+          {storeName ? (
+            <span className="settingsStoreValue">{storeName}</span>
           ) : (
-            <span className="small muted">Название появится после проверки доступа</span>
+            <span className="settingsStorePlaceholder">Название появится после проверки доступа</span>
           )}
         </div>
 
@@ -129,6 +127,12 @@ export default function SettingsPage() {
       {status && (
         <div className="notice" style={{ marginTop: 12 }}>
           {status}
+        </div>
+      )}
+
+      {err && (
+        <div className="notice error" style={{ marginTop: 12 }}>
+          {err}
         </div>
       )}
     </div>
