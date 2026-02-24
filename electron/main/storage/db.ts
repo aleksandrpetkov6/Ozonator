@@ -1,4 +1,5 @@
 import { existsSync, rmSync, statSync } from 'fs'
+import { createHash } from 'crypto'
 import Database from 'better-sqlite3'
 import type { ProductPlacementRow, ProductRow, StockViewRow } from '../types'
 import { ensurePersistentStorageReady, getLifecycleMarkerPath, getPersistentDbPath } from './paths'
@@ -7,6 +8,7 @@ let db: Database.Database | null = null
 
 const DEFAULT_LOG_RETENTION_DAYS = 30
 const MAX_JSON_LEN = 20000
+const MAX_API_JSON_LEN = 750000
 const REINSTALL_UNINSTALL_SUPPRESS_WINDOW_MS = 10 * 60 * 1000
 
 type AppLogType =
@@ -64,6 +66,140 @@ function safeJson(value: any): string | null {
   }
 }
 
+function safeJsonWithLimit(value: any, limit: number): { text: string | null; truncated: boolean } {
+  if (value == null) return { text: null, truncated: false }
+  try {
+    const raw = JSON.stringify(value)
+    if (raw.length <= limit) return { text: raw, truncated: false }
+    return { text: raw.slice(0, limit), truncated: true }
+  } catch {
+    const raw = JSON.stringify({ unserializable: true })
+    return { text: raw.slice(0, limit), truncated: raw.length > limit }
+  }
+}
+
+function sha256Hex(input: string): string {
+  return createHash('sha256').update(input).digest('hex')
+}
+
+function makeApiRegistryKey(method: string, endpoint: string): string {
+  return `${String(method ?? '').toUpperCase()} ${String(endpoint ?? '').trim()}`.trim()
+}
+
+function mergeJsonStringArray(existingJson: string | null | undefined, incoming: string[], maxLen = 32): string | null {
+  const acc = new Set<string>()
+  if (typeof existingJson === 'string' && existingJson.trim()) {
+    try {
+      const arr = JSON.parse(existingJson)
+      if (Array.isArray(arr)) {
+        for (const v of arr) {
+          const s = String(v ?? '').trim()
+          if (s) acc.add(s)
+        }
+      }
+    } catch {}
+  }
+  for (const v of incoming) {
+    const s = String(v ?? '').trim()
+    if (s) acc.add(s)
+    if (acc.size >= maxLen) break
+  }
+  return JSON.stringify(Array.from(acc).slice(0, maxLen))
+}
+
+function inferEntityHintFromEndpoint(endpoint: string): string | null {
+  const parts = String(endpoint ?? '')
+    .split('/')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .filter((x) => !/^v\d+$/i.test(x))
+  if (parts.length === 0) return null
+  return parts.slice(-2).join('_')
+}
+
+function collectObservedArrayPaths(root: any): string[] {
+  const out = new Set<string>()
+  const queue: Array<{ value: any; path: string; depth: number }> = [{ value: root, path: '$', depth: 0 }]
+  const seen = new Set<any>()
+
+  while (queue.length) {
+    const cur = queue.shift()!
+    const value = cur.value
+    if (value == null || cur.depth > 6) continue
+    if (typeof value !== 'object') continue
+    if (seen.has(value)) continue
+    seen.add(value)
+
+    if (Array.isArray(value)) {
+      if (value.some((x) => x && typeof x === 'object' && !Array.isArray(x))) {
+        out.add(cur.path)
+      }
+      for (const item of value.slice(0, 20)) {
+        queue.push({ value: item, path: `${cur.path}[]`, depth: cur.depth + 1 })
+      }
+      continue
+    }
+
+    for (const [k, v] of Object.entries(value)) {
+      queue.push({ value: v, path: `${cur.path}.${k}`, depth: cur.depth + 1 })
+    }
+  }
+
+  return Array.from(out).slice(0, 24)
+}
+
+function inferKeyCandidates(root: any): string[] {
+  const counters = new Map<string, number>()
+  const queue: Array<{ value: any; depth: number }> = [{ value: root, depth: 0 }]
+  const seen = new Set<any>()
+
+  while (queue.length) {
+    const cur = queue.shift()!
+    const value = cur.value
+    if (value == null || cur.depth > 6) continue
+    if (typeof value !== 'object') continue
+    if (seen.has(value)) continue
+    seen.add(value)
+
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 50)) queue.push({ value: item, depth: cur.depth + 1 })
+      continue
+    }
+
+    for (const [k, v] of Object.entries(value)) {
+      const key = String(k)
+      const scalar = v == null || ['string', 'number', 'boolean'].includes(typeof v)
+      if (scalar) counters.set(key, (counters.get(key) ?? 0) + 1)
+      if (v && typeof v === 'object') queue.push({ value: v, depth: cur.depth + 1 })
+    }
+  }
+
+  const priority = new Map<string, number>([
+    ['offer_id', 1000],
+    ['product_id', 990],
+    ['sku', 980],
+    ['warehouse_id', 970],
+    ['id', 960],
+  ])
+
+  const ranked = Array.from(counters.entries())
+    .filter(([k]) => {
+      const low = k.toLowerCase()
+      return low === 'id' || low.endsWith('_id') || low.endsWith('id') || ['sku', 'offer_id', 'product_id', 'warehouse_id'].includes(low)
+    })
+    .sort((a, b) => {
+      const aKey = a[0].toLowerCase()
+      const bKey = b[0].toLowerCase()
+      const aScore = (priority.get(aKey) ?? 0) + a[1]
+      const bScore = (priority.get(bKey) ?? 0) + b[1]
+      if (bScore !== aScore) return bScore - aScore
+      return aKey.localeCompare(bKey)
+    })
+    .map(([k]) => k)
+
+  return ranked.slice(0, 16)
+}
+
 export function ensureDb() {
   if (db) return
 
@@ -95,6 +231,41 @@ export function ensureDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_sync_log_started_at ON sync_log(started_at);
+
+    CREATE TABLE IF NOT EXISTS api_endpoint_registry (
+      registry_key TEXT PRIMARY KEY,
+      method TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      entity_hint TEXT NULL,
+      key_candidates TEXT NULL,
+      observed_paths TEXT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS api_raw_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_client_id TEXT NULL,
+      method TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      registry_key TEXT NOT NULL,
+      entity_hint TEXT NULL,
+      request_body TEXT NULL,
+      request_truncated INTEGER NOT NULL DEFAULT 0,
+      response_body TEXT NULL,
+      response_truncated INTEGER NOT NULL DEFAULT 0,
+      response_sha256 TEXT NULL,
+      http_status INTEGER NULL,
+      is_success INTEGER NOT NULL DEFAULT 1,
+      error_message TEXT NULL,
+      fetched_at TEXT NOT NULL,
+      FOREIGN KEY (registry_key) REFERENCES api_endpoint_registry(registry_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_api_raw_cache_store_time ON api_raw_cache(store_client_id, fetched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_api_raw_cache_endpoint_time ON api_raw_cache(endpoint, fetched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_api_raw_cache_registry_time ON api_raw_cache(registry_key, fetched_at DESC);
 
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
@@ -148,6 +319,96 @@ export function ensureDb() {
   }
 
   dbPruneLogsByRetention()
+}
+
+export function dbRecordApiRawResponse(args: {
+  storeClientId?: string | null
+  method: string
+  endpoint: string
+  requestBody?: any
+  responseBody?: any
+  httpStatus?: number | null
+  isSuccess?: boolean
+  errorMessage?: string | null
+  fetchedAt?: string
+}) {
+  const method = String(args.method ?? '').toUpperCase().trim() || 'GET'
+  const endpoint = String(args.endpoint ?? '').trim()
+  const registryKey = makeApiRegistryKey(method, endpoint)
+  const now = args.fetchedAt ?? new Date().toISOString()
+  const entityHint = inferEntityHintFromEndpoint(endpoint)
+
+  const req = safeJsonWithLimit(args.requestBody ?? null, MAX_API_JSON_LEN)
+  const res = safeJsonWithLimit(args.responseBody ?? null, MAX_API_JSON_LEN)
+  const responseSha = sha256Hex(res.text ?? '')
+
+  const keyCandidates = inferKeyCandidates(args.responseBody)
+  const observedPaths = collectObservedArrayPaths(args.responseBody)
+
+  const tx = mustDb().transaction(() => {
+    const row: any = mustDb().prepare(`
+      SELECT registry_key, entity_hint, key_candidates, observed_paths, sample_count
+      FROM api_endpoint_registry
+      WHERE registry_key = ?
+    `).get(registryKey)
+
+    if (!row) {
+      mustDb().prepare(`
+        INSERT INTO api_endpoint_registry (
+          registry_key, method, endpoint, entity_hint, key_candidates, observed_paths, sample_count, first_seen_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        registryKey,
+        method,
+        endpoint,
+        entityHint,
+        keyCandidates.length ? JSON.stringify(keyCandidates) : null,
+        observedPaths.length ? JSON.stringify(observedPaths) : null,
+        1,
+        now,
+        now,
+      )
+    } else {
+      const mergedEntityHint = String(row.entity_hint ?? '').trim() || entityHint
+      const mergedKeys = mergeJsonStringArray(row.key_candidates, keyCandidates)
+      const mergedPaths = mergeJsonStringArray(row.observed_paths, observedPaths)
+      mustDb().prepare(`
+        UPDATE api_endpoint_registry
+        SET entity_hint = ?,
+            key_candidates = ?,
+            observed_paths = ?,
+            sample_count = COALESCE(sample_count, 0) + 1,
+            last_seen_at = ?
+        WHERE registry_key = ?
+      `).run(mergedEntityHint ?? null, mergedKeys, mergedPaths, now, registryKey)
+    }
+
+    mustDb().prepare(`
+      INSERT INTO api_raw_cache (
+        store_client_id, method, endpoint, registry_key, entity_hint,
+        request_body, request_truncated,
+        response_body, response_truncated, response_sha256,
+        http_status, is_success, error_message, fetched_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      args.storeClientId ?? null,
+      method,
+      endpoint,
+      registryKey,
+      entityHint,
+      req.text,
+      req.truncated ? 1 : 0,
+      res.text,
+      res.truncated ? 1 : 0,
+      responseSha,
+      (typeof args.httpStatus === 'number' && Number.isFinite(args.httpStatus)) ? Math.trunc(args.httpStatus) : null,
+      args.isSuccess === false ? 0 : 1,
+      args.errorMessage ?? null,
+      now,
+    )
+  })
+
+  tx()
 }
 
 export function dbGetAdminSettings() {
@@ -301,7 +562,10 @@ export function dbUpsertProducts(items: Array<{
       stmt.run({
         offer_id: r.offer_id,
         product_id: r.product_id ?? null,
-        sku: r.sku ?? null,
+        sku: (() => {
+          const sku = r?.sku == null ? '' : String(r.sku).trim()
+          return sku || null
+        })(),
         barcode: r.barcode ?? null,
         brand: r.brand ?? null,
         category: r.category ?? null,
