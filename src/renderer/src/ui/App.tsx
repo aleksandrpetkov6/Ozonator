@@ -14,6 +14,8 @@ type DemandForecastPeriod = {
   to: string
 }
 
+const DEMAND_PERIOD_PRESETS = [30, 90, 180, 365] as const
+
 
 function toDateInputValue(date: Date): string {
   const y = date.getFullYear()
@@ -114,6 +116,8 @@ export default function App() {
   const [adminLogLifeDraft, setAdminLogLifeDraft] = useState('')
   const [adminLogLifeSaved, setAdminLogLifeSaved] = useState<number>(30)
   const [adminNotice, setAdminNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+  const [datePresetOpen, setDatePresetOpen] = useState(false)
+  const dateRangeRef = useRef<HTMLDivElement | null>(null)
 
   const pathname = location.pathname || '/'
   const isLogs = pathname.startsWith('/logs')
@@ -125,7 +129,7 @@ export default function App() {
   const isStocks = pathname.startsWith('/stocks')
   const isProducts = !isLogs && !isSettings && !isAdmin && !isDemandForecast && !isSales && !isReturns && !isStocks
   const isDataGridTab = isProducts || isSales || isReturns || isStocks
-  const isDateFilterTab = isProducts || isSales || isReturns
+  const isDateFilterTab = isSales || isReturns || isDemandForecast
   const isProductsLike = isDataGridTab || isDemandForecast
 
   const onProductStats = useCallback((s: { total: number; filtered: number }) => {
@@ -151,12 +155,39 @@ export default function App() {
   }, [])
 
   const demandPresetDays = useMemo(() => {
-    for (const days of [30, 90, 180, 365]) {
+    for (const days of DEMAND_PERIOD_PRESETS) {
       const preset = getPresetDemandPeriod(days)
       if (preset.from === demandPeriod.from && preset.to === demandPeriod.to) return days
     }
     return null
   }, [demandPeriod.from, demandPeriod.to])
+
+  useEffect(() => {
+    setDatePresetOpen(false)
+  }, [pathname])
+
+  useEffect(() => {
+    if (!datePresetOpen) return
+
+    const onPointerDown = (ev: MouseEvent) => {
+      const host = dateRangeRef.current
+      if (!host) return
+      if (host.contains(ev.target as Node)) return
+      setDatePresetOpen(false)
+    }
+
+    const onEscape = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setDatePresetOpen(false)
+    }
+
+    window.addEventListener('mousedown', onPointerDown)
+    window.addEventListener('keydown', onEscape)
+
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown)
+      window.removeEventListener('keydown', onEscape)
+    }
+  }, [datePresetOpen])
 
   async function refreshStoreName() {
     try {
@@ -353,77 +384,59 @@ export default function App() {
               Возвраты
             </NavLink>
 
-            <NavLink
-              to="/stocks"
-              className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
-              title="Остатки"
-            >
-              Остатки
-            </NavLink>
-
-            {isDateFilterTab && (
-              <div className="compactDateBar" aria-label="Период данных">
-                <label className="compactDateField">
+            {isDateFilterTab ? (
+              <div className="topbarDateTabsSlot" ref={dateRangeRef} aria-label="Период данных">
+                <label className="topbarDateField topbarDateFieldFrom" onClick={() => setDatePresetOpen(true)}>
                   <span>с</span>
                   <input
                     type="date"
-                    className="compactDateInput"
+                    className="topbarDateInput"
                     value={demandPeriod.from}
+                    onFocus={() => setDatePresetOpen(true)}
                     onChange={(e) => setDemandPeriodField('from', e.target.value)}
                   />
                 </label>
-                <label className="compactDateField">
+                <label className="topbarDateField topbarDateFieldTo" onClick={() => setDatePresetOpen(true)}>
                   <span>по</span>
                   <input
                     type="date"
-                    className="compactDateInput"
+                    className="topbarDateInput"
                     value={demandPeriod.to}
+                    onFocus={() => setDatePresetOpen(true)}
                     onChange={(e) => setDemandPeriodField('to', e.target.value)}
                   />
                 </label>
-              </div>
-            )}
 
-            {isDemandForecast ? (
-              <div className="forecastPeriodBar" aria-label="Период прогноза спроса">
-                <span className="forecastPeriodLabel">Период</span>
-
-                <div className="forecastPeriodDates">
-                  <label className="forecastDateField">
-                    <span>с</span>
-                    <input
-                      type="date"
-                      className="forecastDateInput"
-                      value={demandPeriod.from}
-                      onChange={(e) => setDemandPeriodField('from', e.target.value)}
-                    />
-                  </label>
-
-                  <label className="forecastDateField">
-                    <span>по</span>
-                    <input
-                      type="date"
-                      className="forecastDateInput"
-                      value={demandPeriod.to}
-                      onChange={(e) => setDemandPeriodField('to', e.target.value)}
-                    />
-                  </label>
-                </div>
-
-                <div className="forecastPresetGroup" role="group" aria-label="Шаблоны периода">
-                  {[30, 90, 180, 365].map((days) => (
-                    <button
-                      key={days}
-                      type="button"
-                      className={`forecastPresetBtn${demandPresetDays === days ? ' active' : ''}`}
-                      onClick={() => applyDemandPreset(days)}
-                    >
-                      {days} дней
-                    </button>
-                  ))}
-                </div>
+                {datePresetOpen && (
+                  <div className="topbarDatePresetPopover" role="menu" aria-label="Шаблоны периода">
+                    {DEMAND_PERIOD_PRESETS.map((days) => (
+                      <button
+                        key={days}
+                        type="button"
+                        role="menuitem"
+                        className={`topbarDatePresetBtn${demandPresetDays === days ? ' active' : ''}`}
+                        onClick={() => {
+                          applyDemandPreset(days)
+                          setDatePresetOpen(false)
+                        }}
+                      >
+                        {days} дней
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
+              <NavLink
+                to="/stocks"
+                className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
+                title="Остатки"
+              >
+                Остатки
+              </NavLink>
+            )}
+
+            {isDateFilterTab ? null : (
               <NavLink
                 to="/forecast-demand"
                 className={({ isActive }) => `navChip${isActive ? ' active' : ''}`}
