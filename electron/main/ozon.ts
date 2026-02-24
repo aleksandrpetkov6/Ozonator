@@ -537,6 +537,31 @@ function extractPhotoUrl(x: ProductInfoV2): string | null {
   if (direct) return normalizePhotoUrl(direct)
 
   const rawImages = Array.isArray(x.images) ? x.images : []
+  const imageObjects = rawImages.filter((item): item is Record<string, any> => !!item && typeof item === 'object')
+
+  const isPrimaryFlag = (v: unknown) => v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true'
+  const pickFromImageObject = (item: Record<string, any>) => (
+    normalizePhotoUrl(item.url)
+    ?? normalizePhotoUrl(item.file_name)
+    ?? normalizePhotoUrl(item.fileName)
+    ?? normalizePhotoUrl(typeof item.default === 'string' ? item.default : null)
+    ?? normalizePhotoUrl(item.image)
+  )
+
+  for (const item of imageObjects) {
+    if (
+      isPrimaryFlag(item.is_primary)
+      || isPrimaryFlag(item.isPrimary)
+      || isPrimaryFlag(item.primary)
+      || isPrimaryFlag(item.main)
+      || isPrimaryFlag(item.is_main)
+      || isPrimaryFlag(item.preview)
+    ) {
+      const v = pickFromImageObject(item)
+      if (v) return v
+    }
+  }
+
   for (const item of rawImages) {
     if (typeof item === 'string') {
       const v = normalizePhotoUrl(item)
@@ -544,9 +569,7 @@ function extractPhotoUrl(x: ProductInfoV2): string | null {
       continue
     }
     if (!item || typeof item !== 'object') continue
-    const v = normalizePhotoUrl((item as any).url)
-      ?? normalizePhotoUrl((item as any).file_name)
-      ?? normalizePhotoUrl((item as any).default)
+    const v = pickFromImageObject(item as Record<string, any>)
     if (v) return v
   }
   return null
