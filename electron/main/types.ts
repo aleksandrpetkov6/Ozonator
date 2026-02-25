@@ -12,6 +12,10 @@ export type ProductRow = {
   offer_id: string
   product_id?: number | null
   sku?: string | null
+  ozon_sku?: string | null
+  seller_sku?: string | null
+  fbo_sku?: string | null
+  fbs_sku?: string | null
   barcode?: string | null
   brand?: string | null
   category?: string | null

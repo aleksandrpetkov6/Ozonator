@@ -323,7 +323,11 @@ ipcMain.handle('ozon:syncProducts', async () => {
         return {
           offer_id: it.offer_id,
           product_id: it.product_id,
-          sku: (info?.sku ?? it.sku ?? null),
+          sku: (info?.ozon_sku ?? info?.sku ?? it.sku ?? null),
+          ozon_sku: (info?.ozon_sku ?? info?.sku ?? it.sku ?? null),
+          seller_sku: (info?.seller_sku ?? it.offer_id ?? null),
+          fbo_sku: info?.fbo_sku ?? null,
+          fbs_sku: info?.fbs_sku ?? null,
           barcode: info?.barcode ?? null,
           brand: info?.brand ?? null,
           category: info?.category ?? null,

@@ -99,6 +99,10 @@ export type OzonProductInfo = {
   product_id: number
   offer_id: string
   sku: string | null
+  ozon_sku: string | null
+  seller_sku: string | null
+  fbo_sku: string | null
+  fbs_sku: string | null
   barcode: string | null
   brand: string | null
   category: string | null
@@ -546,6 +550,65 @@ function pickFirstString(...vals: any[]): string | null {
     if (typeof v === 'string' && v.trim()) return v.trim()
   }
   return null
+}
+
+function findNestedStringByKeys(input: any, normalizedKeys: Set<string>, depth = 0): string | null {
+  if (input == null || depth > 5) return null
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const found = findNestedStringByKeys(item, normalizedKeys, depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+
+  if (typeof input !== 'object') return null
+
+  for (const [rawKey, rawVal] of Object.entries(input)) {
+    const normKey = String(rawKey).toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (normalizedKeys.has(normKey)) {
+      if (typeof rawVal === 'string' && rawVal.trim()) return rawVal.trim()
+      if (typeof rawVal === 'number' && Number.isFinite(rawVal)) return String(rawVal)
+    }
+
+    const found = findNestedStringByKeys(rawVal, normalizedKeys, depth + 1)
+    if (found) return found
+  }
+
+  return null
+}
+
+function extractProductSkuFields(raw: any): { ozon_sku: string | null; seller_sku: string | null; fbo_sku: string | null; fbs_sku: string | null } {
+  const directOzonSku = (() => {
+    const v = raw?.ozon_sku ?? raw?.ozonSku ?? raw?.sku
+    if (typeof v === 'string' && v.trim()) return v.trim()
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+    return null
+  })()
+
+  const directSellerSku = pickFirstString(
+    raw?.seller_sku,
+    raw?.sellerSku,
+    raw?.offer_sku,
+    raw?.offerSku,
+    raw?.offer_id,
+    raw?.offerId,
+    raw?.offerIdForSeller,
+  )
+
+  const fboKeys = new Set(['fbosku', 'skufbo'])
+  const fbsKeys = new Set(['fbssku', 'skufbs'])
+
+  const directFboSku = pickFirstString(raw?.fbo_sku, raw?.fboSku, raw?.sku_fbo, raw?.skuFbo)
+  const directFbsSku = pickFirstString(raw?.fbs_sku, raw?.fbsSku, raw?.sku_fbs, raw?.skuFbs)
+
+  return {
+    ozon_sku: directOzonSku,
+    seller_sku: directSellerSku,
+    fbo_sku: directFboSku ?? findNestedStringByKeys(raw, fboKeys),
+    fbs_sku: directFbsSku ?? findNestedStringByKeys(raw, fbsKeys),
+  }
 }
 
 function normalizePhotoUrl(v: unknown): string | null {
@@ -1014,10 +1077,16 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
         typeNameFromTree = treeNames?.typeName ?? null
       }
 
+      const skuFields = extractProductSkuFields(x)
+
       out.push({
         product_id: pid,
         offer_id: String(x.offer_id ?? ''),
-        sku: x.sku != null ? String(x.sku) : null,
+        sku: skuFields.ozon_sku ?? (x.sku != null ? String(x.sku) : null),
+        ozon_sku: skuFields.ozon_sku ?? (x.sku != null ? String(x.sku) : null),
+        seller_sku: skuFields.seller_sku ?? String(x.offer_id ?? ''),
+        fbo_sku: skuFields.fbo_sku,
+        fbs_sku: skuFields.fbs_sku,
         barcode,
         brand: (brandRaw != null && String(brandRaw).trim().length) ? String(brandRaw).trim() : null,
         category: categoryNameFromTree ?? (categoryId != null ? String(categoryId) : null),
