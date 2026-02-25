@@ -1,98 +1,151 @@
-diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
-index 81c005c..6949b95 100644
---- a/electron/main/ozon.ts
-+++ b/electron/main/ozon.ts
-@@ -100,7 +100,7 @@ type ProductInfoV2 = {
-   errors?: any[]
- }
+--- /mnt/data/ozrepo/Ozonator-main/electron/main/index.ts	2026-02-25 11:19:36.000000000 +0000
++++ /mnt/data/workrepo2/electron/main/index.ts	2026-02-25 12:56:46.632421160 +0000
+@@ -369,9 +369,10 @@
+     let placementCacheKept = false
+     try {
+       const productsForStore = dbGetProducts(secrets.clientId)
+-      const skuList = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
++      const ozonSkuList = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
++      const sellerSkuList = Array.from(new Set(productsForStore.map((p) => String(p.offer_id ?? '').trim()).filter(Boolean)))
  
--type AttrValue = { value?: string; dictionary_value_id?: number }
-+type AttrValue = { value?: string; dictionary_value_id?: number; dictionary_value?: any; [key: string]: any }
+-      if (skuList.length > 0) {
++      if (ozonSkuList.length > 0 || sellerSkuList.length > 0) {
+         const warehouses = await ozonWarehouseList(secrets)
+         if (!Array.isArray(warehouses) || warehouses.length === 0) {
+           placementSyncError = 'Ozon не вернул список складов; локальные данные по складам/зонам сохранены без перезаписи.'
+@@ -385,24 +386,56 @@
+             seller_sku?: string | null
+             placement_zone?: string | null
+           }> = []
++          const placementRowKeys = new Set<string>()
+           let placementApiCallCount = 0
  
- type Attribute = { id: number; name?: string; values?: AttrValue[]; [key: string]: any }
- 
-@@ -166,22 +166,42 @@ function normalizeBrandText(raw: any): string | null {
- }
- 
- function extractBrandFromAttributes(attrs: Array<any>): string | null {
-+  // Ozon бренд в attributes[] приходит по полю id (не путать с attribute_id).
-+  // Типовые id:
-+  // - 85: обычный бренд
-+  // - 31: бренд для одежды/обуви
-   const brandIds = new Set([85, 31])
- 
-   for (const a of attrs) {
-     if (!a) continue
--    if (brandIds.has(Number((a as any).id))) {
--      const v = normalizeBrandText((a as any).values) ?? normalizeBrandText(a)
--      if (v) return v
-+    if (!brandIds.has(Number((a as any).id))) continue
++          const appendPlacementRows = (
++            warehouseId: number,
++            warehouseName: string | null,
++            zones: Array<{
++              sku: string
++              ozon_sku?: string | null
++              seller_sku?: string | null
++              placement_zone: string | null
++            }>
++          ) => {
++            for (const z of zones) {
++              const rowKey = [
++                String(warehouseId),
++                String(z.ozon_sku ?? ''),
++                String(z.seller_sku ?? ''),
++                String(z.placement_zone ?? ''),
++              ].join('::')
++              if (placementRowKeys.has(rowKey)) continue
++              placementRowKeys.add(rowKey)
 +
-+    const values = Array.isArray((a as any).values) ? (a as any).values : []
++              allPlacementRows.push({
++                warehouse_id: warehouseId,
++                warehouse_name: warehouseName,
++                sku: z.sku,
++                ozon_sku: z.ozon_sku ?? null,
++                seller_sku: z.seller_sku ?? null,
++                placement_zone: z.placement_zone ?? null,
++              })
++            }
++          }
 +
-+    // Основной путь для столбца «Бренд»: values[0].value (текст бренда).
-+    // dictionary_value_id сохраняем как диагностическую опору (на будущее), но в UI выводим именно value.
-+    for (const v of values) {
-+      const rawText = (v as any)?.value
-+      if (typeof rawText === 'string' && rawText.trim()) return rawText.trim()
-     }
+           for (const wh of warehouses) {
+             const wid = Number(wh.warehouse_id)
+             if (!Number.isFinite(wid)) continue
+-            for (const part of chunk(skuList, 500)) {
 +
-+    // Fallback: иногда текст может лежать глубже (dictionary_value/name и т.п.).
-+    const fallback = normalizeBrandText(values) ?? normalizeBrandText(a)
-+    if (fallback) return fallback
-   }
- 
-+  // Дополнительный fallback на случай нестандартного id бренда в категории.
-   for (const a of attrs) {
-     const name = String((a as any)?.name ?? '').trim().toLowerCase()
-     if (!name) continue
-     if (name.includes('бренд') || name === 'brand') {
--      const v = normalizeBrandText((a as any).values) ?? normalizeBrandText(a)
--      if (v) return v
-+      const values = Array.isArray((a as any).values) ? (a as any).values : []
-+      for (const v of values) {
-+        const rawText = (v as any)?.value
-+        if (typeof rawText === 'string' && rawText.trim()) return rawText.trim()
-+      }
-+      const fallback = normalizeBrandText(values) ?? normalizeBrandText(a)
-+      if (fallback) return fallback
-     }
-   }
- 
-@@ -375,15 +395,29 @@ async function fetchAttributesMap(
-   const map = new Map<number, { brand?: string | null; barcode?: string | null; category?: string | null; descriptionCategoryId?: number | null; typeId?: number | null }>()
- 
- 
--  // Встречаются /v3/products/info/attributes и /v4/products/info/attributes.
--  // Делаем основной запрос в /v3, а /v4 используем как fallback.
-+  // Для бренда/атрибутов используем метод характеристик товара.
-+  // Актуальный приоритет: /v4/product/info/attributes
-+  // (старые варианты /v3/... и plural-формы оставляем как fallback для совместимости).
-   async function callWithFallback(body: any) {
--    try {
--      return await ozonPost(secrets, '/v3/products/info/attributes', body)
--    } catch (e: any) {
--      if (e?.details?.status !== 404) throw e
--      return await ozonPost(secrets, '/v4/products/info/attributes', body)
-+    const endpoints = [
-+      '/v4/product/info/attributes',
-+      '/v3/product/info/attributes',
-+      '/v4/products/info/attributes',
-+      '/v3/products/info/attributes',
-+    ]
++            for (const part of chunk(ozonSkuList, 500)) {
++              placementApiCallCount += 1
++              const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
++              appendPlacementRows(wid, wh.name ?? null, zones)
++            }
 +
-+    let lastErr: any = null
-+    for (const endpoint of endpoints) {
-+      try {
-+        return await ozonPost(secrets, endpoint, body)
-+      } catch (e: any) {
-+        lastErr = e
-+        const st = e?.details?.status
-+        if (st !== 404) throw e
-+      }
-     }
-+
-+    throw lastErr ?? new Error('Ozon attributes endpoint not available')
-   }
++            // Для части кабинетов/ответов Ozon зоны размещения возвращаются только по SKU продавца.
++            // Делаем дополнительный проход по offer_id (seller SKU) и дедуплицируем строки.
++            for (const part of chunk(sellerSkuList, 500)) {
+               placementApiCallCount += 1
+               const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
+-              for (const z of zones) {
+-                allPlacementRows.push({
+-                  warehouse_id: wid,
+-                  warehouse_name: wh.name ?? null,
+-                  sku: z.sku,
+-                  ozon_sku: z.ozon_sku ?? null,
+-                  seller_sku: z.seller_sku ?? null,
+-                  placement_zone: z.placement_zone ?? null,
+-                })
+-              }
++              appendPlacementRows(wid, wh.name ?? null, zones)
+             }
+           }
  
-   for (const pack of chunk(lookupItems, 900)) {
+--- /mnt/data/ozrepo/Ozonator-main/electron/main/ozon.ts	2026-02-25 11:19:36.000000000 +0000
++++ /mnt/data/workrepo2/electron/main/ozon.ts	2026-02-25 12:55:31.979807036 +0000
+@@ -917,8 +917,17 @@
+       obj?.offer_id ??
+       obj?.offerId
+ 
+-    const ozonSku = (typeof ozonSkuRaw === 'string' || typeof ozonSkuRaw === 'number') ? String(ozonSkuRaw).trim() : ''
+-    const sellerSku = (typeof sellerSkuRaw === 'string' || typeof sellerSkuRaw === 'number') ? String(sellerSkuRaw).trim() : ''
++    let ozonSku = (typeof ozonSkuRaw === 'string' || typeof ozonSkuRaw === 'number') ? String(ozonSkuRaw).trim() : ''
++    let sellerSku = (typeof sellerSkuRaw === 'string' || typeof sellerSkuRaw === 'number') ? String(sellerSkuRaw).trim() : ''
++
++    // В ответах Ozon поле `sku` иногда приходит как SKU продавца (offer_id / seller_sku).
++    // Если отдельного seller_sku нет и `sku` нечисловой — сохраняем его как seller_sku,
++    // чтобы вкладка «Остатки» смогла сматчить размещение с товаром по offer_id.
++    if (!sellerSku && ozonSku && !/^\d+$/.test(ozonSku)) {
++      sellerSku = ozonSku
++      ozonSku = ''
++    }
++
+     const canonicalSku = ozonSku || sellerSku
+     if (!canonicalSku) continue
+ 
+--- /mnt/data/ozrepo/Ozonator-main/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-25 11:19:36.000000000 +0000
++++ /mnt/data/workrepo2/src/renderer/src/ui/pages/ProductsPage.tsx	2026-02-25 12:56:25.460525776 +0000
+@@ -550,31 +550,19 @@
+           if (colId === 'is_visible') return visibilityText(p)
+           if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
+           if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+-    if (colId === 'ozon_sku') {
+-      const v = p.ozon_sku ?? p.sku
+-      return (v == null || String(v).trim() === '') ? '-' : String(v)
+-    }
+-    if (colId === 'seller_sku') {
+-      const v = p.seller_sku ?? p.offer_id
+-      return (v == null || String(v).trim() === '') ? '-' : String(v)
+-    }
+-    if (colId === 'fbo_sku' || colId === 'fbs_sku') {
+-      const v = (p as any)[colId]
+-      return (v == null || String(v).trim() === '') ? '-' : String(v)
+-    }
+           if (colId === 'ozon_sku') {
+-      const v = p.ozon_sku ?? p.sku
+-      return (v == null || String(v).trim() === '') ? '-' : String(v)
+-    }
+-    if (colId === 'seller_sku') {
+-      const v = p.seller_sku ?? p.offer_id
+-      return (v == null || String(v).trim() === '') ? '-' : String(v)
+-    }
+-    if (colId === 'fbo_sku' || colId === 'fbs_sku') {
+-      const v = (p as any)[colId]
+-      return (v == null || String(v).trim() === '') ? '-' : String(v)
+-    }
+-    if (colId === 'photo_url') return ''
++            const v = p.ozon_sku ?? p.sku
++            return (v == null || String(v).trim() === '') ? '-' : String(v)
++          }
++          if (colId === 'seller_sku') {
++            const v = p.seller_sku ?? p.offer_id
++            return (v == null || String(v).trim() === '') ? '-' : String(v)
++          }
++          if (colId === 'fbo_sku' || colId === 'fbs_sku') {
++            const v = (p as any)[colId]
++            return (v == null || String(v).trim() === '') ? '-' : String(v)
++          }
++          if (colId === 'photo_url') return ''
+           return toText((p as any)[colId])
+         })
+         .join(' ')
