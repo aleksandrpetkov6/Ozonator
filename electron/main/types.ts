@@ -37,7 +37,13 @@ export type ProductPlacementRow = {
   store_client_id?: string | null
   warehouse_id: number
   warehouse_name?: string | null
+  /**
+   * Legacy canonical key kept for backward compatibility.
+   * Prefer ozon_sku / seller_sku for matching.
+   */
   sku: string
+  ozon_sku?: string | null
+  seller_sku?: string | null
   placement_zone?: string | null
   updated_at: string
 }

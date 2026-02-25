@@ -746,7 +746,12 @@ type OzonWarehouse = {
 
 export type OzonPlacementZoneInfo = {
   warehouse_id: number
+  /**
+   * Legacy canonical key (ozon_sku if present, otherwise seller_sku).
+   */
   sku: string
+  ozon_sku?: string | null
+  seller_sku?: string | null
   placement_zone: string | null
 }
 
@@ -833,17 +838,26 @@ function extractPlacementZoneItems(json: any, warehouseId: number): OzonPlacemen
   const seen = new Set<string>()
 
   for (const obj of objs) {
-    const skuRaw =
+    const ozonSkuRaw =
       obj?.sku ??
       obj?.sku_id ??
       obj?.skuId ??
       obj?.product_sku ??
       obj?.productSku ??
-      obj?.item_sku ??
+      obj?.item_sku
+
+    const sellerSkuRaw =
+      obj?.seller_sku ??
+      obj?.sellerSku ??
       obj?.offer_sku ??
-      obj?.seller_sku
-    const sku = (typeof skuRaw === 'string' || typeof skuRaw === 'number') ? String(skuRaw).trim() : ''
-    if (!sku) continue
+      obj?.offerSku ??
+      obj?.offer_id ??
+      obj?.offerId
+
+    const ozonSku = (typeof ozonSkuRaw === 'string' || typeof ozonSkuRaw === 'number') ? String(ozonSkuRaw).trim() : ''
+    const sellerSku = (typeof sellerSkuRaw === 'string' || typeof sellerSkuRaw === 'number') ? String(sellerSkuRaw).trim() : ''
+    const canonicalSku = ozonSku || sellerSku
+    if (!canonicalSku) continue
 
     const rowWarehouseId = pickWarehouseId(obj) ?? warehouseId
     const zone = pickFirstString(
@@ -859,12 +873,14 @@ function extractPlacementZoneItems(json: any, warehouseId: number): OzonPlacemen
       obj?.name
     )
 
-    const key = `${rowWarehouseId}::${sku}::${zone ?? ''}`
+    const key = `${rowWarehouseId}::${ozonSku || '-'}::${sellerSku || '-'}::${zone ?? ''}`
     if (seen.has(key)) continue
     seen.add(key)
     out.push({
       warehouse_id: rowWarehouseId,
-      sku,
+      sku: canonicalSku,
+      ozon_sku: ozonSku || null,
+      seller_sku: sellerSku || null,
       placement_zone: zone ? zone.trim() : null,
     })
   }

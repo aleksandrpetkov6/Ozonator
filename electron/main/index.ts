@@ -273,7 +273,14 @@ ipcMain.handle('ozon:syncProducts', async () => {
           placementSyncError = 'Ozon не вернул список складов; локальные данные по складам/зонам сохранены без перезаписи.'
           placementCacheKept = true
         } else {
-          const allPlacementRows: Array<{ warehouse_id: number; warehouse_name?: string | null; sku: string; placement_zone?: string | null }> = []
+          const allPlacementRows: Array<{
+            warehouse_id: number
+            warehouse_name?: string | null
+            sku: string
+            ozon_sku?: string | null
+            seller_sku?: string | null
+            placement_zone?: string | null
+          }> = []
           let placementApiCallCount = 0
 
           for (const wh of warehouses) {
@@ -287,6 +294,8 @@ ipcMain.handle('ozon:syncProducts', async () => {
                   warehouse_id: wid,
                   warehouse_name: wh.name ?? null,
                   sku: z.sku,
+                  ozon_sku: z.ozon_sku ?? null,
+                  seller_sku: z.seller_sku ?? null,
                   placement_zone: z.placement_zone ?? null,
                 })
               }
