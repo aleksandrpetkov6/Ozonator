@@ -86,54 +86,77 @@ function colsStorageKey(dataset: DataSet) {
   return `ozonator_cols_${dataset}`
 }
 
-function mergeColsWithDefaults(dataset: DataSet, input: Array<Partial<ColDef>> | null | undefined): ColDef[] {
-  const defaults = buildDefaultCols(dataset)
-  if (!Array.isArray(input) || !input.length) return defaults
+type PersistedColLayout = Pick<ColDef, 'id' | 'w' | 'visible'>
 
-  const map = new Map<string, Partial<ColDef>>()
-  for (const x of input) {
-    if (x?.id) map.set(String(x.id), x)
+function normalizePersistedCols(value: unknown): PersistedColLayout[] {
+  if (!Array.isArray(value)) return []
+  const out: PersistedColLayout[] = []
+  const seen = new Set<string>()
+
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const id = String((raw as any).id ?? '').trim()
+    if (!id || seen.has(id)) continue
+
+    const wNum = Number((raw as any).w)
+    const w = Number.isFinite(wNum) ? Math.max(60, Math.min(2000, Math.round(wNum))) : 120
+    const visible = typeof (raw as any).visible === 'boolean' ? (raw as any).visible : true
+
+    out.push({ id: id as ColDef['id'], w, visible })
+    seen.add(id)
+    if (out.length >= 200) break
   }
 
-  const merged: ColDef[] = []
-  for (const d of defaults) {
-    const p = map.get(String(d.id))
-    merged.push({
+  return out
+}
+
+function mergeColsWithDefaults(dataset: DataSet, persistedRaw: unknown): ColDef[] {
+  const defaults = buildDefaultCols(dataset)
+  const persisted = normalizePersistedCols(persistedRaw)
+  if (persisted.length === 0) return defaults
+
+  const defaultsById = new Map<string, ColDef>()
+  for (const d of defaults) defaultsById.set(String(d.id), d)
+
+  const out: ColDef[] = []
+  const used = new Set<string>()
+
+  for (const p of persisted) {
+    const d = defaultsById.get(String(p.id))
+    if (!d) continue
+    out.push({
       id: d.id,
       title: d.title,
-      w: (typeof p?.w === 'number' && Number.isFinite(p.w) && p.w > 60) ? Math.trunc(p.w) : d.w,
-      visible: (typeof p?.visible === 'boolean') ? p.visible : d.visible,
+      w: p.w,
+      visible: p.visible,
     })
+    used.add(String(d.id))
   }
 
-  return merged
-}
-
-function hasLocalCols(dataset: DataSet): boolean {
-  try {
-    return !!localStorage.getItem(colsStorageKey(dataset))
-  } catch {
-    return false
+  for (const d of defaults) {
+    const key = String(d.id)
+    if (used.has(key)) continue
+    out.push(d)
   }
+
+  return out
 }
 
-function readColsLocal(dataset: DataSet): ColDef[] {
+function readCols(dataset: DataSet): ColDef[] {
   try {
     const raw = localStorage.getItem(colsStorageKey(dataset))
     if (!raw) return buildDefaultCols(dataset)
-    const parsed = JSON.parse(raw) as Partial<ColDef>[]
+    const parsed = JSON.parse(raw)
     return mergeColsWithDefaults(dataset, parsed)
   } catch {
     return buildDefaultCols(dataset)
   }
 }
 
-function saveColsLocal(dataset: DataSet, cols: ColDef[]) {
-  try {
-    localStorage.setItem(colsStorageKey(dataset), JSON.stringify(cols.map((c) => ({ id: c.id, w: c.w, visible: c.visible }))))
-  } catch {}
+function saveCols(dataset: DataSet, cols: ColDef[]) {
+  const payload: PersistedColLayout[] = cols.map((c) => ({ id: c.id, w: c.w, visible: c.visible }))
+  localStorage.setItem(colsStorageKey(dataset), JSON.stringify(payload))
 }
-
 const DATASET_CACHE: Record<DataSet, GridRow[] | null> = {
   products: null,
   sales: null,
@@ -274,9 +297,7 @@ function visibilityText(p: GridRow): string {
 
 export default function ProductsPage({ dataset = 'products', query = '', onStats }: Props) {
   const [products, setProducts] = useState<GridRow[]>(() => DATASET_CACHE[dataset] ?? [])
-  const [cols, setCols] = useState<ColDef[]>(() => readColsLocal(dataset))
-  const [colsHydrated, setColsHydrated] = useState(false)
-  const [hasStoredCols, setHasStoredCols] = useState<boolean>(() => hasLocalCols(dataset))
+  const [cols, setCols] = useState<ColDef[]>(() => readCols(dataset))
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
@@ -307,7 +328,6 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const didAutoInitRef = useRef(false)
-  const colsHydrateReqRef = useRef(0)
   const photoHoverTimerRef = useRef<number | null>(null)
   const photoHoverPendingRef = useRef<{ url: string; alt: string; clientX: number; clientY: number } | null>(null)
 
@@ -367,43 +387,68 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
     setPhotoPreview(null)
   }
 
-  useEffect(() => {
-    didAutoInitRef.current = false
-    const localCols = readColsLocal(dataset)
-    const localExists = hasLocalCols(dataset)
-    setCols(localCols)
-    setHasStoredCols(localExists)
-    setColsHydrated(false)
+  const [colsSyncReady, setColsSyncReady] = useState(false)
+  const [hasStoredCols, setHasStoredCols] = useState<boolean>(() => {
+    try { return !!localStorage.getItem(colsStorageKey(dataset)) } catch { return true }
+  })
 
-    const reqId = ++colsHydrateReqRef.current
-    let cancelled = false
+  useEffect(() => {
+    let active = true
+    setColsSyncReady(false)
 
     ;(async () => {
-      try {
-        const resp = await window.api.getGridColumns(dataset)
-        if (cancelled || reqId !== colsHydrateReqRef.current) return
+      const localCols = (() => {
+        try {
+          const raw = localStorage.getItem(colsStorageKey(dataset))
+          if (!raw) return null
+          return JSON.parse(raw)
+        } catch {
+          return null
+        }
+      })()
 
-        if (resp?.ok && Array.isArray(resp.cols) && resp.cols.length > 0) {
-          const merged = mergeColsWithDefaults(dataset, resp.cols)
+      try {
+        const dbResp = await window.api.getGridColumns(dataset)
+        if (!active) return
+
+        if (Array.isArray(dbResp?.cols) && dbResp.cols.length > 0) {
+          const merged = mergeColsWithDefaults(dataset, dbResp.cols)
           setCols(merged)
           setHasStoredCols(true)
-          saveColsLocal(dataset, merged)
-        } else if (localExists) {
-          void window.api.saveGridColumns(dataset, localCols.map((c) => ({ id: String(c.id), w: c.w, visible: c.visible }))).catch(() => undefined)
+          try { saveCols(dataset, merged) } catch {}
+          setColsSyncReady(true)
+          return
+        }
+
+        if (localCols) {
+          const merged = mergeColsWithDefaults(dataset, localCols)
+          setCols(merged)
+          setHasStoredCols(true)
+          try {
+            await window.api.saveGridColumns(dataset, merged.map((c) => ({ id: String(c.id), w: c.w, visible: c.visible })))
+          } catch {}
+          setColsSyncReady(true)
+          return
+        }
+
+        setCols(buildDefaultCols(dataset))
+        setHasStoredCols(false)
+        setColsSyncReady(true)
+      } catch {
+        if (!active) return
+        if (localCols) {
+          const merged = mergeColsWithDefaults(dataset, localCols)
+          setCols(merged)
           setHasStoredCols(true)
         } else {
+          setCols(buildDefaultCols(dataset))
           setHasStoredCols(false)
         }
-      } catch {
-        setHasStoredCols(localExists)
-      } finally {
-        if (!cancelled && reqId === colsHydrateReqRef.current) setColsHydrated(true)
+        setColsSyncReady(true)
       }
     })()
 
-    return () => {
-      cancelled = true
-    }
+    return () => { active = false }
   }, [dataset])
 
   async function load(force = false) {
@@ -428,14 +473,14 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   }, [])
 
   useEffect(() => {
-    if (!colsHydrated) return
-    const payload = cols.map((c) => ({ id: String(c.id), w: c.w, visible: c.visible }))
+    if (!colsSyncReady) return
     const id = window.setTimeout(() => {
-      saveColsLocal(dataset, cols)
-      void window.api.saveGridColumns(dataset, payload).catch(() => undefined)
+      const payload = cols.map((c) => ({ id: String(c.id), w: c.w, visible: c.visible }))
+      try { saveCols(dataset, cols) } catch {}
+      window.api.saveGridColumns(dataset, payload).catch(() => {})
     }, 250)
     return () => window.clearTimeout(id)
-  }, [dataset, cols, colsHydrated])
+  }, [dataset, cols, colsSyncReady])
 
   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
   const rowH = useMemo(() => (visibleCols.some(c => c.id === 'photo_url') ? 58 : 28), [visibleCols])
@@ -831,6 +876,7 @@ function onDragOverHeader(e: React.DragEvent) {
   // Первичная авто-ширина (если пользователь ещё ничего не сохранял)
   useEffect(() => {
     if (didAutoInitRef.current) return
+    if (!colsSyncReady) return
     if (hasStoredCols) return
     if (products.length === 0) return
 
@@ -857,7 +903,7 @@ function onDragOverHeader(e: React.DragEvent) {
 
     setCols(next)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [products.length])
+  }, [products.length, colsSyncReady, hasStoredCols, dataset])
 
   const tableWidth = useMemo(() => Math.max(1, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
 
