@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
 import { appendFileSync, mkdirSync } from 'fs'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbGetGridColumns, dbSaveGridColumns, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 
@@ -260,24 +260,6 @@ ipcMain.handle('admin:saveSettings', async (_e, payload: { logRetentionDays?: nu
   }
 })
 
-ipcMain.handle('ui:getGridColumns', async (_e, dataset: string) => {
-  try {
-    const data = dbGetGridColumns(dataset)
-    return { ok: true, cols: data.cols }
-  } catch (e: any) {
-    return { ok: false, error: e?.message ?? String(e), cols: null }
-  }
-})
-
-ipcMain.handle('ui:saveGridColumns', async (_e, payload: { dataset?: string; cols?: unknown }) => {
-  try {
-    const res = dbSaveGridColumns(String(payload?.dataset ?? ''), payload?.cols ?? null)
-    return { ok: true, ...res }
-  } catch (e: any) {
-    return { ok: false, error: e?.message ?? String(e) }
-  }
-})
-
 ipcMain.handle('ozon:testAuth', async () => {
   let storeClientId: string | null = null
   try { storeClientId = loadSecrets().clientId } catch {}
@@ -526,6 +508,23 @@ ipcMain.handle('data:getStocks', async () => {
     return { ok: true, rows }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e), rows: [] }
+  }
+})
+
+
+ipcMain.handle('ui:getGridColumns', async (_e, args: { dataset: 'products' | 'sales' | 'returns' | 'stocks' }) => {
+  try {
+    return { ok: true, ...dbGetGridColumns(args?.dataset) }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), dataset: (args?.dataset ?? 'products') as 'products' | 'sales' | 'returns' | 'stocks', cols: null }
+  }
+})
+
+ipcMain.handle('ui:saveGridColumns', async (_e, args: { dataset: 'products' | 'sales' | 'returns' | 'stocks'; cols: Array<{ id: string; w: number; visible: boolean }> }) => {
+  try {
+    return { ok: true, ...dbSaveGridColumns(args?.dataset, args?.cols) }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), dataset: (args?.dataset ?? 'products') as 'products' | 'sales' | 'returns' | 'stocks', savedCount: 0 }
   }
 })
 
