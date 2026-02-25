@@ -2,7 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 
 type GridRow = {
   offer_id: string
+  product_id?: number | null
   sku?: string | null
+  ozon_sku?: string | null
+  seller_sku?: string | null
+  fbo_sku?: string | null
+  fbs_sku?: string | null
   barcode?: string | null
   brand?: string | null
   category?: string | null
@@ -39,6 +44,11 @@ const PHOTO_PREVIEW_DELAY_MS = 1000
 function buildDefaultCols(dataset: DataSet): ColDef[] {
   const base: ColDef[] = [
     { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
+    { id: 'product_id', title: 'ID', w: 110, visible: true },
+    { id: 'ozon_sku', title: 'SKU Ozon', w: 150, visible: true },
+    { id: 'seller_sku', title: 'SKU продавца', w: 180, visible: true },
+    { id: 'fbo_sku', title: 'SKU FBO', w: 150, visible: true },
+    { id: 'fbs_sku', title: 'SKU FBS', w: 150, visible: true },
     { id: 'photo_url', title: 'Фото', w: 74, visible: true },
     { id: 'name', title: 'Наименование', w: 320, visible: true },
     { id: 'brand', title: 'Бренд', w: 180, visible: true },
@@ -68,6 +78,11 @@ const AUTO_MIN_W = 80
 const AUTO_PAD = 34
 const AUTO_MAX_W: Record<string, number> = {
   offer_id: 240,
+  product_id: 120,
+  ozon_sku: 220,
+  seller_sku: 240,
+  fbo_sku: 220,
+  fbs_sku: 220,
   sku: 220,
   barcode: 260,
   brand: 220,
@@ -535,7 +550,31 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
           if (colId === 'is_visible') return visibilityText(p)
           if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
           if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
-          if (colId === 'photo_url') return ''
+    if (colId === 'ozon_sku') {
+      const v = p.ozon_sku ?? p.sku
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
+    if (colId === 'seller_sku') {
+      const v = p.seller_sku ?? p.offer_id
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
+    if (colId === 'fbo_sku' || colId === 'fbs_sku') {
+      const v = (p as any)[colId]
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
+          if (colId === 'ozon_sku') {
+      const v = p.ozon_sku ?? p.sku
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
+    if (colId === 'seller_sku') {
+      const v = p.seller_sku ?? p.offer_id
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
+    if (colId === 'fbo_sku' || colId === 'fbs_sku') {
+      const v = (p as any)[colId]
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
+    if (colId === 'photo_url') return ''
           return toText((p as any)[colId])
         })
         .join(' ')
@@ -780,6 +819,18 @@ function onDragOverHeader(e: React.DragEvent) {
     if (colId === 'brand') return { text: (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан' }
     if (colId === 'photo_url') return { text: '', title: (p.photo_url && String(p.photo_url).trim()) ? String(p.photo_url).trim() : 'Нет фото' }
 
+    if (colId === 'ozon_sku') {
+      const v = p.ozon_sku ?? p.sku
+      return { text: (v == null || String(v).trim() === '') ? '-' : String(v) }
+    }
+    if (colId === 'seller_sku') {
+      const v = p.seller_sku ?? p.offer_id
+      return { text: (v == null || String(v).trim() === '') ? '-' : String(v) }
+    }
+    if (colId === 'fbo_sku' || colId === 'fbs_sku') {
+      const v = (p as any)[colId]
+      return { text: (v == null || String(v).trim() === '') ? '-' : String(v) }
+    }
     if (colId === 'is_visible') {
       const txt = visibilityText(p)
       const rs = visibilityReasonText(p.hidden_reasons)
@@ -833,6 +884,18 @@ function onDragOverHeader(e: React.DragEvent) {
     if (colId === 'hidden_reasons') return visibilityReasonText((p as any)[colId])
     if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
     if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
+    if (colId === 'ozon_sku') {
+      const v = p.ozon_sku ?? p.sku
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
+    if (colId === 'seller_sku') {
+      const v = p.seller_sku ?? p.offer_id
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
+    if (colId === 'fbo_sku' || colId === 'fbs_sku') {
+      const v = (p as any)[colId]
+      return (v == null || String(v).trim() === '') ? '-' : String(v)
+    }
     if (colId === 'photo_url') return ''
     if (colId === 'warehouse_name') {
       const rawName = (p.warehouse_name == null ? '' : String(p.warehouse_name)).trim()
