@@ -369,9 +369,19 @@ ipcMain.handle('ozon:syncProducts', async () => {
     let placementCacheKept = false
     try {
       const productsForStore = dbGetProducts(secrets.clientId)
-      const skuList = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
+      const ozonSkuList = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
+      const sellerSkuList = Array.from(
+        new Set(
+          productsForStore
+            .map((p) => String((p as any).seller_sku ?? p.offer_id ?? '').trim())
+            .filter(Boolean)
+        )
+      )
+      const placementQueryIds = Array.from(new Set([...ozonSkuList, ...sellerSkuList]))
+      const ozonSkuSet = new Set(ozonSkuList)
+      const sellerOnlySkuList = sellerSkuList.filter((sku) => !ozonSkuSet.has(sku))
 
-      if (skuList.length > 0) {
+      if (placementQueryIds.length > 0) {
         const warehouses = await ozonWarehouseList(secrets)
         if (!Array.isArray(warehouses) || warehouses.length === 0) {
           placementSyncError = 'Ozon не вернул список складов; локальные данные по складам/зонам сохранены без перезаписи.'
@@ -385,15 +395,24 @@ ipcMain.handle('ozon:syncProducts', async () => {
             seller_sku?: string | null
             placement_zone?: string | null
           }> = []
+          const placementRowSeen = new Set<string>()
           let placementApiCallCount = 0
 
           for (const wh of warehouses) {
             const wid = Number(wh.warehouse_id)
             if (!Number.isFinite(wid)) continue
-            for (const part of chunk(skuList, 500)) {
-              placementApiCallCount += 1
-              const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
+
+            const appendPlacementRows = (zones: Array<{ sku: string; ozon_sku?: string | null; seller_sku?: string | null; placement_zone?: string | null }>) => {
               for (const z of zones) {
+                const dedupeKey = [
+                  String(wid),
+                  String(z.ozon_sku ?? '').trim(),
+                  String(z.seller_sku ?? '').trim(),
+                  String(z.sku ?? '').trim(),
+                  String(z.placement_zone ?? '').trim(),
+                ].join('::')
+                if (placementRowSeen.has(dedupeKey)) continue
+                placementRowSeen.add(dedupeKey)
                 allPlacementRows.push({
                   warehouse_id: wid,
                   warehouse_name: wh.name ?? null,
@@ -404,10 +423,22 @@ ipcMain.handle('ozon:syncProducts', async () => {
                 })
               }
             }
+
+            for (const part of chunk(ozonSkuList, 500)) {
+              placementApiCallCount += 1
+              const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
+              appendPlacementRows(zones)
+            }
+
+            for (const part of chunk(sellerOnlySkuList, 500)) {
+              placementApiCallCount += 1
+              const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
+              appendPlacementRows(zones)
+            }
           }
 
           if (allPlacementRows.length === 0 && placementApiCallCount > 0) {
-            placementSyncError = 'Ozon не вернул зоны размещения ни по одному SKU; прежние локальные данные по складам/зонам сохранены.'
+            placementSyncError = 'Ozon не вернул зоны размещения ни по Ozon SKU, ни по SKU продавца; прежние локальные данные по складам/зонам сохранены.'
             placementCacheKept = true
           } else {
             placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, allPlacementRows)

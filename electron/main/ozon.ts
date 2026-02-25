@@ -917,8 +917,18 @@ function extractPlacementZoneItems(json: any, warehouseId: number): OzonPlacemen
       obj?.offer_id ??
       obj?.offerId
 
-    const ozonSku = (typeof ozonSkuRaw === 'string' || typeof ozonSkuRaw === 'number') ? String(ozonSkuRaw).trim() : ''
-    const sellerSku = (typeof sellerSkuRaw === 'string' || typeof sellerSkuRaw === 'number') ? String(sellerSkuRaw).trim() : ''
+    let ozonSku = (typeof ozonSkuRaw === 'string' || typeof ozonSkuRaw === 'number') ? String(ozonSkuRaw).trim() : ''
+    let sellerSku = (typeof sellerSkuRaw === 'string' || typeof sellerSkuRaw === 'number') ? String(sellerSkuRaw).trim() : ''
+
+    // У части ответов Ozon поле `sku` может содержать SKU продавца (offer_id),
+    // а отдельное seller_sku/offer_id не приходит. Тогда нечисловой `sku`
+    // нужно трактовать как seller_sku, иначе в БД он попадёт в ozon_sku и
+    // дальше не сматчится с товарами на вкладке «Остатки».
+    if (!sellerSku && ozonSku && !/^\d+$/.test(ozonSku)) {
+      sellerSku = ozonSku
+      ozonSku = ''
+    }
+
     const canonicalSku = ozonSku || sellerSku
     if (!canonicalSku) continue
 
