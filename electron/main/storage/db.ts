@@ -10,9 +10,6 @@ const DEFAULT_LOG_RETENTION_DAYS = 30
 const MAX_JSON_LEN = 20000
 const MAX_API_JSON_LEN = 750000
 const REINSTALL_UNINSTALL_SUPPRESS_WINDOW_MS = 10 * 60 * 1000
-const GRID_COLS_SETTING_PREFIX = 'grid_cols_'
-const GRID_COLS_DATASETS = new Set(['products', 'sales', 'returns', 'stocks'])
-
 
 type AppLogType =
   | 'check_auth'
@@ -22,6 +19,17 @@ type AppLogType =
   | 'app_reinstall'
   | 'app_uninstall'
   | 'admin_settings'
+
+type GridColsDataset = 'products' | 'sales' | 'returns' | 'stocks'
+
+type GridColLayoutItem = {
+  id: string
+  w: number
+  visible: boolean
+}
+
+const GRID_COLS_DATASETS = new Set<GridColsDataset>(['products', 'sales', 'returns', 'stocks'])
+const GRID_COLS_KEY_PREFIX = 'grid_cols_layout:'
 
 function dbPath() {
   return getPersistentDbPath()
@@ -58,34 +66,6 @@ function parsePositiveInt(value: unknown, fallback: number): number {
 function normalizeRetentionDays(value: unknown): number {
   const n = parsePositiveInt(value, DEFAULT_LOG_RETENTION_DAYS)
   return Math.min(3650, Math.max(1, n))
-}
-
-function normalizeGridColsState(value: unknown): Array<{ id: string; w: number; visible: boolean }> {
-  if (!Array.isArray(value)) return []
-  const out: Array<{ id: string; w: number; visible: boolean }> = []
-  const seen = new Set<string>()
-
-  for (const row of value) {
-    if (!row || typeof row !== 'object') continue
-    const r = row as Record<string, unknown>
-    const id = String(r.id ?? '').trim()
-    if (!id || seen.has(id)) continue
-
-    const widthNum = Number(r.w)
-    const w = Number.isFinite(widthNum) ? Math.trunc(widthNum) : 0
-    if (w < 60 || w > 4000) continue
-    if (typeof r.visible !== 'boolean') continue
-
-    out.push({ id, w, visible: r.visible })
-    seen.add(id)
-    if (out.length >= 128) break
-  }
-
-  return out
-}
-
-function gridColsSettingKey(dataset: string): string {
-  return `${GRID_COLS_SETTING_PREFIX}${dataset}`
 }
 
 function safeJson(value: any): string | null {
@@ -476,32 +456,58 @@ export function dbSaveAdminSettings(input: { logRetentionDays: number }) {
   return { logRetentionDays }
 }
 
-export function dbGetGridColumns(dataset: string) {
-  const ds = String(dataset ?? '').trim()
-  if (!GRID_COLS_DATASETS.has(ds)) throw new Error('Unsupported dataset for grid columns')
 
-  const raw = getSettingValue(gridColsSettingKey(ds))
-  if (!raw) return { cols: null as null | Array<{ id: string; w: number; visible: boolean }> }
+function normalizeGridColsDataset(value: unknown): GridColsDataset | null {
+  const v = String(value ?? '').trim() as GridColsDataset
+  return GRID_COLS_DATASETS.has(v) ? v : null
+}
+
+function normalizeGridColLayoutItems(value: unknown): GridColLayoutItem[] {
+  if (!Array.isArray(value)) return []
+  const out: GridColLayoutItem[] = []
+  const seen = new Set<string>()
+
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const id = String((raw as any).id ?? '').trim()
+    if (!id || seen.has(id)) continue
+
+    const wRaw = Number((raw as any).w)
+    const w = Number.isFinite(wRaw) ? Math.max(60, Math.min(2000, Math.round(wRaw))) : 120
+    const visible = typeof (raw as any).visible === 'boolean' ? (raw as any).visible : true
+
+    out.push({ id, w, visible })
+    seen.add(id)
+    if (out.length >= 200) break
+  }
+
+  return out
+}
+
+export function dbGetGridColumns(datasetRaw: unknown): { dataset: GridColsDataset; cols: GridColLayoutItem[] | null } {
+  const dataset = normalizeGridColsDataset(datasetRaw)
+  if (!dataset) throw new Error('Некорректный набор данных для раскладки колонок')
+
+  const raw = getSettingValue(`${GRID_COLS_KEY_PREFIX}${dataset}`)
+  if (!raw) return { dataset, cols: null }
 
   try {
     const parsed = JSON.parse(raw)
-    const cols = normalizeGridColsState(parsed)
-    if (!cols.length) return { cols: null as null | Array<{ id: string; w: number; visible: boolean }> }
-    return { cols }
+    const cols = normalizeGridColLayoutItems(parsed)
+    return { dataset, cols: cols.length ? cols : null }
   } catch {
-    return { cols: null as null | Array<{ id: string; w: number; visible: boolean }> }
+    return { dataset, cols: null }
   }
 }
 
-export function dbSaveGridColumns(dataset: string, cols: unknown) {
-  const ds = String(dataset ?? '').trim()
-  if (!GRID_COLS_DATASETS.has(ds)) throw new Error('Unsupported dataset for grid columns')
+export function dbSaveGridColumns(datasetRaw: unknown, colsRaw: unknown) {
+  const dataset = normalizeGridColsDataset(datasetRaw)
+  if (!dataset) throw new Error('Некорректный набор данных для раскладки колонок')
 
-  const normalized = normalizeGridColsState(cols)
-  if (!normalized.length) throw new Error('Grid columns payload is empty or invalid')
+  const cols = normalizeGridColLayoutItems(colsRaw)
+  setSettingValue(`${GRID_COLS_KEY_PREFIX}${dataset}`, JSON.stringify(cols))
 
-  setSettingValue(gridColsSettingKey(ds), JSON.stringify(normalized))
-  return { saved: true, count: normalized.length }
+  return { dataset, savedCount: cols.length }
 }
 
 export function dbPruneLogsByRetention() {
