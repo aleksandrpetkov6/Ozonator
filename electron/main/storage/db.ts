@@ -224,6 +224,10 @@ export function ensureDb() {
       offer_id TEXT PRIMARY KEY,
       product_id INTEGER NULL,
       sku TEXT NULL,
+      ozon_sku TEXT NULL,
+      seller_sku TEXT NULL,
+      fbo_sku TEXT NULL,
+      fbs_sku TEXT NULL,
       archived INTEGER NULL,
       updated_at TEXT NOT NULL
     );
@@ -318,7 +322,14 @@ export function ensureDb() {
   add('is_visible', 'INTEGER NULL')
   add('hidden_reasons', 'TEXT NULL')
   add('created_at', 'TEXT NULL')
+  add('ozon_sku', 'TEXT NULL')
+  add('seller_sku', 'TEXT NULL')
+  add('fbo_sku', 'TEXT NULL')
+  add('fbs_sku', 'TEXT NULL')
   add('store_client_id', 'TEXT NULL')
+
+  db.exec(`UPDATE products SET ozon_sku = sku WHERE ozon_sku IS NULL AND sku IS NOT NULL`)
+  db.exec(`UPDATE products SET seller_sku = offer_id WHERE seller_sku IS NULL AND offer_id IS NOT NULL`)
 
   const logCols = new Set(
     (db.prepare('PRAGMA table_info(sync_log)').all() as any[]).map((r) => String(r.name))
@@ -587,6 +598,10 @@ export function dbUpsertProducts(items: Array<{
   offer_id: string
   product_id?: number
   sku?: string | null
+  ozon_sku?: string | null
+  seller_sku?: string | null
+  fbo_sku?: string | null
+  fbs_sku?: string | null
   barcode?: string | null
   brand?: string | null
   category?: string | null
@@ -603,13 +618,13 @@ export function dbUpsertProducts(items: Array<{
 
   const stmt = mustDb().prepare(`
     INSERT INTO products (
-      offer_id, product_id, sku,
+      offer_id, product_id, sku, ozon_sku, seller_sku, fbo_sku, fbs_sku,
       barcode, brand, category, type, name, photo_url, is_visible, hidden_reasons, created_at,
       store_client_id,
       archived, updated_at
     )
     VALUES (
-      @offer_id, @product_id, @sku,
+      @offer_id, @product_id, @sku, @ozon_sku, @seller_sku, @fbo_sku, @fbs_sku,
       @barcode, @brand, @category, @type, @name, @photo_url, @is_visible, @hidden_reasons, @created_at,
       @store_client_id,
       @archived, @updated_at
@@ -617,6 +632,10 @@ export function dbUpsertProducts(items: Array<{
     ON CONFLICT(offer_id) DO UPDATE SET
       product_id=excluded.product_id,
       sku=excluded.sku,
+      ozon_sku=excluded.ozon_sku,
+      seller_sku=excluded.seller_sku,
+      fbo_sku=excluded.fbo_sku,
+      fbs_sku=excluded.fbs_sku,
       barcode=excluded.barcode,
       brand=excluded.brand,
       category=excluded.category,
@@ -644,6 +663,24 @@ export function dbUpsertProducts(items: Array<{
         sku: (() => {
           const sku = r?.sku == null ? '' : String(r.sku).trim()
           return sku || null
+        })(),
+        ozon_sku: (() => {
+          const v = r?.ozon_sku ?? r?.sku
+          const s = v == null ? '' : String(v).trim()
+          return s || null
+        })(),
+        seller_sku: (() => {
+          const v = r?.seller_sku ?? r?.offer_id
+          const s = v == null ? '' : String(v).trim()
+          return s || null
+        })(),
+        fbo_sku: (() => {
+          const s = r?.fbo_sku == null ? '' : String(r.fbo_sku).trim()
+          return s || null
+        })(),
+        fbs_sku: (() => {
+          const s = r?.fbs_sku == null ? '' : String(r.fbs_sku).trim()
+          return s || null
         })(),
         barcode: r.barcode ?? null,
         brand: r.brand ?? null,
@@ -743,6 +780,10 @@ export function dbGetStockViewRows(storeClientId?: string | null): StockViewRow[
         offer_id,
         product_id,
         sku,
+        ozon_sku,
+        seller_sku,
+        fbo_sku,
+        fbs_sku,
         barcode,
         brand,
         category,
@@ -764,6 +805,10 @@ export function dbGetStockViewRows(storeClientId?: string | null): StockViewRow[
         offer_id,
         product_id,
         sku,
+        ozon_sku,
+        seller_sku,
+        fbo_sku,
+        fbs_sku,
         barcode,
         brand,
         category,
@@ -895,6 +940,10 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
         offer_id,
         product_id,
         sku,
+        ozon_sku,
+        seller_sku,
+        fbo_sku,
+        fbs_sku,
         barcode,
         brand,
         category,
@@ -918,6 +967,10 @@ export function dbGetProducts(storeClientId?: string | null): ProductRow[] {
       offer_id,
       product_id,
       sku,
+      ozon_sku,
+      seller_sku,
+      fbo_sku,
+      fbs_sku,
       barcode,
       brand,
       category,
