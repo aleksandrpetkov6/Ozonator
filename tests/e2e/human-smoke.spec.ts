@@ -232,21 +232,65 @@ async function installE2EMockApi(page: Page): Promise<void> {
       barcode: `460000000${String(i).padStart(4, '0')}`,
       is_visible: true,
       visible: true,
+      hidden_reasons: i % 11 === 0 ? 'no_stock' : '',
+      created_at: new Date(Date.now() - i * 3_600_000).toISOString(),
+      updated_at: new Date(Date.now() - i * 1_800_000).toISOString(),
       price: 100 + (i % 50),
       stock: 10 + (i % 40),
       quantity: 10 + (i % 40),
     })));
 
+    const salesRows = attachListAliases(Array.from({ length: 240 }, (_, i) => ({
+      ...products[i],
+      offer_id: `sale_offer_${i + 1}`,
+      name: `Продажа ${i + 1}`,
+      created_at: new Date(Date.now() - i * 86_400_000).toISOString(),
+      updated_at: new Date(Date.now() - i * 43_200_000).toISOString(),
+      hidden_reasons: '',
+      is_visible: true,
+    })));
+
+    const returnsRows = attachListAliases(Array.from({ length: 160 }, (_, i) => ({
+      ...products[(i + 20) % products.length],
+      offer_id: `return_offer_${i + 1}`,
+      name: `Возврат ${i + 1}`,
+      created_at: new Date(Date.now() - i * 172_800_000).toISOString(),
+      updated_at: new Date(Date.now() - i * 86_400_000).toISOString(),
+      hidden_reasons: i % 5 === 0 ? 'archived' : '',
+      is_visible: i % 5 !== 0,
+    })));
+
+    const stocksRows = attachListAliases(
+      Array.from({ length: 140 }, (_, i) => {
+        const base = products[i % products.length] as any;
+        const zones = (i % 9 === 0)
+          ? ['A-01', 'B-07']
+          : [`${['A', 'B', 'C'][i % 3]}-${String((i % 18) + 1).padStart(2, '0')}`];
+        return zones.map((zone, zIdx) => ({
+          ...base,
+          offer_id: `stock_offer_${i + 1}`,
+          name: `Остаток ${i + 1}`,
+          warehouse_id: 100 + ((i + zIdx) % 3),
+          warehouse_name: ['Москва', 'СПб', 'Казань'][(i + zIdx) % 3],
+          placement_zone: zone,
+          hidden_reasons: '',
+          is_visible: true,
+        }));
+      }).flat(),
+    );
+
     const logs = attachListAliases(Array.from({ length: 120 }, (_, i) => ({
       id: i + 1,
       action: i % 2 ? 'sync_products' : 'check_auth',
       type: i % 2 ? 'sync_products' : 'check_auth',
-      status: i % 7 ? 'ok' : 'warn',
+      status: i % 7 ? 'success' : 'error',
       level: i % 7 ? 'info' : 'warn',
       started_at: new Date(Date.now() - i * 60_000).toISOString(),
       finished_at: new Date(Date.now() - i * 60_000 + 15_000).toISOString(),
       created_at: new Date(Date.now() - i * 60_000).toISOString(),
       timestamp: new Date(Date.now() - i * 60_000).toISOString(),
+      items_count: (i % 15) + 1,
+      meta: JSON.stringify({ added: i % 5, updated: (i % 15) + 1 }),
       count: (i % 15) + 1,
       message: `E2E log row ${i + 1}`,
       details: `E2E log row ${i + 1}`,
@@ -276,26 +320,41 @@ async function installE2EMockApi(page: Page): Promise<void> {
     }
 
     const productsResponse = () => ({ ok: true, products: attachListAliases([...products]) });
+    const salesResponse = () => ({ ok: true, rows: attachListAliases([...salesRows]) });
+    const returnsResponse = () => ({ ok: true, rows: attachListAliases([...returnsRows]) });
+    const stocksResponse = () => ({ ok: true, rows: attachListAliases([...stocksRows]) });
     const logsResponse = () => ({ ok: true, logs: attachListAliases([...logs]) });
+    const secretsResponse = () => ({ ok: true, secrets: { clientId: secrets.clientId, apiKey: secrets.apiKey, storeName: secrets.storeName } });
+    const secretsStatusResponse = () => ({ ok: true, hasSecrets: true });
+    const adminSettingsResponse = () => ({ ok: true, logRetentionDays: 30 });
 
     const byName = (rawName: string) => {
       const name = String(rawName || '').toLowerCase();
 
       if (/^(on|subscribe)/.test(name)) return () => () => {};
 
+      if (/getsales/.test(name)) return salesResponse();
+      if (/getreturns/.test(name)) return returnsResponse();
+      if (/getstocks/.test(name)) return stocksResponse();
       if (/^(data:)?(get|list|load)?products?$/.test(name) || /(data:getproducts|data:listproducts|data:loadproducts)/.test(name)) {
         return productsResponse();
       }
       if (/^(data:)?(get|list|load)?(synclogs?|logs?|history)$/.test(name) || /(data:getsynclog|data:getlogs|data:gethistory)/.test(name)) {
         return logsResponse();
       }
+      if (/secretsstatus/.test(name)) return secretsStatusResponse();
+      if (/getadminsettings/.test(name)) return adminSettingsResponse();
+      if (/saveadminsettings/.test(name)) return adminSettingsResponse();
+      if (/loadsecrets|getsecrets/.test(name)) return secretsResponse();
+      if (/savesecrets/.test(name)) return { ok: true };
+      if (/deletesecrets/.test(name)) return { ok: true };
 
       if (/^net:?check$/.test(name)) return { ok: true, online: true };
-      if (/(secret|cred|token|config|setting)/.test(name)) return { ...secrets };
       if (/(auth|login|check)/.test(name)) return { ok: true, authorized: true, storeName: 'E2E Store' };
       if (/(sync|refresh|reload)/.test(name)) return { ok: true, count: products.length, itemsCount: products.length, items: attachListAliases([...products]), products: attachListAliases([...products]) };
-      if (/(logs?|history|journal|sync(log|history|run)?s?)/.test(name)) return attachListAliases([...logs]);
-      if (/(products?|catalog|items?|sku)/.test(name)) return attachListAliases([...products]);
+      if (/(logs?|history|journal|sync(log|history|run)?s?)/.test(name)) return logsResponse();
+      if (/(products?|catalog|items?|sku)/.test(name)) return productsResponse();
+      if (/(secret|cred|token|config|setting)/.test(name)) return secretsResponse();
       if (/(fetch|load)/.test(name)) return { ok: true };
 
       return null;
@@ -326,20 +385,27 @@ async function installE2EMockApi(page: Page): Promise<void> {
       getProducts: async () => productsResponse(),
       listProducts: async () => productsResponse(),
       loadProducts: async () => productsResponse(),
+      getSales: async () => salesResponse(),
+      getReturns: async () => returnsResponse(),
+      getStocks: async () => stocksResponse(),
       getSyncLog: async () => logsResponse(),
       getSyncLogs: async () => logsResponse(),
       listLogs: async () => logsResponse(),
       getLogs: async () => logsResponse(),
       getHistory: async () => logsResponse(),
       listHistory: async () => logsResponse(),
-      loadSecrets: async () => ({ ...secrets }),
-      getSecrets: async () => ({ ...secrets }),
+      loadSecrets: async () => secretsResponse(),
+      getSecrets: async () => secretsResponse(),
       saveSecrets: async () => ({ ok: true }),
+      deleteSecrets: async () => ({ ok: true }),
+      secretsStatus: async () => secretsStatusResponse(),
+      getAdminSettings: async () => adminSettingsResponse(),
+      saveAdminSettings: async () => adminSettingsResponse(),
       testAuth: async () => ({ ok: true, storeName: 'E2E Store' }),
       checkAuth: async () => ({ ok: true, authorized: true }),
       syncProducts: async () => ({ ok: true, count: products.length, itemsCount: products.length, products: attachListAliases([...products]) }),
-      netCheck: async () => ({ online: true }),
-      'net:check': async () => ({ online: true }),
+      netCheck: async () => ({ ok: true, online: true }),
+      'net:check': async () => ({ ok: true, online: true }),
       invoke: async (channel: string) => byName(channel),
       on: () => () => {},
       send: () => undefined,
@@ -451,6 +517,136 @@ async function clickByTexts(page: Page, patterns: RegExp[], maxClicks = 2): Prom
     }
   }
   return clicks;
+}
+
+
+type TabShotConfig = {
+  slug: string;
+  route: string;
+  title: string;
+  selectors?: string[];
+  label?: RegExp;
+  optional?: boolean;
+};
+
+type TabShotResult = {
+  slug: string;
+  title: string;
+  route: string;
+  screenshotPath?: string;
+  ok: boolean;
+  method?: 'selector' | 'label' | 'hash';
+  note?: string;
+};
+
+function ensureDirForFile(filePath: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+async function clickByLabel(page: Page, label: RegExp): Promise<boolean> {
+  const variants = [
+    page.getByRole('link', { name: label }).first(),
+    page.getByRole('button', { name: label }).first(),
+    page.getByRole('tab', { name: label }).first(),
+    page.getByText(label).first(),
+  ];
+  for (const loc of variants) {
+    if (await safeClick(loc)) return true;
+  }
+  return false;
+}
+
+async function waitTabPaint(page: Page, timeoutMs = 4_000): Promise<void> {
+  await page.waitForFunction(() => {
+    const body = document.body;
+    if (!body) return false;
+    const textLen = (body.innerText || '').trim().length;
+    const hasMain = !!document.querySelector('.pageArea, .container, .card, table, [role="table"], nav');
+    return textLen > 20 || hasMain;
+  }, { timeout: timeoutMs }).catch(() => {});
+  await page.waitForTimeout(250);
+}
+
+async function captureAllTabScreenshots(page: Page): Promise<TabShotResult[]> {
+  const tabs: TabShotConfig[] = [
+    { slug: 'products', route: '/products', title: 'Товары', label: /товары|products/i },
+    { slug: 'sales', route: '/sales', title: 'Продажи', label: /продаж|sales/i },
+    { slug: 'returns', route: '/returns', title: 'Возвраты', label: /возврат|returns/i },
+    { slug: 'forecast-demand', route: '/forecast-demand', title: 'Прогноз спроса', label: /прогноз\s*спроса|forecast/i },
+    { slug: 'stocks', route: '/stocks', title: 'Остатки', label: /остатк|stocks/i },
+    { slug: 'logs', route: '/logs', title: 'Лог', selectors: ['a[title="Лог"]'], label: /лог|журнал|logs?/i },
+    { slug: 'settings', route: '/settings', title: 'Настройки', selectors: ['a[title="Настройки"]'], label: /настро/i },
+    { slug: 'admin', route: '/admin', title: 'Админ', selectors: ['a[title="Админ"]'], label: /админ|admin/i },
+  ];
+
+  const results: TabShotResult[] = [];
+
+  for (let i = 0; i < tabs.length; i += 1) {
+    const tab = tabs[i];
+    let method: 'selector' | 'label' | 'hash' = 'hash';
+    let clicked = false;
+
+    if (tab.selectors) {
+      for (const selector of tab.selectors) {
+        const loc = page.locator(selector).first();
+        if (await safeClick(loc)) {
+          clicked = true;
+          method = 'selector';
+          break;
+        }
+      }
+    }
+
+    if (!clicked && tab.label) {
+      clicked = await clickByLabel(page, tab.label);
+      if (clicked) method = 'label';
+    }
+
+    if (!clicked) {
+      await page.evaluate((route) => {
+        try {
+          window.location.hash = `#${route}`;
+        } catch {
+          // ignore
+        }
+      }, tab.route);
+      method = 'hash';
+    }
+
+    await page.waitForFunction((route) => {
+      const h = window.location.hash || '';
+      return h.includes(route) || (route === '/products' && (h === '' || h === '#/' || h === '#'));
+    }, tab.route, { timeout: 2500 }).catch(() => {});
+
+    await waitTabPaint(page);
+
+    const filePath = path.resolve('test-results', 'tab-screens', `${String(i + 1).padStart(2, '0')}-${tab.slug}.png`);
+    ensureDirForFile(filePath);
+
+    try {
+      await page.screenshot({ path: filePath, fullPage: true });
+      await test.info().attach(`tab-${tab.slug}`, {
+        path: filePath,
+        contentType: 'image/png',
+      });
+      results.push({
+        slug: tab.slug,
+        title: tab.title,
+        route: tab.route,
+        screenshotPath: path.relative(process.cwd(), filePath).replace(/\\/g, '/'),
+        ok: true,
+        method,
+      });
+    } catch (e: any) {
+      const note = e?.message ?? String(e);
+      results.push({ slug: tab.slug, title: tab.title, route: tab.route, ok: false, method, note });
+      if (!tab.optional) {
+        throw new Error(`Не удалось сделать скрин вкладки «${tab.title}»: ${note}`);
+      }
+    }
+  }
+
+  return results;
 }
 
 type ScrollProbe = {
@@ -925,6 +1121,10 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
   const visibleText = (await page.locator('body').innerText()).trim();
   expect(visibleText.length).toBeGreaterThan(0);
 
+  const tabScreenshots = await test.step('capture screenshots of all tabs', async () => {
+    return captureAllTabScreenshots(page);
+  });
+
   const finalProbe = await probePrimaryScrollable(page);
   const debugPayload = {
     ui,
@@ -933,6 +1133,7 @@ test('human smoke: UI usage (aggressive scrollbar drag/wheel, columns, logs, cat
     productsReadyCount,
     verticalDebug,
     finalProbe,
+    tabScreenshots,
     pageErrors,
     consoleErrors: consoleErrors.slice(0, 20),
     flowNotes,
