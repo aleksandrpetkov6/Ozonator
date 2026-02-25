@@ -550,31 +550,19 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
           if (colId === 'is_visible') return visibilityText(p)
           if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
           if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
-    if (colId === 'ozon_sku') {
-      const v = p.ozon_sku ?? p.sku
-      return (v == null || String(v).trim() === '') ? '-' : String(v)
-    }
-    if (colId === 'seller_sku') {
-      const v = p.seller_sku ?? p.offer_id
-      return (v == null || String(v).trim() === '') ? '-' : String(v)
-    }
-    if (colId === 'fbo_sku' || colId === 'fbs_sku') {
-      const v = (p as any)[colId]
-      return (v == null || String(v).trim() === '') ? '-' : String(v)
-    }
           if (colId === 'ozon_sku') {
-      const v = p.ozon_sku ?? p.sku
-      return (v == null || String(v).trim() === '') ? '-' : String(v)
-    }
-    if (colId === 'seller_sku') {
-      const v = p.seller_sku ?? p.offer_id
-      return (v == null || String(v).trim() === '') ? '-' : String(v)
-    }
-    if (colId === 'fbo_sku' || colId === 'fbs_sku') {
-      const v = (p as any)[colId]
-      return (v == null || String(v).trim() === '') ? '-' : String(v)
-    }
-    if (colId === 'photo_url') return ''
+            const v = p.ozon_sku ?? p.sku
+            return (v == null || String(v).trim() === '') ? '-' : String(v)
+          }
+          if (colId === 'seller_sku') {
+            const v = p.seller_sku ?? p.offer_id
+            return (v == null || String(v).trim() === '') ? '-' : String(v)
+          }
+          if (colId === 'fbo_sku' || colId === 'fbs_sku') {
+            const v = (p as any)[colId]
+            return (v == null || String(v).trim() === '') ? '-' : String(v)
+          }
+          if (colId === 'photo_url') return ''
           return toText((p as any)[colId])
         })
         .join(' ')
