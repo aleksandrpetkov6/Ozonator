@@ -32,6 +32,9 @@ declare global {
       getAdminSettings: () => Promise<{ ok: boolean; error?: string; logRetentionDays: number }>
       saveAdminSettings: (payload: { logRetentionDays: number }) => Promise<{ ok: boolean; error?: string; logRetentionDays: number }>
 
+      getGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks') => Promise<{ ok: boolean; error?: string; cols: Array<{ id: string; w: number; visible: boolean }> | null }>
+      saveGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks', cols: Array<{ id: string; w: number; visible: boolean }>) => Promise<{ ok: boolean; error?: string; saved?: boolean; count?: number }>
+
       testAuth: () => Promise<{ ok: boolean; storeName?: string | null; error?: string }>
       syncProducts: () => Promise<{ ok: boolean; itemsCount?: number; pages?: number; placementRowsCount?: number; placementSyncError?: string | null; error?: string }>
 
