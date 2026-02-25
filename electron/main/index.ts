@@ -1,10 +1,40 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
+import { appendFileSync, mkdirSync } from 'fs'
 import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 
 let mainWindow: BrowserWindow | null = null
+
+let startupShowTimer: NodeJS.Timeout | null = null
+
+function startupLog(...args: any[]) {
+  try {
+    const dir = app?.isReady?.() ? app.getPath('userData') : app.getPath('temp')
+    mkdirSync(dir, { recursive: true })
+    const line = `[${new Date().toISOString()}] ` + args.map((a) => {
+      try { return typeof a === 'string' ? a : JSON.stringify(a) } catch { return String(a) }
+    }).join(' ') + '\n'
+    appendFileSync(join(dir, 'ozonator-startup.log'), line, 'utf8')
+  } catch {}
+  try { console.log('[startup]', ...args) } catch {}
+}
+
+function safeShowMainWindow(reason: string) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    startupLog('safeShowMainWindow', { reason, visible: mainWindow.isVisible() })
+    if (!mainWindow.isVisible()) {
+      try { mainWindow.show() } catch {}
+    }
+    try { mainWindow.focus() } catch {}
+    try { mainWindow.maximize() } catch {}
+  } catch (e: any) {
+    startupLog('safeShowMainWindow.error', e?.message ?? String(e))
+  }
+}
+
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = []
@@ -12,22 +42,21 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out
 }
 
+
 function createWindow() {
+  startupLog('createWindow.begin', { packaged: app.isPackaged, appPath: app.getAppPath(), __dirname })
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 760,
     minWidth: 980,
     minHeight: 620,
     title: 'Озонатор',
-
-    // чтобы окно не «моргало»
+    // важно: стартуем скрыто, но с fail-safe показом по таймеру
     show: false,
     backgroundColor: '#F5F5F7',
     autoHideMenuBar: true,
-
-    // macOS-like titlebar overlay (на Windows 11 выглядит аккуратно)
     titleBarOverlay: { color: '#F5F5F7', symbolColor: '#1d1d1f', height: 34 },
-
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -35,38 +64,80 @@ function createWindow() {
     },
   })
 
+  if (startupShowTimer) {
+    clearTimeout(startupShowTimer)
+    startupShowTimer = null
+  }
+  startupShowTimer = setTimeout(() => safeShowMainWindow('show-timeout-fallback'), 2500)
+
   mainWindow.once('ready-to-show', () => {
+    startupLog('event.ready-to-show')
+    safeShowMainWindow('ready-to-show')
+  })
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    startupLog('event.did-finish-load', { url: mainWindow?.webContents?.getURL?.() })
+    safeShowMainWindow('did-finish-load')
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    startupLog('event.did-fail-load', { code, desc, url, isMainFrame })
     try {
-      // Стартуем развернутыми на весь экран (maximize), но не в fullscreen/kiosk.
-      mainWindow?.maximize()
-      mainWindow?.show()
+      if (isMainFrame && mainWindow && !mainWindow.isDestroyed()) {
+        const html = `<!doctype html><html><body style="font-family:Segoe UI,sans-serif;padding:16px">
+          <h3>Озонатор не смог загрузить интерфейс</h3>
+          <div>Причина: ${String(desc || 'did-fail-load')} (code ${String(code)})</div>
+          <div style="margin-top:8px;color:#555">Подробности в файле ozonator-startup.log в папке данных приложения.</div>
+        </body></html>`
+        mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => {})
+      }
     } catch {}
+    safeShowMainWindow('did-fail-load')
   })
 
-  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
-    console.error('did-fail-load', { code, desc, url })
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    startupLog('event.render-process-gone', details)
+    safeShowMainWindow('render-process-gone')
   })
 
-  // В этом проекте dev-url задаётся как ELECTRON_RENDERER_URL.
-  // На случай другой сборки оставляем fallback на VITE_DEV_SERVER_URL.
-  const devUrl = process.env.ELECTRON_RENDERER_URL || process.env.VITE_DEV_SERVER_URL || (!app.isPackaged ? "http://localhost:5173/" : null)
+  mainWindow.on('unresponsive', () => {
+    startupLog('event.window-unresponsive')
+  })
+
+  mainWindow.on('closed', () => {
+    startupLog('event.window-closed')
+    if (startupShowTimer) {
+      clearTimeout(startupShowTimer)
+      startupShowTimer = null
+    }
+    mainWindow = null
+  })
+
+  const devUrl = process.env.ELECTRON_RENDERER_URL || process.env.VITE_DEV_SERVER_URL || (!app.isPackaged ? 'http://localhost:5173/' : null)
+  startupLog('renderer.target', { devUrl, packaged: app.isPackaged })
+
   if (devUrl) {
-    mainWindow.loadURL(devUrl)
-    mainWindow.webContents.openDevTools({ mode: 'detach' })
+    mainWindow.loadURL(devUrl).catch((e) => startupLog('loadURL.error', e?.message ?? String(e)))
+    try { mainWindow.webContents.openDevTools({ mode: 'detach' }) } catch {}
   } else {
-    // В проде renderer лежит в out/renderer/index.html
-    mainWindow.loadFile(join(app.getAppPath(), 'out/renderer/index.html'))
+    const rendererFile = join(app.getAppPath(), 'out/renderer/index.html')
+    startupLog('renderer.file', rendererFile)
+    mainWindow.loadFile(rendererFile).catch((e) => startupLog('loadFile.error', e?.message ?? String(e)))
   }
 
   nativeTheme.themeSource = 'light'
 }
 
 app.whenReady().then(() => {
-  if (!safeStorage.isEncryptionAvailable()) {
-    console.warn('safeStorage encryption is not available on this machine.')
-  }
+  try {
+    startupLog('app.whenReady')
+    if (!safeStorage.isEncryptionAvailable()) {
+      console.warn('safeStorage encryption is not available on this machine.')
+      startupLog('safeStorage.unavailable')
+    }
 
-  ensureDb()
+    ensureDb()
+    startupLog('ensureDb.ok')
   setOzonApiCaptureHook((evt) => {
     dbRecordApiRawResponse({
       storeClientId: evt.storeClientId,
@@ -80,12 +151,41 @@ app.whenReady().then(() => {
       fetchedAt: evt.fetchedAt,
     })
   })
-  dbIngestLifecycleMarkers({ appVersion: app.getVersion() })
-  createWindow()
+    dbIngestLifecycleMarkers({ appVersion: app.getVersion() })
+    startupLog('dbIngestLifecycleMarkers.ok', { version: app.getVersion() })
+    createWindow()
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+    app.on('activate', () => {
+      startupLog('app.activate', { windows: BrowserWindow.getAllWindows().length })
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      else safeShowMainWindow('app-activate')
+    })
+  } catch (e: any) {
+    startupLog('fatal.startup', e?.stack ?? e?.message ?? String(e))
+    try {
+      dialog.showErrorBox('Озонатор — ошибка запуска', String(e?.message ?? e))
+    } catch {}
+    try {
+      if (!mainWindow) {
+        mainWindow = new BrowserWindow({ width: 900, height: 640, show: true, autoHideMenuBar: true })
+        const html = `<!doctype html><html><body style="font-family:Segoe UI,sans-serif;padding:16px">
+          <h3>Озонатор не запустился</h3>
+          <pre style="white-space:pre-wrap">${String(e?.stack ?? e?.message ?? e)}</pre>
+          <div style="color:#555">Подробности: ozonator-startup.log в папке данных приложения.</div>
+        </body></html>`
+        mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch(() => {})
+      }
+    } catch {}
+  }
+})
+
+
+process.on('uncaughtException', (e: any) => {
+  startupLog('process.uncaughtException', e?.stack ?? e?.message ?? String(e))
+})
+
+process.on('unhandledRejection', (e: any) => {
+  startupLog('process.unhandledRejection', e as any)
 })
 
 app.on('window-all-closed', () => {
