@@ -286,8 +286,6 @@ export function ensureDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_product_placements_store_sku ON product_placements(store_client_id, sku);
-    CREATE INDEX IF NOT EXISTS idx_product_placements_store_ozon_sku ON product_placements(store_client_id, ozon_sku);
-    CREATE INDEX IF NOT EXISTS idx_product_placements_store_seller_sku ON product_placements(store_client_id, seller_sku);
   `)
 
   const cols = new Set(
