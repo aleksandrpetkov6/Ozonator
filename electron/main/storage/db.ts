@@ -278,12 +278,16 @@ export function ensureDb() {
       warehouse_id INTEGER NOT NULL,
       warehouse_name TEXT NULL,
       sku TEXT NOT NULL,
+      ozon_sku TEXT NULL,
+      seller_sku TEXT NULL,
       placement_zone TEXT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (store_client_id, warehouse_id, sku)
     );
 
     CREATE INDEX IF NOT EXISTS idx_product_placements_store_sku ON product_placements(store_client_id, sku);
+    CREATE INDEX IF NOT EXISTS idx_product_placements_store_ozon_sku ON product_placements(store_client_id, ozon_sku);
+    CREATE INDEX IF NOT EXISTS idx_product_placements_store_seller_sku ON product_placements(store_client_id, seller_sku);
   `)
 
   const cols = new Set(
@@ -313,6 +317,18 @@ export function ensureDb() {
   if (!logCols.has('store_client_id')) {
     db.exec(`ALTER TABLE sync_log ADD COLUMN store_client_id TEXT NULL;`)
   }
+
+  const placementCols = new Set(
+    (db.prepare('PRAGMA table_info(product_placements)').all() as any[]).map((r) => String(r.name))
+  )
+  if (!placementCols.has('ozon_sku')) {
+    db.exec(`ALTER TABLE product_placements ADD COLUMN ozon_sku TEXT NULL;`)
+  }
+  if (!placementCols.has('seller_sku')) {
+    db.exec(`ALTER TABLE product_placements ADD COLUMN seller_sku TEXT NULL;`)
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_product_placements_store_ozon_sku ON product_placements(store_client_id, ozon_sku);`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_product_placements_store_seller_sku ON product_placements(store_client_id, seller_sku);`)
 
   if (getSettingValue('log_retention_days') == null) {
     setSettingValue('log_retention_days', String(DEFAULT_LOG_RETENTION_DAYS))
@@ -588,7 +604,9 @@ export function dbUpsertProducts(items: Array<{
 export function dbReplaceProductPlacementsForStore(storeClientId: string, items: Array<{
   warehouse_id: number
   warehouse_name?: string | null
-  sku: string
+  sku?: string | null
+  ozon_sku?: string | null
+  seller_sku?: string | null
   placement_zone?: string | null
 }>): number {
   const cleanStore = String(storeClientId ?? '').trim()
@@ -598,12 +616,14 @@ export function dbReplaceProductPlacementsForStore(storeClientId: string, items:
   const delStmt = mustDb().prepare('DELETE FROM product_placements WHERE store_client_id = ?')
   const insStmt = mustDb().prepare(`
     INSERT INTO product_placements (
-      store_client_id, warehouse_id, warehouse_name, sku, placement_zone, updated_at
+      store_client_id, warehouse_id, warehouse_name, sku, ozon_sku, seller_sku, placement_zone, updated_at
     ) VALUES (
-      @store_client_id, @warehouse_id, @warehouse_name, @sku, @placement_zone, @updated_at
+      @store_client_id, @warehouse_id, @warehouse_name, @sku, @ozon_sku, @seller_sku, @placement_zone, @updated_at
     )
     ON CONFLICT(store_client_id, warehouse_id, sku) DO UPDATE SET
       warehouse_name = excluded.warehouse_name,
+      ozon_sku = excluded.ozon_sku,
+      seller_sku = excluded.seller_sku,
       placement_zone = excluded.placement_zone,
       updated_at = excluded.updated_at
   `)
@@ -611,7 +631,10 @@ export function dbReplaceProductPlacementsForStore(storeClientId: string, items:
   const tx = mustDb().transaction((rows: any[]) => {
     delStmt.run(cleanStore)
     for (const r of rows) {
-      const sku = String(r?.sku ?? '').trim()
+      const ozonSku = String(r?.ozon_sku ?? '').trim() || null
+      const sellerSku = String(r?.seller_sku ?? '').trim() || null
+      const legacySku = String(r?.sku ?? '').trim() || null
+      const sku = ozonSku || sellerSku || legacySku
       const wid = Number(r?.warehouse_id)
       if (!sku || !Number.isFinite(wid)) continue
       insStmt.run({
@@ -619,6 +642,8 @@ export function dbReplaceProductPlacementsForStore(storeClientId: string, items:
         warehouse_id: Math.trunc(wid),
         warehouse_name: r?.warehouse_name == null ? null : String(r.warehouse_name),
         sku,
+        ozon_sku: ozonSku,
+        seller_sku: sellerSku,
         placement_zone: r?.placement_zone == null ? null : String(r.placement_zone),
         updated_at: now,
       })
@@ -634,7 +659,7 @@ export function dbReplaceProductPlacementsForStore(storeClientId: string, items:
 export function dbGetProductPlacements(storeClientId?: string | null): ProductPlacementRow[] {
   if (storeClientId) {
     return mustDb().prepare(`
-      SELECT store_client_id, warehouse_id, warehouse_name, sku, placement_zone, updated_at
+      SELECT store_client_id, warehouse_id, warehouse_name, sku, ozon_sku, seller_sku, placement_zone, updated_at
       FROM product_placements
       WHERE store_client_id = ?
       ORDER BY sku COLLATE NOCASE ASC, warehouse_id ASC
@@ -642,7 +667,7 @@ export function dbGetProductPlacements(storeClientId?: string | null): ProductPl
   }
 
   return mustDb().prepare(`
-    SELECT store_client_id, warehouse_id, warehouse_name, sku, placement_zone, updated_at
+    SELECT store_client_id, warehouse_id, warehouse_name, sku, ozon_sku, seller_sku, placement_zone, updated_at
     FROM product_placements
     ORDER BY store_client_id ASC, sku COLLATE NOCASE ASC, warehouse_id ASC
   `).all() as any
@@ -694,13 +719,13 @@ export function dbGetStockViewRows(storeClientId?: string | null): StockViewRow[
 
   const placementsSql = storeClientId
     ? `
-      SELECT store_client_id, warehouse_id, warehouse_name, sku, placement_zone
+      SELECT store_client_id, warehouse_id, warehouse_name, sku, ozon_sku, seller_sku, placement_zone
       FROM product_placements
       WHERE store_client_id = ?
       ORDER BY sku COLLATE NOCASE ASC, COALESCE(warehouse_name, '') COLLATE NOCASE ASC, warehouse_id ASC
     `
     : `
-      SELECT store_client_id, warehouse_id, warehouse_name, sku, placement_zone
+      SELECT store_client_id, warehouse_id, warehouse_name, sku, ozon_sku, seller_sku, placement_zone
       FROM product_placements
       ORDER BY COALESCE(store_client_id, '') ASC, sku COLLATE NOCASE ASC, COALESCE(warehouse_name, '') COLLATE NOCASE ASC, warehouse_id ASC
     `
@@ -713,23 +738,57 @@ export function dbGetStockViewRows(storeClientId?: string | null): StockViewRow[
     ? mustDb().prepare(placementsSql).all(storeClientId)
     : mustDb().prepare(placementsSql).all()) as ProductPlacementRow[]
 
-  const placementsBySku = new Map<string, ProductPlacementRow[]>()
+  const placementsByOzonSku = new Map<string, ProductPlacementRow[]>()
+  const placementsBySellerSku = new Map<string, ProductPlacementRow[]>()
   for (const row of placementRows) {
-    const sku = String(row?.sku ?? '').trim()
-    if (!sku) continue
     const storeKey = String(row?.store_client_id ?? '').trim()
-    const mapKey = `${storeKey}::${sku}`
-    const list = placementsBySku.get(mapKey)
-    if (list) list.push(row)
-    else placementsBySku.set(mapKey, [row])
+    const legacySku = String(row?.sku ?? '').trim()
+    const explicitOzonSku = String((row as any)?.ozon_sku ?? '').trim()
+    const explicitSellerSku = String((row as any)?.seller_sku ?? '').trim()
+    const ozonSku = explicitOzonSku || (/^\d+$/.test(legacySku) ? legacySku : '')
+    const sellerSku = explicitSellerSku || (legacySku && legacySku !== ozonSku ? legacySku : '')
+
+    if (ozonSku) {
+      const mapKey = `${storeKey}::${ozonSku}`
+      const list = placementsByOzonSku.get(mapKey)
+      if (list) list.push(row)
+      else placementsByOzonSku.set(mapKey, [row])
+    }
+
+    if (sellerSku) {
+      const mapKey = `${storeKey}::${sellerSku}`
+      const list = placementsBySellerSku.get(mapKey)
+      if (list) list.push(row)
+      else placementsBySellerSku.set(mapKey, [row])
+    }
   }
 
   const out: StockViewRow[] = []
   for (const product of products) {
-    const sku = String(product?.sku ?? '').trim()
+    const ozonSku = String(product?.sku ?? '').trim()
+    const sellerSku = String(product?.offer_id ?? '').trim()
     const storeKey = String(product?.store_client_id ?? '').trim()
-    const mapKey = `${storeKey}::${sku}`
-    const placements = sku ? (placementsBySku.get(mapKey) ?? []) : []
+
+    const matched: ProductPlacementRow[] = []
+    const seenPlacement = new Set<string>()
+    const appendUnique = (rows: ProductPlacementRow[]) => {
+      for (const row of rows) {
+        const k = [
+          String(row?.store_client_id ?? ''),
+          String(row?.warehouse_id ?? ''),
+          String((row as any)?.ozon_sku ?? row?.sku ?? ''),
+          String((row as any)?.seller_sku ?? ''),
+          String(row?.placement_zone ?? ''),
+        ].join('::')
+        if (seenPlacement.has(k)) continue
+        seenPlacement.add(k)
+        matched.push(row)
+      }
+    }
+
+    if (ozonSku) appendUnique(placementsByOzonSku.get(`${storeKey}::${ozonSku}`) ?? [])
+    if (sellerSku) appendUnique(placementsBySellerSku.get(`${storeKey}::${sellerSku}`) ?? [])
+    const placements = matched
 
     if (placements.length === 0) {
       out.push({
