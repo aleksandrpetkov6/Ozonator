@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
 import { appendFileSync, mkdirSync } from 'fs'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbGetGridColumns, dbSaveGridColumns, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 
@@ -255,6 +255,24 @@ ipcMain.handle('admin:saveSettings', async (_e, payload: { logRetentionDays?: nu
   try {
     const saved = dbSaveAdminSettings({ logRetentionDays: Number(payload?.logRetentionDays) })
     return { ok: true, ...saved }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
+})
+
+ipcMain.handle('ui:getGridColumns', async (_e, dataset: string) => {
+  try {
+    const data = dbGetGridColumns(dataset)
+    return { ok: true, cols: data.cols }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), cols: null }
+  }
+})
+
+ipcMain.handle('ui:saveGridColumns', async (_e, payload: { dataset?: string; cols?: unknown }) => {
+  try {
+    const res = dbSaveGridColumns(String(payload?.dataset ?? ''), payload?.cols ?? null)
+    return { ok: true, ...res }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) }
   }
