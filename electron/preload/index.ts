@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   syncProducts: () => ipcRenderer.invoke('ozon:syncProducts'),
 
   getProducts: () => ipcRenderer.invoke('data:getProducts'),
-  getSales: () => ipcRenderer.invoke('data:getSales'),
+  getSales: (period?: { from?: string; to?: string }) => ipcRenderer.invoke('data:getSales', { period: period ?? null }),
   getReturns: () => ipcRenderer.invoke('data:getReturns'),
   getStocks: () => ipcRenderer.invoke('data:getStocks'),
   getGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks') => ipcRenderer.invoke('ui:getGridColumns', { dataset }),
