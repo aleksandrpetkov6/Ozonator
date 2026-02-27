@@ -23,6 +23,16 @@ declare global {
     warehouse_id?: number | null
     warehouse_name?: string | null
     placement_zone?: string | null
+    in_process_at?: string | null
+    posting_number?: string | null
+    related_postings?: string | null
+    shipment_date?: string | null
+    status?: string | null
+    delivery_date?: string | null
+    delivery_model?: string | null
+    price?: number | string | null
+    quantity?: number | string | null
+    paid_by_customer?: number | string | null
   }
 
   interface Window {
