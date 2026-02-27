@@ -247,9 +247,36 @@ const DATASET_INFLIGHT: Record<DataSet, Promise<GridRow[] | null> | null> = {
   returns: null,
   stocks: null,
 }
+let SALES_CACHE_KEY = ''
 const PRODUCTS_CACHE_TTL_MS = 60_000
 
-async function fetchRowsCached(dataset: DataSet, force = false): Promise<GridRow[] | null> {
+async function fetchRowsCached(
+  dataset: DataSet,
+  force = false,
+  salesPeriod?: { from?: string; to?: string }
+): Promise<GridRow[] | null> {
+  if (dataset === 'sales') {
+    const periodKey = `${String(salesPeriod?.from ?? '').trim()}|${String(salesPeriod?.to ?? '').trim()}`
+    const now = Date.now()
+
+    if (!force && SALES_CACHE_KEY === periodKey && DATASET_CACHE.sales && (now - DATASET_CACHE_AT.sales) < PRODUCTS_CACHE_TTL_MS) {
+      return DATASET_CACHE.sales
+    }
+
+    try {
+      const resp = await window.api.getSales(salesPeriod)
+      if (!resp.ok) return SALES_CACHE_KEY === periodKey ? DATASET_CACHE.sales : null
+
+      const list = (resp.rows as any) as GridRow[]
+      DATASET_CACHE.sales = list
+      DATASET_CACHE_AT.sales = Date.now()
+      SALES_CACHE_KEY = periodKey
+      return list
+    } catch {
+      return SALES_CACHE_KEY === periodKey ? DATASET_CACHE.sales : null
+    }
+  }
+
   const now = Date.now()
   if (!force && DATASET_CACHE[dataset] && (now - DATASET_CACHE_AT[dataset]) < PRODUCTS_CACHE_TTL_MS) return DATASET_CACHE[dataset]
   if (DATASET_INFLIGHT[dataset]) return DATASET_INFLIGHT[dataset]
@@ -260,10 +287,6 @@ async function fetchRowsCached(dataset: DataSet, force = false): Promise<GridRow
       if (dataset === 'products') {
         const resp = await window.api.getProducts()
         if (resp.ok) list = (resp.products as any) as GridRow[]
-        else return DATASET_CACHE[dataset]
-      } else if (dataset === 'sales') {
-        const resp = await window.api.getSales()
-        if (resp.ok) list = (resp.rows as any) as GridRow[]
         else return DATASET_CACHE[dataset]
       } else if (dataset === 'returns') {
         const resp = await window.api.getReturns()
@@ -576,19 +599,26 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
   }, [dataset])
 
   async function load(force = false) {
-    const list = await fetchRowsCached(dataset, force)
+    const list = await fetchRowsCached(
+      dataset,
+      force,
+      dataset === 'sales' ? {
+        from: String(period?.from ?? ''),
+        to: String(period?.to ?? ''),
+      } : undefined
+    )
     if (Array.isArray(list)) setProducts(list)
   }
 
   useEffect(() => {
-    load()
-  }, [dataset])
+    load(dataset === 'sales')
+  }, [dataset, period?.from, period?.to])
 
   useEffect(() => {
     const onUpdated = () => load(true)
     window.addEventListener('ozon:products-updated', onUpdated)
     return () => window.removeEventListener('ozon:products-updated', onUpdated)
-  }, [dataset])
+  }, [dataset, period?.from, period?.to])
 
   useEffect(() => {
     return () => {
