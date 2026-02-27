@@ -1,9 +1,9 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
 import { appendFileSync, mkdirSync } from 'fs'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
-import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
+import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboList, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -39,6 +39,183 @@ function safeShowMainWindow(reason: string) {
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
+const SALES_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
+
+type SalesRow = GridApiRow & {
+  in_process_at?: string | null
+  posting_number?: string | null
+  related_postings?: string | null
+  shipment_date?: string | null
+  status?: string | null
+  delivery_date?: string | null
+  delivery_model?: string | null
+  price?: number | ''
+  quantity?: number | ''
+  paid_by_customer?: number | ''
+}
+
+function safeGetByPath(source: any, path: string, fallback: any = undefined) {
+  if (!source || typeof source !== 'object') return fallback
+  const parts = String(path ?? '').split('.').map((x) => x.trim()).filter(Boolean)
+  if (parts.length === 0) return fallback
+
+  let cur = source
+  for (const part of parts) {
+    if (cur == null || typeof cur !== 'object' || !(part in cur)) return fallback
+    cur = cur[part]
+  }
+
+  return cur == null ? fallback : cur
+}
+
+function pickFirstPresent(source: any, paths: string[]) {
+  for (const path of paths) {
+    const value = safeGetByPath(source, path, undefined)
+    if (value === undefined || value === null || value === '') continue
+    return value
+  }
+  return undefined
+}
+
+function normalizeTextValue(value: any): string {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
+  return ''
+}
+
+function normalizeDateValue(value: any): string {
+  if (value == null || value === '') return ''
+  const raw = typeof value === 'string' ? value.trim() : String(value).trim()
+  if (!raw) return ''
+  const parsed = new Date(raw)
+  return Number.isNaN(parsed.getTime()) ? '' : raw
+}
+
+function normalizeNumberValue(value: any): number | '' {
+  if (value == null || value === '') return ''
+  const n = Number(value)
+  if (!Number.isFinite(n)) return ''
+  return n
+}
+
+function parseJsonTextSafe(text: string | null | undefined) {
+  if (typeof text !== 'string' || !text.trim()) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+function extractPostingsFromPayload(payload: any): any[] {
+  const fromResult = safeGetByPath(payload, 'result.postings', null)
+  if (Array.isArray(fromResult)) return fromResult
+
+  const direct = safeGetByPath(payload, 'postings', null)
+  if (Array.isArray(direct)) return direct
+
+  return []
+}
+
+function shouldReplaceSalesRow(prev: SalesRow, next: SalesRow): boolean {
+  const prevDelivered = String(prev?.delivery_date ?? '').trim()
+  const nextDelivered = String(next?.delivery_date ?? '').trim()
+
+  if (!prevDelivered && nextDelivered) return true
+  if (prevDelivered && !nextDelivered) return false
+  if (prevDelivered && nextDelivered) return nextDelivered > prevDelivered
+  return false
+}
+
+function normalizeSalesRows(payloads: any[], products: GridApiRow[]): SalesRow[] {
+  const productsByOfferId = new Map<string, GridApiRow>()
+  const productsBySku = new Map<string, GridApiRow>()
+
+  for (const product of products) {
+    const offerId = normalizeTextValue((product as any)?.offer_id)
+    const sku = normalizeTextValue((product as any)?.sku)
+    if (offerId && !productsByOfferId.has(offerId)) productsByOfferId.set(offerId, product)
+    if (sku && !productsBySku.has(sku)) productsBySku.set(sku, product)
+  }
+
+  const dedup = new Map<string, SalesRow>()
+
+  for (const payload of payloads) {
+    for (const posting of extractPostingsFromPayload(payload)) {
+      const items = Array.isArray((posting as any)?.products)
+        ? (posting as any).products
+        : (Array.isArray((posting as any)?.items) ? (posting as any).items : [])
+
+      if (items.length === 0) continue
+
+      const acceptedAt = normalizeDateValue(pickFirstPresent(posting, ['in_process_at', 'created_at', 'acceptance_date']))
+      const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber', 'order_id']))
+      const related = normalizeTextValue(pickFirstPresent(posting, ['related_postings', 'related_posting_numbers', 'related_postings_numbers']))
+      const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['shipment_date', 'shipment_date_actual', 'shipped_at']))
+      const status = normalizeTextValue(pickFirstPresent(posting, ['status', 'state']))
+      const deliveredAt = normalizeDateValue(pickFirstPresent(posting, ['delivered_at', 'delivery_date', 'delivering_date']))
+      const deliverySchema = normalizeTextValue(pickFirstPresent(posting, ['delivery_method.name', 'delivery_method', 'delivery_schema', 'delivery_type']))
+
+      if (!postingNumber) continue
+
+      for (const item of items) {
+        const sku = normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
+        if (!sku) continue
+
+        const offerId = normalizeTextValue(pickFirstPresent(item, ['offer_id', 'offerId', 'article']))
+        const productMeta = productsByOfferId.get(offerId) ?? productsBySku.get(sku) ?? null
+
+        const row: SalesRow = {
+          ...(productMeta ?? {}),
+          offer_id: offerId || String((productMeta as any)?.offer_id ?? ''),
+          sku,
+          name: normalizeTextValue(pickFirstPresent(item, ['name', 'product_name'])) || String((productMeta as any)?.name ?? ''),
+          in_process_at: acceptedAt || '',
+          posting_number: postingNumber,
+          related_postings: related || '',
+          shipment_date: shipmentDate || '',
+          status: status || '',
+          delivery_date: deliveredAt || '',
+          delivery_model: deliverySchema || '',
+          price: normalizeNumberValue(pickFirstPresent(item, ['price', 'your_price', 'seller_price'])),
+          quantity: normalizeNumberValue(pickFirstPresent(item, ['quantity', 'qty'])),
+          paid_by_customer: normalizeNumberValue(pickFirstPresent(item, ['payout', 'paid_by_buyer', 'price'])),
+        }
+
+        const dedupKey = `${postingNumber}|${sku}`
+        const prev = dedup.get(dedupKey)
+        if (!prev || shouldReplaceSalesRow(prev, row)) dedup.set(dedupKey, row)
+      }
+    }
+  }
+
+  return Array.from(dedup.values()).sort((a, b) => {
+    const aAccepted = String(a?.in_process_at ?? '')
+    const bAccepted = String(b?.in_process_at ?? '')
+    if (aAccepted !== bAccepted) return bAccepted.localeCompare(aAccepted)
+
+    const aPosting = String(a?.posting_number ?? '')
+    const bPosting = String(b?.posting_number ?? '')
+    if (aPosting !== bPosting) return bPosting.localeCompare(aPosting)
+
+    return String(a?.offer_id ?? '').localeCompare(String(b?.offer_id ?? ''), 'ru')
+  })
+}
+
+function getCachedSalesPayloadMap(storeClientId: string | null | undefined): Map<string, any> {
+  const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_ENDPOINTS as unknown as string[])
+  const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_ENDPOINTS as unknown as string[])
+  const out = new Map<string, any>()
+
+  for (const row of rows) {
+    if (out.has(row.endpoint)) continue
+    const parsed = parseJsonTextSafe(row?.response_body)
+    if (parsed) out.set(row.endpoint, parsed)
+  }
+
   return out
 }
 
@@ -503,14 +680,37 @@ ipcMain.handle('data:getProducts', async () => {
 ipcMain.handle('data:getSales', async () => {
   try {
     let storeClientId: string | null = null
+    let secrets: ReturnType<typeof loadSecrets> | null = null
     try {
-      storeClientId = loadSecrets().clientId
+      secrets = loadSecrets()
+      storeClientId = secrets.clientId
     } catch {
+      secrets = null
       storeClientId = null
     }
 
     const products = dbGetProducts(storeClientId)
-    return { ok: true, rows: products }
+    const payloadByEndpoint = new Map<string, any>()
+
+    if (secrets?.clientId && secrets?.apiKey) {
+      try {
+        payloadByEndpoint.set('/v3/posting/fbs/list', await ozonPostingFbsList(secrets))
+      } catch {}
+
+      try {
+        payloadByEndpoint.set('/v2/posting/fbo/list', await ozonPostingFboList(secrets))
+      } catch {}
+    }
+
+    if (payloadByEndpoint.size < SALES_ENDPOINTS.length) {
+      const cachedByEndpoint = getCachedSalesPayloadMap(storeClientId)
+      for (const [endpoint, payload] of cachedByEndpoint.entries()) {
+        if (!payloadByEndpoint.has(endpoint)) payloadByEndpoint.set(endpoint, payload)
+      }
+    }
+
+    const rows = normalizeSalesRows(Array.from(payloadByEndpoint.values()), products)
+    return { ok: true, rows }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e), rows: [] }
   }

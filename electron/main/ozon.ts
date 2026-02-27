@@ -743,6 +743,29 @@ export async function ozonTestAuth(secrets: Secrets) {
   return true
 }
 
+function buildPostingListBody(limit = 1000) {
+  const to = new Date()
+  const since = new Date(to.getTime() - (90 * 24 * 60 * 60 * 1000))
+
+  return {
+    dir: 'DESC',
+    filter: {
+      since: since.toISOString(),
+      to: to.toISOString(),
+    },
+    limit,
+    offset: 0,
+  }
+}
+
+export async function ozonPostingFbsList(secrets: Secrets, body?: any) {
+  return ozonPost(secrets, '/v3/posting/fbs/list', body ?? buildPostingListBody())
+}
+
+export async function ozonPostingFboList(secrets: Secrets, body?: any) {
+  return ozonPost(secrets, '/v2/posting/fbo/list', body ?? buildPostingListBody())
+}
+
 export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
   // Ozon API периодически меняет версию/эндпойнт: поэтому делаем несколько попыток.
   const candidates: Array<() => Promise<any>> = [
