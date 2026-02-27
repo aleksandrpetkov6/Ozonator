@@ -310,6 +310,58 @@ function formatDateTimeRu(v: any): string {
   return `${dd}.${mm}.${yy} ${hh}.${mi}.${ss}`
 }
 
+function parseFlexibleDate(v: any): Date | null {
+  if (v == null || v === '') return null
+
+  if (v instanceof Date) {
+    return Number.isNaN(v.getTime()) ? null : v
+  }
+
+  if (typeof v === 'number') {
+    const fromNum = new Date(v)
+    return Number.isNaN(fromNum.getTime()) ? null : fromNum
+  }
+
+  const raw = String(v).trim()
+  if (!raw) return null
+
+  const native = new Date(raw)
+  if (!Number.isNaN(native.getTime())) return native
+
+  const ru = raw.match(/^(\d{2})\.(\d{2})\.(\d{2}|\d{4})(?:[ T](\d{2})[.:](\d{2})(?:[.:](\d{2}))?)?$/)
+  if (ru) {
+    const day = Number(ru[1])
+    const month = Number(ru[2])
+    const yearRaw = Number(ru[3])
+    const year = ru[3].length === 2 ? (2000 + yearRaw) : yearRaw
+    const hh = Number(ru[4] ?? '0')
+    const mi = Number(ru[5] ?? '0')
+    const ss = Number(ru[6] ?? '0')
+
+    const parsed = new Date(year, month - 1, day, hh, mi, ss, 0)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+  }
+
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (iso) {
+    const parsed = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]), 0, 0, 0, 0)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+  }
+
+  return null
+}
+
+function toLocalDateKey(v: any): string {
+  const d = parseFlexibleDate(v)
+  if (!d) return ''
+
+  const yyyy = String(d.getFullYear())
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+
+  return `${yyyy}-${mm}-${dd}`
+}
+
 const VISIBILITY_REASON_MAP_RU: Record<string, string> = {
   double_without_merger_offer: 'Дубль товара',
   image_absent_with_shipment: 'Нет фото в карточке товара',
@@ -605,16 +657,15 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
     const hasTo = /^\d{4}-\d{2}-\d{2}$/.test(toRaw)
     if (!hasFrom && !hasTo) return products
 
-    const fromMs = hasFrom ? new Date(`${fromRaw}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY
-    const toMs = hasTo ? new Date(`${toRaw}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY
-    if (Number.isNaN(fromMs) || Number.isNaN(toMs)) return products
+    const fromKey = hasFrom ? fromRaw : ''
+    const toKey = hasTo ? toRaw : ''
 
     return products.filter((p) => {
-      const raw = (p as any).in_process_at
-      if (raw == null || raw === '') return false
-      const valueMs = new Date(raw).getTime()
-      if (Number.isNaN(valueMs)) return false
-      return valueMs >= fromMs && valueMs <= toMs
+      const acceptedKey = toLocalDateKey((p as any).in_process_at)
+      if (!acceptedKey) return false
+      if (fromKey && acceptedKey < fromKey) return false
+      if (toKey && acceptedKey > toKey) return false
+      return true
     })
   }, [dataset, products, period?.from, period?.to])
 
