@@ -21,6 +21,16 @@ type GridRow = {
   warehouse_id?: number | null
   warehouse_name?: string | null
   placement_zone?: string | null
+  in_process_at?: string | null
+  posting_number?: string | null
+  related_postings?: string | null
+  shipment_date?: string | null
+  status?: string | null
+  delivery_date?: string | null
+  delivery_model?: string | null
+  price?: number | string | null
+  quantity?: number | string | null
+  paid_by_customer?: number | string | null
 }
 
 type DataSet = 'products' | 'sales' | 'returns' | 'stocks'
@@ -48,6 +58,37 @@ const PHOTO_PREVIEW_SIZE = 200
 const PHOTO_PREVIEW_DELAY_MS = 1000
 
 function buildDefaultCols(dataset: DataSet): ColDef[] {
+  if (dataset === 'sales') {
+    return [
+      { id: 'in_process_at', title: 'Принят в обработку', w: 180, visible: true },
+      { id: 'status', title: 'Статус', w: 170, visible: true },
+      { id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true },
+      { id: 'delivery_date', title: 'Дата доставки', w: 180, visible: true },
+      { id: 'posting_number', title: 'Номер отправления', w: 190, visible: true },
+      { id: 'related_postings', title: 'Связанные отправления', w: 200, visible: true },
+      { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
+      { id: 'sku', title: 'SKU', w: 140, visible: true },
+      { id: 'name', title: 'Наименование', w: 320, visible: true },
+      { id: 'delivery_model', title: 'Модель доставки', w: 320, visible: true },
+      { id: 'price', title: 'Ваша цена', w: 130, visible: true },
+      { id: 'quantity', title: 'Количество', w: 120, visible: true },
+      { id: 'paid_by_customer', title: 'Оплачено покупателем', w: 180, visible: true },
+      { id: 'product_id', title: 'ID', w: 110, visible: false },
+      { id: 'ozon_sku', title: 'SKU Ozon', w: 150, visible: false },
+      { id: 'seller_sku', title: 'SKU продавца', w: 180, visible: false },
+      { id: 'fbo_sku', title: 'SKU FBO', w: 150, visible: false },
+      { id: 'fbs_sku', title: 'SKU FBS', w: 150, visible: false },
+      { id: 'photo_url', title: 'Фото', w: 74, visible: false },
+      { id: 'brand', title: 'Бренд', w: 180, visible: false },
+      { id: 'barcode', title: 'Штрихкод', w: 170, visible: false },
+      { id: 'type', title: 'Категория', w: 280, visible: false },
+      { id: 'is_visible', title: 'Видимость', w: 140, visible: false },
+      { id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: false },
+      { id: 'created_at', title: 'Создан', w: 180, visible: false },
+      { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
+    ]
+  }
+
   const base: ColDef[] = [
     { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
     { id: 'product_id', title: 'ID', w: 110, visible: true },
@@ -98,6 +139,16 @@ const AUTO_MAX_W: Record<string, number> = {
   updated_at: 240,
   warehouse_name: 240,
   placement_zone: 320,
+  in_process_at: 240,
+  status: 220,
+  shipment_date: 240,
+  delivery_date: 240,
+  posting_number: 260,
+  related_postings: 320,
+  delivery_model: 420,
+  price: 180,
+  quantity: 140,
+  paid_by_customer: 220,
   type: 380,
   name: 460,
   photo_url: 90,
@@ -592,6 +643,9 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
             return (v == null || String(v).trim() === '') ? '-' : String(v)
           }
           if (colId === 'photo_url') return ''
+          if (colId === 'in_process_at' || colId === 'shipment_date' || colId === 'delivery_date') {
+            return formatDateTimeRu((p as any)[colId]) || '-'
+          }
           return toText((p as any)[colId])
         })
         .join(' ')
@@ -860,7 +914,7 @@ function onDragOverHeader(e: React.DragEvent) {
       const rs = visibilityReasonText(v)
       return { text: rs, title: rs !== '-' ? rs : undefined }
     }
-    if (colId === 'created_at' || colId === 'updated_at') {
+    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at' || colId === 'shipment_date' || colId === 'delivery_date') {
       const f = formatDateTimeRu(v)
       return { text: f || '-', title: (v == null || v === '') ? undefined : String(v) }
     }
@@ -924,7 +978,9 @@ function onDragOverHeader(e: React.DragEvent) {
       const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
       return zone || 'Нет данных синхронизации'
     }
-    if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
+    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at' || colId === 'shipment_date' || colId === 'delivery_date') {
+      return formatDateTimeRu((p as any)[colId])
+    }
     return toText((p as any)[colId])
   }
 
