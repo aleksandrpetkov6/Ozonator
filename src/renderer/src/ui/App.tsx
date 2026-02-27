@@ -669,7 +669,7 @@ export default function App() {
           </div>
 
           <div style={{ display: isSales ? 'block' : 'none', height: '100%' }}>
-            <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
+            <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} onStats={onProductStats} />
           </div>
 
           <div style={{ display: isReturns ? 'block' : 'none', height: '100%' }}>
