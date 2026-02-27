@@ -21,16 +21,6 @@ type GridRow = {
   warehouse_id?: number | null
   warehouse_name?: string | null
   placement_zone?: string | null
-  in_process_at?: string | null
-  posting_number?: string | null
-  related_postings?: string | null
-  shipment_date?: string | null
-  status?: string | null
-  delivery_date?: string | null
-  delivery_model?: string | null
-  price?: number | string | null
-  quantity?: number | string | null
-  paid_by_customer?: number | string | null
 }
 
 type DataSet = 'products' | 'sales' | 'returns' | 'stocks'
@@ -42,15 +32,9 @@ type ColDef = {
   visible: boolean
 }
 
-type DateRange = {
-  from: string
-  to: string
-}
-
 type Props = {
   dataset?: DataSet
   query?: string
-  period?: DateRange
   onStats?: (s: { total: number; filtered: number }) => void
 }
 
@@ -58,37 +42,6 @@ const PHOTO_PREVIEW_SIZE = 200
 const PHOTO_PREVIEW_DELAY_MS = 1000
 
 function buildDefaultCols(dataset: DataSet): ColDef[] {
-  if (dataset === 'sales') {
-    return [
-      { id: 'in_process_at', title: 'Принят в обработку', w: 180, visible: true },
-      { id: 'status', title: 'Статус', w: 170, visible: true },
-      { id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true },
-      { id: 'delivery_date', title: 'Дата доставки', w: 180, visible: true },
-      { id: 'posting_number', title: 'Номер отправления', w: 190, visible: true },
-      { id: 'related_postings', title: 'Связанные отправления', w: 200, visible: true },
-      { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
-      { id: 'sku', title: 'SKU', w: 140, visible: true },
-      { id: 'name', title: 'Наименование', w: 320, visible: true },
-      { id: 'delivery_model', title: 'Модель доставки', w: 320, visible: true },
-      { id: 'price', title: 'Ваша цена', w: 130, visible: true },
-      { id: 'quantity', title: 'Количество', w: 120, visible: true },
-      { id: 'paid_by_customer', title: 'Оплачено покупателем', w: 180, visible: true },
-      { id: 'product_id', title: 'ID', w: 110, visible: false },
-      { id: 'ozon_sku', title: 'SKU Ozon', w: 150, visible: false },
-      { id: 'seller_sku', title: 'SKU продавца', w: 180, visible: false },
-      { id: 'fbo_sku', title: 'SKU FBO', w: 150, visible: false },
-      { id: 'fbs_sku', title: 'SKU FBS', w: 150, visible: false },
-      { id: 'photo_url', title: 'Фото', w: 74, visible: false },
-      { id: 'brand', title: 'Бренд', w: 180, visible: false },
-      { id: 'barcode', title: 'Штрихкод', w: 170, visible: false },
-      { id: 'type', title: 'Категория', w: 280, visible: false },
-      { id: 'is_visible', title: 'Видимость', w: 140, visible: false },
-      { id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: false },
-      { id: 'created_at', title: 'Создан', w: 180, visible: false },
-      { id: 'updated_at', title: 'Обновлён', w: 180, visible: false },
-    ]
-  }
-
   const base: ColDef[] = [
     { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
     { id: 'product_id', title: 'ID', w: 110, visible: true },
@@ -139,16 +92,6 @@ const AUTO_MAX_W: Record<string, number> = {
   updated_at: 240,
   warehouse_name: 240,
   placement_zone: 320,
-  in_process_at: 240,
-  status: 220,
-  shipment_date: 240,
-  delivery_date: 240,
-  posting_number: 260,
-  related_postings: 320,
-  delivery_model: 420,
-  price: 180,
-  quantity: 140,
-  paid_by_customer: 220,
   type: 380,
   name: 460,
   photo_url: 90,
@@ -247,36 +190,9 @@ const DATASET_INFLIGHT: Record<DataSet, Promise<GridRow[] | null> | null> = {
   returns: null,
   stocks: null,
 }
-let SALES_CACHE_KEY = ''
 const PRODUCTS_CACHE_TTL_MS = 60_000
 
-async function fetchRowsCached(
-  dataset: DataSet,
-  force = false,
-  salesPeriod?: { from?: string; to?: string }
-): Promise<GridRow[] | null> {
-  if (dataset === 'sales') {
-    const periodKey = `${String(salesPeriod?.from ?? '').trim()}|${String(salesPeriod?.to ?? '').trim()}`
-    const now = Date.now()
-
-    if (!force && SALES_CACHE_KEY === periodKey && DATASET_CACHE.sales && (now - DATASET_CACHE_AT.sales) < PRODUCTS_CACHE_TTL_MS) {
-      return DATASET_CACHE.sales
-    }
-
-    try {
-      const resp = await window.api.getSales(salesPeriod)
-      if (!resp.ok) return SALES_CACHE_KEY === periodKey ? DATASET_CACHE.sales : null
-
-      const list = (resp.rows as any) as GridRow[]
-      DATASET_CACHE.sales = list
-      DATASET_CACHE_AT.sales = Date.now()
-      SALES_CACHE_KEY = periodKey
-      return list
-    } catch {
-      return SALES_CACHE_KEY === periodKey ? DATASET_CACHE.sales : null
-    }
-  }
-
+async function fetchRowsCached(dataset: DataSet, force = false): Promise<GridRow[] | null> {
   const now = Date.now()
   if (!force && DATASET_CACHE[dataset] && (now - DATASET_CACHE_AT[dataset]) < PRODUCTS_CACHE_TTL_MS) return DATASET_CACHE[dataset]
   if (DATASET_INFLIGHT[dataset]) return DATASET_INFLIGHT[dataset]
@@ -287,6 +203,10 @@ async function fetchRowsCached(
       if (dataset === 'products') {
         const resp = await window.api.getProducts()
         if (resp.ok) list = (resp.products as any) as GridRow[]
+        else return DATASET_CACHE[dataset]
+      } else if (dataset === 'sales') {
+        const resp = await window.api.getSales()
+        if (resp.ok) list = (resp.rows as any) as GridRow[]
         else return DATASET_CACHE[dataset]
       } else if (dataset === 'returns') {
         const resp = await window.api.getReturns()
@@ -331,58 +251,6 @@ function formatDateTimeRu(v: any): string {
   const ss = String(d.getSeconds()).padStart(2, '0')
 
   return `${dd}.${mm}.${yy} ${hh}.${mi}.${ss}`
-}
-
-function parseFlexibleDate(v: any): Date | null {
-  if (v == null || v === '') return null
-
-  if (v instanceof Date) {
-    return Number.isNaN(v.getTime()) ? null : v
-  }
-
-  if (typeof v === 'number') {
-    const fromNum = new Date(v)
-    return Number.isNaN(fromNum.getTime()) ? null : fromNum
-  }
-
-  const raw = String(v).trim()
-  if (!raw) return null
-
-  const native = new Date(raw)
-  if (!Number.isNaN(native.getTime())) return native
-
-  const ru = raw.match(/^(\d{2})\.(\d{2})\.(\d{2}|\d{4})(?:[ T](\d{2})[.:](\d{2})(?:[.:](\d{2}))?)?$/)
-  if (ru) {
-    const day = Number(ru[1])
-    const month = Number(ru[2])
-    const yearRaw = Number(ru[3])
-    const year = ru[3].length === 2 ? (2000 + yearRaw) : yearRaw
-    const hh = Number(ru[4] ?? '0')
-    const mi = Number(ru[5] ?? '0')
-    const ss = Number(ru[6] ?? '0')
-
-    const parsed = new Date(year, month - 1, day, hh, mi, ss, 0)
-    return Number.isNaN(parsed.getTime()) ? null : parsed
-  }
-
-  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (iso) {
-    const parsed = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]), 0, 0, 0, 0)
-    return Number.isNaN(parsed.getTime()) ? null : parsed
-  }
-
-  return null
-}
-
-function toLocalDateKey(v: any): string {
-  const d = parseFlexibleDate(v)
-  if (!d) return ''
-
-  const yyyy = String(d.getFullYear())
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-
-  return `${yyyy}-${mm}-${dd}`
 }
 
 const VISIBILITY_REASON_MAP_RU: Record<string, string> = {
@@ -442,15 +310,8 @@ function visibilityText(p: GridRow): string {
   return 'Виден'
 }
 
-export default function ProductsPage({ dataset = 'products', query = '', period, onStats }: Props) {
-  const [products, setProducts] = useState<GridRow[]>(() => {
-    if (dataset !== 'sales') return DATASET_CACHE[dataset] ?? []
-
-    const periodKey = `${String(period?.from ?? '').trim()}|${String(period?.to ?? '').trim()}`
-    if (SALES_CACHE_KEY !== periodKey) return []
-
-    return DATASET_CACHE.sales ?? []
-  })
+export default function ProductsPage({ dataset = 'products', query = '', onStats }: Props) {
+  const [products, setProducts] = useState<GridRow[]>(() => DATASET_CACHE[dataset] ?? [])
   const [cols, setCols] = useState<ColDef[]>(() => readCols(dataset))
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -606,23 +467,16 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
   }, [dataset])
 
   async function load(force = false) {
-    const list = await fetchRowsCached(
-      dataset,
-      force,
-      dataset === 'sales' ? {
-        from: String(period?.from ?? ''),
-        to: String(period?.to ?? ''),
-      } : undefined
-    )
+    const list = await fetchRowsCached(dataset, force)
     if (Array.isArray(list)) setProducts(list)
   }
 
   useEffect(() => {
-    load(false)
-  }, [dataset, period?.from, period?.to])
+    load()
+  }, [dataset])
 
   useEffect(() => {
-    if (dataset === 'sales') return
+    if (dataset !== 'products') return
 
     const onUpdated = () => load(true)
     window.addEventListener('ozon:products-updated', onUpdated)
@@ -687,33 +541,11 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
     [visibleSearchKey]
   )
 
-  const salesPeriodFiltered = useMemo(() => {
-    if (dataset !== 'sales') return products
-
-    const fromRaw = String(period?.from ?? '').trim()
-    const toRaw = String(period?.to ?? '').trim()
-    const hasFrom = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw)
-    const hasTo = /^\d{4}-\d{2}-\d{2}$/.test(toRaw)
-    if (!hasFrom && !hasTo) return products
-
-    const fromKey = hasFrom ? fromRaw : ''
-    const toKey = hasTo ? toRaw : ''
+  const filtered = useMemo(() => {
+    const q = String(query ?? '').trim().toLowerCase()
+    if (!q) return products
 
     return products.filter((p) => {
-      const acceptedKey = toLocalDateKey((p as any).in_process_at)
-      if (!acceptedKey) return false
-      if (fromKey && acceptedKey < fromKey) return false
-      if (toKey && acceptedKey > toKey) return false
-      return true
-    })
-  }, [dataset, products, period?.from, period?.to])
-
-  const filtered = useMemo(() => {
-    const baseRows = salesPeriodFiltered
-    const q = String(query ?? '').trim().toLowerCase()
-    if (!q) return baseRows
-
-    return baseRows.filter((p) => {
       const hay = visibleSearchCols
         .map((colId) => {
           if (colId === 'archived') return ''
@@ -733,9 +565,6 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
             return (v == null || String(v).trim() === '') ? '-' : String(v)
           }
           if (colId === 'photo_url') return ''
-          if (colId === 'in_process_at' || colId === 'shipment_date' || colId === 'delivery_date') {
-            return formatDateTimeRu((p as any)[colId]) || '-'
-          }
           return toText((p as any)[colId])
         })
         .join(' ')
@@ -743,7 +572,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
 
       return hay.includes(q)
     })
-  }, [salesPeriodFiltered, query, visibleSearchKey])
+  }, [products, query, visibleSearchKey])
 
 
   useEffect(() => {
@@ -1004,7 +833,7 @@ function onDragOverHeader(e: React.DragEvent) {
       const rs = visibilityReasonText(v)
       return { text: rs, title: rs !== '-' ? rs : undefined }
     }
-    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at' || colId === 'shipment_date' || colId === 'delivery_date') {
+    if (colId === 'created_at' || colId === 'updated_at') {
       const f = formatDateTimeRu(v)
       return { text: f || '-', title: (v == null || v === '') ? undefined : String(v) }
     }
@@ -1068,9 +897,7 @@ function onDragOverHeader(e: React.DragEvent) {
       const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
       return zone || 'Нет данных синхронизации'
     }
-    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at' || colId === 'shipment_date' || colId === 'delivery_date') {
-      return formatDateTimeRu((p as any)[colId])
-    }
+    if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
     return toText((p as any)[colId])
   }
 
@@ -1221,26 +1048,27 @@ function onDragOverHeader(e: React.DragEvent) {
   const topSpace = startRow * rowH
   const bottomSpace = Math.max(0, (totalRows - endRow) * rowH)
 
-  const getRowKey = (p: GridRow): string => {
-    if (dataset === 'stocks') {
-      return `${p.offer_id}__${p.sku ?? ''}__${p.warehouse_id ?? ''}__${String(p.placement_zone ?? '').trim()}`
-    }
-
-    if (dataset === 'sales') {
-      return [
-        String(p.posting_number ?? '').trim() || 'no-posting',
-        String(p.sku ?? '').trim() || 'no-sku',
-        String(p.offer_id ?? '').trim() || 'no-offer',
-        String(p.in_process_at ?? '').trim() || 'no-in-process',
-      ].join('__')
-    }
-
-    return String(p.offer_id ?? '')
-  }
-
   const getHeaderTitleText = (c: ColDef): string => {
     if (String(c.id) === 'offer_id' && dataset === 'products') return `${c.title} ${totalRows}`
     return c.title
+  }
+
+  const getRowKey = (p: GridRow, absoluteRowIndex: number): string => {
+    if (dataset === 'stocks') {
+      return `${p.offer_id}__${p.sku ?? ''}__${p.warehouse_id ?? ''}__${(p.placement_zone ?? '').toString().trim()}`
+    }
+
+    if (dataset === 'sales') {
+      const row = p as any
+      return `${row.posting_number ?? ''}__${p.offer_id}__${p.sku ?? ''}__${row.in_process_at ?? row.created_at ?? ''}__${absoluteRowIndex}`
+    }
+
+    if (dataset === 'returns') {
+      const row = p as any
+      return `${row.return_id ?? ''}__${p.offer_id}__${p.sku ?? ''}__${row.created_at ?? ''}__${absoluteRowIndex}`
+    }
+
+    return p.offer_id
   }
 
   return (
@@ -1349,8 +1177,8 @@ function onDragOverHeader(e: React.DragEvent) {
                     </tr>
                   )}
 
-                  {visibleRows.map(p => (
-                    <tr key={getRowKey(p)}>
+                  {visibleRows.map((p, rowIdx) => (
+                    <tr key={getRowKey(p, startRow + rowIdx)}>
                       {visibleCols.map(c => {
                         const id = String(c.id)
                         const { text, title } = cellText(p, c.id)
