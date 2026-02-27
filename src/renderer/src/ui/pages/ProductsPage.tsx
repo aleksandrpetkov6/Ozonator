@@ -21,16 +21,6 @@ type GridRow = {
   warehouse_id?: number | null
   warehouse_name?: string | null
   placement_zone?: string | null
-  in_process_at?: string | null
-  posting_number?: string | null
-  related_postings?: string | null
-  shipment_date?: string | null
-  status?: string | null
-  delivery_date?: string | null
-  delivery_model?: string | null
-  price?: number | string | null
-  quantity?: number | string | null
-  paid_by_customer?: number | string | null
 }
 
 type DataSet = 'products' | 'sales' | 'returns' | 'stocks'
@@ -42,9 +32,15 @@ type ColDef = {
   visible: boolean
 }
 
+type DateRange = {
+  from: string
+  to: string
+}
+
 type Props = {
   dataset?: DataSet
   query?: string
+  period?: DateRange
   onStats?: (s: { total: number; filtered: number }) => void
 }
 
@@ -77,21 +73,6 @@ function buildDefaultCols(dataset: DataSet): ColDef[] {
     )
   }
 
-  if (dataset === 'sales') {
-    base.push(
-      { id: 'in_process_at', title: 'Принят в обработку', w: 180, visible: true },
-      { id: 'posting_number', title: 'Номер отправления', w: 180, visible: true },
-      { id: 'related_postings', title: 'Связанные отправления', w: 240, visible: true },
-      { id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true },
-      { id: 'status', title: 'Статус', w: 180, visible: true },
-      { id: 'delivery_date', title: 'Дата доставки', w: 180, visible: true },
-      { id: 'delivery_model', title: 'Модель доставки', w: 180, visible: true },
-      { id: 'price', title: 'Ваша цена', w: 140, visible: true },
-      { id: 'quantity', title: 'Количество', w: 120, visible: true },
-      { id: 'paid_by_customer', title: 'Оплачено покупателем', w: 180, visible: true },
-    )
-  }
-
   if (dataset === 'products') {
     base.push({ id: 'updated_at', title: 'Обновлён', w: 180, visible: false })
   }
@@ -117,16 +98,6 @@ const AUTO_MAX_W: Record<string, number> = {
   updated_at: 240,
   warehouse_name: 240,
   placement_zone: 320,
-  in_process_at: 240,
-  posting_number: 260,
-  related_postings: 360,
-  shipment_date: 240,
-  status: 220,
-  delivery_date: 240,
-  delivery_model: 220,
-  price: 180,
-  quantity: 140,
-  paid_by_customer: 240,
   type: 380,
   name: 460,
   photo_url: 90,
@@ -345,7 +316,7 @@ function visibilityText(p: GridRow): string {
   return 'Виден'
 }
 
-export default function ProductsPage({ dataset = 'products', query = '', onStats }: Props) {
+export default function ProductsPage({ dataset = 'products', query = '', period, onStats }: Props) {
   const [products, setProducts] = useState<GridRow[]>(() => DATASET_CACHE[dataset] ?? [])
   const [cols, setCols] = useState<ColDef[]>(() => readCols(dataset))
 
@@ -574,11 +545,34 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
     [visibleSearchKey]
   )
 
-  const filtered = useMemo(() => {
-    const q = String(query ?? '').trim().toLowerCase()
-    if (!q) return products
+  const salesPeriodFiltered = useMemo(() => {
+    if (dataset !== 'sales') return products
+
+    const fromRaw = String(period?.from ?? '').trim()
+    const toRaw = String(period?.to ?? '').trim()
+    const hasFrom = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw)
+    const hasTo = /^\d{4}-\d{2}-\d{2}$/.test(toRaw)
+    if (!hasFrom && !hasTo) return products
+
+    const fromMs = hasFrom ? new Date(`${fromRaw}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY
+    const toMs = hasTo ? new Date(`${toRaw}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY
+    if (Number.isNaN(fromMs) || Number.isNaN(toMs)) return products
 
     return products.filter((p) => {
+      const raw = (p as any).in_process_at
+      if (raw == null || raw === '') return false
+      const valueMs = new Date(raw).getTime()
+      if (Number.isNaN(valueMs)) return false
+      return valueMs >= fromMs && valueMs <= toMs
+    })
+  }, [dataset, products, period?.from, period?.to])
+
+  const filtered = useMemo(() => {
+    const baseRows = salesPeriodFiltered
+    const q = String(query ?? '').trim().toLowerCase()
+    if (!q) return baseRows
+
+    return baseRows.filter((p) => {
       const hay = visibleSearchCols
         .map((colId) => {
           if (colId === 'archived') return ''
@@ -605,7 +599,7 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
 
       return hay.includes(q)
     })
-  }, [products, query, visibleSearchKey])
+  }, [salesPeriodFiltered, query, visibleSearchKey])
 
 
   useEffect(() => {
@@ -866,7 +860,7 @@ function onDragOverHeader(e: React.DragEvent) {
       const rs = visibilityReasonText(v)
       return { text: rs, title: rs !== '-' ? rs : undefined }
     }
-    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at' || colId === 'shipment_date' || colId === 'delivery_date') {
+    if (colId === 'created_at' || colId === 'updated_at') {
       const f = formatDateTimeRu(v)
       return { text: f || '-', title: (v == null || v === '') ? undefined : String(v) }
     }
@@ -930,9 +924,7 @@ function onDragOverHeader(e: React.DragEvent) {
       const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
       return zone || 'Нет данных синхронизации'
     }
-    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at' || colId === 'shipment_date' || colId === 'delivery_date') {
-      return formatDateTimeRu((p as any)[colId])
-    }
+    if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
     return toText((p as any)[colId])
   }
 
