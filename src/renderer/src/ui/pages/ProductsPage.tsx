@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 type GridRow = {
   offer_id: string
@@ -346,12 +346,12 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   const photoHoverTimerRef = useRef<number | null>(null)
   const photoHoverPendingRef = useRef<{ url: string; alt: string; clientX: number; clientY: number } | null>(null)
 
-  function clearPhotoHoverTimer() {
+  const clearPhotoHoverTimer = useCallback(() => {
     if (photoHoverTimerRef.current != null) {
       window.clearTimeout(photoHoverTimerRef.current)
       photoHoverTimerRef.current = null
     }
-  }
+  }, [])
 
   function getPhotoPreviewPos(clientX: number, clientY: number) {
     const offsetX = 18
@@ -396,11 +396,11 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
     })
   }
 
-  function hidePhotoPreview() {
+  const hidePhotoPreview = useCallback(() => {
     clearPhotoHoverTimer()
     photoHoverPendingRef.current = null
     setPhotoPreview(null)
-  }
+  }, [clearPhotoHoverTimer])
 
   const [colsSyncReady, setColsSyncReady] = useState(false)
   const [hasStoredCols, setHasStoredCols] = useState<boolean>(() => {
@@ -466,14 +466,14 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
     return () => { active = false }
   }, [dataset])
 
-  async function load(force = false) {
+  const load = useCallback(async (force = false) => {
     const list = await fetchRowsCached(dataset, force)
     if (Array.isArray(list)) setProducts(list)
-  }
+  }, [dataset])
 
   useEffect(() => {
     load()
-  }, [dataset])
+  }, [load])
 
   useEffect(() => {
     if (dataset !== 'products') return
@@ -481,13 +481,13 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
     const onUpdated = () => load(true)
     window.addEventListener('ozon:products-updated', onUpdated)
     return () => window.removeEventListener('ozon:products-updated', onUpdated)
-  }, [dataset])
+  }, [dataset, load])
 
   useEffect(() => {
     return () => {
       clearPhotoHoverTimer()
     }
-  }, [])
+  }, [clearPhotoHoverTimer])
 
   useEffect(() => {
     if (!colsSyncReady) return
@@ -537,7 +537,15 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   )
 
   const visibleSearchCols = useMemo(
-    () => cols.filter(c => c.visible).map(c => c.id),
+    () =>
+      visibleSearchKey
+        .split('|')
+        .filter(Boolean)
+        .flatMap((entry) => {
+          const splitAt = entry.lastIndexOf(':')
+          if (splitAt < 0) return []
+          return entry.slice(splitAt + 1) === '1' ? [entry.slice(0, splitAt)] : []
+        }),
     [visibleSearchKey]
   )
 
@@ -572,7 +580,7 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
 
       return hay.includes(q)
     })
-  }, [products, query, visibleSearchKey])
+  }, [products, query, visibleSearchCols])
 
 
   useEffect(() => {
@@ -996,7 +1004,7 @@ function onDragOverHeader(e: React.DragEvent) {
       body.removeEventListener('scroll', syncFromBody)
       head.removeEventListener('scroll', syncFromHead)
     }
-  }, [visibleCols.length])
+  }, [visibleCols.length, hidePhotoPreview])
 
 
   // Виртуализация строк: резко снижает лаги при переключении вкладок и при ресайзе колонок
