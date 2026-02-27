@@ -443,7 +443,14 @@ function visibilityText(p: GridRow): string {
 }
 
 export default function ProductsPage({ dataset = 'products', query = '', period, onStats }: Props) {
-  const [products, setProducts] = useState<GridRow[]>(() => DATASET_CACHE[dataset] ?? [])
+  const [products, setProducts] = useState<GridRow[]>(() => {
+    if (dataset !== 'sales') return DATASET_CACHE[dataset] ?? []
+
+    const periodKey = `${String(period?.from ?? '').trim()}|${String(period?.to ?? '').trim()}`
+    if (SALES_CACHE_KEY !== periodKey) return []
+
+    return DATASET_CACHE.sales ?? []
+  })
   const [cols, setCols] = useState<ColDef[]>(() => readCols(dataset))
 
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -611,14 +618,16 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
   }
 
   useEffect(() => {
-    load(dataset === 'sales')
+    load(false)
   }, [dataset, period?.from, period?.to])
 
   useEffect(() => {
+    if (dataset === 'sales') return
+
     const onUpdated = () => load(true)
     window.addEventListener('ozon:products-updated', onUpdated)
     return () => window.removeEventListener('ozon:products-updated', onUpdated)
-  }, [dataset, period?.from, period?.to])
+  }, [dataset])
 
   useEffect(() => {
     return () => {
@@ -1212,6 +1221,23 @@ function onDragOverHeader(e: React.DragEvent) {
   const topSpace = startRow * rowH
   const bottomSpace = Math.max(0, (totalRows - endRow) * rowH)
 
+  const getRowKey = (p: GridRow): string => {
+    if (dataset === 'stocks') {
+      return `${p.offer_id}__${p.sku ?? ''}__${p.warehouse_id ?? ''}__${String(p.placement_zone ?? '').trim()}`
+    }
+
+    if (dataset === 'sales') {
+      return [
+        String(p.posting_number ?? '').trim() || 'no-posting',
+        String(p.sku ?? '').trim() || 'no-sku',
+        String(p.offer_id ?? '').trim() || 'no-offer',
+        String(p.in_process_at ?? '').trim() || 'no-in-process',
+      ].join('__')
+    }
+
+    return String(p.offer_id ?? '')
+  }
+
   const getHeaderTitleText = (c: ColDef): string => {
     if (String(c.id) === 'offer_id' && dataset === 'products') return `${c.title} ${totalRows}`
     return c.title
@@ -1324,7 +1350,7 @@ function onDragOverHeader(e: React.DragEvent) {
                   )}
 
                   {visibleRows.map(p => (
-                    <tr key={dataset === 'stocks' ? `${p.offer_id}__${p.sku ?? ''}__${p.warehouse_id ?? ''}__${(p.placement_zone ?? '').toString().trim()}` : p.offer_id}>
+                    <tr key={getRowKey(p)}>
                       {visibleCols.map(c => {
                         const id = String(c.id)
                         const { text, title } = cellText(p, c.id)
