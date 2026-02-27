@@ -44,6 +44,11 @@ function chunk<T>(arr: T[], size: number): T[][] {
 
 const SALES_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
 
+type SalesPeriod = {
+  from?: string | null
+  to?: string | null
+}
+
 type SalesRow = GridApiRow & {
   in_process_at?: string | null
   posting_number?: string | null
@@ -118,6 +123,69 @@ function extractPostingsFromPayload(payload: any): any[] {
   if (Array.isArray(direct)) return direct
 
   return []
+}
+
+function normalizeSalesPeriodDate(value: any): string {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ''
+}
+
+function buildSalesRequestBody(period: SalesPeriod | null | undefined, limit = 1000, offset = 0) {
+  let from = normalizeSalesPeriodDate(period?.from)
+  let to = normalizeSalesPeriodDate(period?.to)
+
+  if (!from && to) from = to
+  if (from && !to) to = from
+  if (from && to && from > to) [from, to] = [to, from]
+
+  if (from && to) {
+    const [fromYear, fromMonth, fromDay] = from.split('-').map((x) => Number(x))
+    const [toYear, toMonth, toDay] = to.split('-').map((x) => Number(x))
+
+    return {
+      dir: 'DESC',
+      filter: {
+        since: new Date(fromYear, fromMonth - 1, fromDay, 0, 0, 0, 0).toISOString(),
+        to: new Date(toYear, toMonth - 1, toDay, 23, 59, 59, 999).toISOString(),
+      },
+      limit,
+      offset,
+    }
+  }
+
+  const now = new Date()
+  const since = new Date(now.getTime() - (90 * 24 * 60 * 60 * 1000))
+
+  return {
+    dir: 'DESC',
+    filter: {
+      since: since.toISOString(),
+      to: now.toISOString(),
+    },
+    limit,
+    offset,
+  }
+}
+
+async function fetchSalesEndpointPages(
+  loader: (body: any) => Promise<any>,
+  period: SalesPeriod | null | undefined
+): Promise<any[]> {
+  const hasExplicitPeriod = Boolean(normalizeSalesPeriodDate(period?.from) || normalizeSalesPeriodDate(period?.to))
+  const limit = 1000
+  const maxPages = hasExplicitPeriod ? 100 : 1
+  const payloads: any[] = []
+
+  for (let page = 0; page < maxPages; page++) {
+    const offset = page * limit
+    const payload = await loader(buildSalesRequestBody(period, limit, offset))
+    payloads.push(payload)
+
+    const postings = extractPostingsFromPayload(payload)
+    if (postings.length < limit) break
+  }
+
+  return payloads
 }
 
 function shouldReplaceSalesRow(prev: SalesRow, next: SalesRow): boolean {
@@ -677,7 +745,7 @@ ipcMain.handle('data:getProducts', async () => {
   }
 })
 
-ipcMain.handle('data:getSales', async () => {
+ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
   try {
     let storeClientId: string | null = null
     let secrets: ReturnType<typeof loadSecrets> | null = null
@@ -689,27 +757,37 @@ ipcMain.handle('data:getSales', async () => {
       storeClientId = null
     }
 
+    const requestedPeriod: SalesPeriod | null = args?.period ?? null
     const products = dbGetProducts(storeClientId)
-    const payloadByEndpoint = new Map<string, any>()
+    const payloads: any[] = []
+    const onlineEndpoints = new Set<string>()
 
     if (secrets?.clientId && secrets?.apiKey) {
       try {
-        payloadByEndpoint.set('/v3/posting/fbs/list', await ozonPostingFbsList(secrets))
+        const fbsPayloads = await fetchSalesEndpointPages((body) => ozonPostingFbsList(secrets as NonNullable<typeof secrets>, body), requestedPeriod)
+        if (fbsPayloads.length > 0) {
+          payloads.push(...fbsPayloads)
+          onlineEndpoints.add('/v3/posting/fbs/list')
+        }
       } catch {}
 
       try {
-        payloadByEndpoint.set('/v2/posting/fbo/list', await ozonPostingFboList(secrets))
+        const fboPayloads = await fetchSalesEndpointPages((body) => ozonPostingFboList(secrets as NonNullable<typeof secrets>, body), requestedPeriod)
+        if (fboPayloads.length > 0) {
+          payloads.push(...fboPayloads)
+          onlineEndpoints.add('/v2/posting/fbo/list')
+        }
       } catch {}
     }
 
-    if (payloadByEndpoint.size < SALES_ENDPOINTS.length) {
+    if (onlineEndpoints.size < SALES_ENDPOINTS.length) {
       const cachedByEndpoint = getCachedSalesPayloadMap(storeClientId)
       for (const [endpoint, payload] of cachedByEndpoint.entries()) {
-        if (!payloadByEndpoint.has(endpoint)) payloadByEndpoint.set(endpoint, payload)
+        if (!onlineEndpoints.has(endpoint)) payloads.push(payload)
       }
     }
 
-    const rows = normalizeSalesRows(Array.from(payloadByEndpoint.values()), products)
+    const rows = normalizeSalesRows(payloads, products)
     return { ok: true, rows }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e), rows: [] }
