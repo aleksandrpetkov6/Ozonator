@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { formatDateTimeRu } from '../utils/dateTime'
+import { formatTemporalCellRu } from '../utils/dateTime'
 import { getSortButtonTitle, type SortableColumn, type TableSortState, sortTableRows, toggleTableSort } from '../utils/tableSort'
 
 type LogRow = {
@@ -45,9 +45,9 @@ function statusRu(v?: string | null) {
   return STATUS_RU[v] ?? v
 }
 
-function fmtDt(iso?: string | null) {
-  if (!iso) return '-'
-  return formatDateTimeRu(iso) || '-'
+function fmtDt(colId: 'started_at' | 'finished_at', value?: string | null) {
+  if (!value) return '-'
+  return formatTemporalCellRu(colId, value) || '-'
 }
 
 function detailsRu(type?: string | null, meta?: string | null, itemsCount?: number | null): string {
@@ -145,8 +145,8 @@ export default function LogsPage() {
               <td><div className="cellText" title={String(l.id)}>{l.id}</div></td>
               <td><div className="cellText" title={typeRu(l.type)}>{typeRu(l.type)}</div></td>
               <td><div className="cellText" title={statusRu(l.status)}><span className={`statusText ${l.status ?? ''}`.trim()}>{statusRu(l.status)}</span></div></td>
-              <td className="small"><div className="cellText" title={fmtDt(l.started_at)}>{fmtDt(l.started_at)}</div></td>
-              <td className="small"><div className="cellText" title={fmtDt(l.finished_at)}>{fmtDt(l.finished_at)}</div></td>
+              <td className="small"><div className="cellText" title={fmtDt('started_at', l.started_at)}>{fmtDt('started_at', l.started_at)}</div></td>
+              <td className="small"><div className="cellText" title={fmtDt('finished_at', l.finished_at)}>{fmtDt('finished_at', l.finished_at)}</div></td>
               <td className="small"><div className="cellText" title={detailsRu(l.type, l.meta, l.items_count)}>{detailsRu(l.type, l.meta, l.items_count)}</div></td>
               <td className="small"><div className="cellText" title={l.error_message ?? '-'}>{l.error_message ?? '-'}</div></td>
             </tr>
