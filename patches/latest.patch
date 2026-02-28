@@ -1,8 +1,138 @@
 diff --git a/electron/main/index.ts b/electron/main/index.ts
-index 57a7e4f..e2626fd 100644
+index 5ab089e..2799377 100644
 --- a/electron/main/index.ts
 +++ b/electron/main/index.ts
-@@ -500,7 +500,7 @@ const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_d
+@@ -1,9 +1,9 @@
+ import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
+ import { join } from 'path'
+ import { appendFileSync, mkdirSync } from 'fs'
+-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
++import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetLatestPostingDetailResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
+ import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
+-import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboList, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
++import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboGet, ozonPostingFboList, ozonPostingFbsGet, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
+ let mainWindow: BrowserWindow | null = null
+ let startupShowTimer: NodeJS.Timeout | null = null
+ function startupLog(...args: any[]) {
+@@ -36,6 +36,10 @@ for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+ return out
+ }
+ const SALES_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
++const SALES_DETAIL_ENDPOINTS = {
++'/v3/posting/fbs/list': '/v3/posting/fbs/get',
++'/v2/posting/fbo/list': '/v2/posting/fbo/get',
++} as const
+ type SalesPeriod = {
+ from?: string | null
+ to?: string | null
+@@ -448,6 +452,106 @@ if (postings.length < limit) break
+ }
+ return payloads
+ }
++function getSalesDetailEndpoint(endpoint: string): string | null {
++return (SALES_DETAIL_ENDPOINTS as Record<string, string>)[String(endpoint ?? '').trim()] ?? null
++}
++function extractPostingDetailResult(payload: any) {
++if (payload && typeof payload === 'object' && payload.result && typeof payload.result === 'object') return payload.result
++return payload && typeof payload === 'object' ? payload : null
++}
++function replacePayloadPostings(payload: any, nextPostings: any[]) {
++if (!payload || typeof payload !== 'object') return payload
++if ((payload as any).result && typeof (payload as any).result === 'object' && Array.isArray(((payload as any).result as any).postings)) {
++return { ...payload, result: { ...((payload as any).result as any), postings: nextPostings } }
++}
++if (Array.isArray((payload as any).postings)) return { ...payload, postings: nextPostings }
++return payload
++}
++function mergeSalesPostingWithDetail(posting: any, detailPayload: any) {
++const base = posting && typeof posting === 'object' ? posting : {}
++const detail = extractPostingDetailResult(detailPayload)
++if (!detail || typeof detail !== 'object') return base
++const merged: any = { ...base, ...detail }
++const baseProducts = Array.isArray((base as any).products) ? (base as any).products : null
++const detailProducts = Array.isArray((detail as any).products) ? (detail as any).products : null
++if (detailProducts && detailProducts.length > 0) merged.products = detailProducts
++else if (baseProducts && baseProducts.length > 0) merged.products = baseProducts
++const baseItems = Array.isArray((base as any).items) ? (base as any).items : null
++const detailItems = Array.isArray((detail as any).items) ? (detail as any).items : null
++if (detailItems && detailItems.length > 0) merged.items = detailItems
++else if (baseItems && baseItems.length > 0) merged.items = baseItems
++const baseFinancial = (base as any).financial_data && typeof (base as any).financial_data === 'object' ? (base as any).financial_data : null
++const detailFinancial = (detail as any).financial_data && typeof (detail as any).financial_data === 'object' ? (detail as any).financial_data : null
++if (baseFinancial || detailFinancial) merged.financial_data = { ...(baseFinancial ?? {}), ...(detailFinancial ?? {}) }
++return merged
++}
++function getCachedSalesDetailPayloadMap(storeClientId: string | null) {
++const detailEndpoints = Object.values(SALES_DETAIL_ENDPOINTS) as string[]
++const out = new Map<string, any>()
++const seedRows = (rows: Array<{ endpoint: string; request_body: string | null; response_body: string | null }>) => {
++for (const row of rows) {
++const requestBody = parseJsonTextSafe((row as any)?.request_body)
++const postingNumber = normalizeTextValue((requestBody as any)?.posting_number)
++if (!postingNumber) continue
++const payload = parseJsonTextSafe((row as any)?.response_body)
++if (!payload) continue
++const endpoint = normalizeTextValue((row as any)?.endpoint)
++if (!endpoint) continue
++const cacheKey = `${endpoint}::${postingNumber}`
++if (!out.has(cacheKey)) out.set(cacheKey, payload)
++}
++}
++const scopedRows = dbGetLatestPostingDetailResponses(storeClientId ?? null, detailEndpoints)
++seedRows(scopedRows as any)
++if (String(storeClientId ?? '').trim()) {
++const fallbackRows = dbGetLatestPostingDetailResponses(null, detailEndpoints)
++seedRows(fallbackRows as any)
++}
++return out
++}
++async function hydrateSalesPayloadDetails(
++payloads: SalesPayloadEnvelope[],
++secrets: ReturnType<typeof loadSecrets> | null,
++storeClientId: string | null,
++): Promise<SalesPayloadEnvelope[]> {
++const detailCache = getCachedSalesDetailPayloadMap(storeClientId)
++const out: SalesPayloadEnvelope[] = []
++for (const envelope of payloads) {
++const detailEndpoint = getSalesDetailEndpoint(envelope.endpoint)
++if (!detailEndpoint) {
++out.push(envelope)
++continue
++}
++const postings = extractPostingsFromPayload(envelope.payload)
++if (postings.length === 0) {
++out.push(envelope)
++continue
++}
++const nextPostings = postings.slice()
++const groups = chunk(postings.map((posting, index) => ({ posting, index })), 10)
++for (const group of groups) {
++const resolved = await Promise.all(group.map(async ({ posting, index }) => {
++const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
++if (!postingNumber) return { index, posting }
++const cacheKey = `${detailEndpoint}::${postingNumber}`
++let detailPayload = detailCache.get(cacheKey) ?? null
++if (secrets?.clientId && secrets?.apiKey) {
++try {
++detailPayload = detailEndpoint.includes('/fbs/')
++? await ozonPostingFbsGet(secrets as NonNullable<ReturnType<typeof loadSecrets>>, postingNumber)
++: await ozonPostingFboGet(secrets as NonNullable<ReturnType<typeof loadSecrets>>, postingNumber)
++detailCache.set(cacheKey, detailPayload)
++} catch {}
++}
++if (!detailPayload) return { index, posting }
++return { index, posting: mergeSalesPostingWithDetail(posting, detailPayload) }
++}))
++for (const item of resolved) nextPostings[item.index] = item.posting
++}
++out.push({ endpoint: envelope.endpoint, payload: replacePayloadPostings(envelope.payload, nextPostings) })
++}
++return out
++}
+ function shouldReplaceSalesRow(prev: SalesRow, next: SalesRow): boolean {
+ const prevDelivered = String(prev?.delivery_date ?? '').trim()
+ const nextDelivered = String(next?.delivery_date ?? '').trim()
+@@ -499,7 +603,7 @@ const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_d
  const status = translateSalesCodeValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']), 'status')
  const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
  const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
@@ -11,25 +141,102 @@ index 57a7e4f..e2626fd 100644
  const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
  const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
  if (!postingNumber) continue
-@@ -1052,13 +1052,19 @@ onlineEndpoints.add('/v2/posting/fbo/list')
- }
- } catch {}
- }
-+let resolvedPayloads = payloads
-+if (payloads.length > 0 && secrets?.clientId && secrets?.apiKey) {
-+try {
-+resolvedPayloads = await hydrateSalesPayloadDetails(payloads, secrets as NonNullable<typeof secrets>)
-+} catch {}
-+}
- if (onlineEndpoints.size < SALES_ENDPOINTS.length) {
- const cachedByEndpoint = getCachedSalesPayloadMap(storeClientId)
- for (const [endpoint, payload] of cachedByEndpoint.entries()) {
--if (!onlineEndpoints.has(endpoint)) payloads.push(payload)
-+if (!onlineEndpoints.has(endpoint)) resolvedPayloads.push(payload)
+@@ -981,7 +1085,11 @@ for (const [endpoint, payload] of cachedByEndpoint.entries()) {
+ if (!onlineEndpoints.has(endpoint)) payloads.push(payload)
  }
  }
 -const rows = normalizeSalesRows(payloads, products)
++let resolvedPayloads = payloads
++try {
++resolvedPayloads = await hydrateSalesPayloadDetails(payloads, secrets, storeClientId)
++} catch {}
 +const rows = normalizeSalesRows(resolvedPayloads, products)
  return { ok: true, rows }
  } catch (e: any) {
  return { ok: false, error: e?.message ?? String(e), rows: [] }
+diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
+index 1271239..bf180ad 100644
+--- a/electron/main/storage/db.ts
++++ b/electron/main/storage/db.ts
+@@ -38,6 +38,10 @@ export type ApiRawCacheResponseRow = {
+   store_client_id?: string | null
+ }
+ 
++export type ApiRawPostingDetailResponseRow = ApiRawCacheResponseRow & {
++  request_body: string | null
++}
++
+ const GRID_COLS_DATASETS = new Set<GridColsDataset>(['products', 'sales', 'returns', 'stocks'])
+ const GRID_COLS_KEY_PREFIX = 'grid_cols_layout:'
+ 
+@@ -505,6 +509,70 @@ export function dbGetLatestApiRawResponses(storeClientId: string | null | undefi
+   return out
+ }
+ 
++function extractPostingNumberFromRequestBody(text: string | null | undefined): string {
++  if (typeof text !== 'string' || !text.trim()) return ''
++
++  try {
++    const parsed = JSON.parse(text) as any
++    const postingNumber = parsed?.posting_number
++    return String(postingNumber ?? '').trim()
++  } catch {
++    return ''
++  }
++}
++
++export function dbGetLatestPostingDetailResponses(storeClientId: string | null | undefined, endpointsRaw: unknown): ApiRawPostingDetailResponseRow[] {
++  const endpoints = Array.from(new Set((Array.isArray(endpointsRaw) ? endpointsRaw : [])
++    .map((v) => String(v ?? '').trim())
++    .filter(Boolean)))
++
++  if (endpoints.length === 0) return []
++
++  const placeholders = endpoints.map(() => '?').join(', ')
++  const params = [...endpoints]
++  let sql = `
++    SELECT endpoint, request_body, response_body, fetched_at, store_client_id
++    FROM api_raw_cache
++    WHERE is_success = 1
++      AND response_body IS NOT NULL
++      AND response_truncated = 0
++      AND endpoint IN (${placeholders})
++  `
++
++  const scopedStoreClientId = String(storeClientId ?? '').trim()
++  if (scopedStoreClientId) {
++    sql += ` AND store_client_id = ?`
++    params.push(scopedStoreClientId)
++  }
++
++  sql += ` ORDER BY fetched_at DESC, id DESC`
++
++  const rows = mustDb().prepare(sql).all(...params) as any[]
++  const out: ApiRawPostingDetailResponseRow[] = []
++  const seen = new Set<string>()
++
++  for (const row of rows) {
++    const endpoint = String((row as any)?.endpoint ?? '').trim()
++    const requestBody = typeof (row as any)?.request_body === 'string' ? (row as any).request_body : null
++    const postingNumber = extractPostingNumberFromRequestBody(requestBody)
++    if (!endpoint || !postingNumber) continue
++
++    const dedupKey = `${endpoint}::${postingNumber}`
++    if (seen.has(dedupKey)) continue
++
++    out.push({
++      endpoint,
++      request_body: requestBody,
++      response_body: typeof (row as any)?.response_body === 'string' ? (row as any).response_body : null,
++      fetched_at: String((row as any)?.fetched_at ?? ''),
++      store_client_id: typeof (row as any)?.store_client_id === 'string' ? (row as any).store_client_id : null,
++    })
++    seen.add(dedupKey)
++  }
++
++  return out
++}
++
+ export function dbGetAdminSettings() {
+   const raw = getSettingValue('log_retention_days')
+   return {
