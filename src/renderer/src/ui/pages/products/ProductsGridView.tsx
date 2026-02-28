@@ -250,7 +250,7 @@ export default function ProductsGridView(props: Props) {
                               −
                             </button>
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, flex: '1 1 auto' }}>
-                              <span className="thTitle" title={getHeaderTitleText(c)}>{getHeaderTitleText(c)}</span>
+                              <span className="thTitle" data-table-header-label="true" title={getHeaderTitleText(c)}>{getHeaderTitleText(c)}</span>
                               {isSorted && (
                                 <span aria-hidden="true" style={{ fontSize: 10, opacity: 0.72, flex: '0 0 auto' }}>
                                   {sortDir === 'asc' ? '▲' : '▼'}
