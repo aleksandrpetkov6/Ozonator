@@ -46,6 +46,8 @@ posting_number?: string | null
 related_postings?: string | null
 shipment_date?: string | null
 status?: string | null
+status_details?: string | null
+carrier_status_details?: string | null
 delivery_date?: string | null
 delivery_model?: string | null
 price?: number | ''
@@ -178,6 +180,28 @@ const normalizedEndpoint = normalizeSalesEndpointName(endpoint)
 if (normalizedEndpoint) return normalizedEndpoint
 return normalizeTextValue(pickFirstPresent(posting, ['delivery_method.name', 'delivery_method', 'delivery_type']))
 }
+function pushSalesDetailPart(parts: string[], label: string, value: any) {
+const text = normalizeTextValue(value)
+if (!text) return
+const normalized = label ? `${label}: ${text}` : text
+if (!parts.includes(normalized)) parts.push(normalized)
+}
+function buildSalesStatusDetailsValue(posting: any, endpoint: string): string {
+const parts: string[] = []
+if (normalizeSalesEndpointName(endpoint) === 'FBO') {
+pushSalesDetailPart(parts, 'new_state', pickFirstPresent(posting, ['new_state', 'result.new_state']))
+pushSalesDetailPart(parts, 'changed_state_date', pickFirstPresent(posting, ['changed_state_date', 'result.changed_state_date']))
+return parts.join(' | ')
+}
+pushSalesDetailPart(parts, 'substatus', pickFirstPresent(posting, ['substatus', 'result.substatus']))
+pushSalesDetailPart(parts, 'previous_substatus', pickFirstPresent(posting, ['previous_substatus', 'result.previous_substatus']))
+return parts.join(' | ')
+}
+function buildSalesCarrierStatusDetailsValue(posting: any): string {
+const parts: string[] = []
+pushSalesDetailPart(parts, 'provider_status', pickFirstPresent(posting, ['provider_status', 'result.provider_status']))
+return parts.join(' | ')
+}
 function normalizeSalesPeriodDate(value: any): string {
 const raw = typeof value === 'string' ? value.trim() : ''
 return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ''
@@ -297,7 +321,9 @@ const fallbackRelated = endpointKind === 'FBO' && orderKey
 : []
 const related = buildRelatedPostingsText(posting, fallbackRelated)
 const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date']))
-const status = normalizeTextValue(pickFirstPresent(posting, ['status', 'state']))
+const status = normalizeTextValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']))
+const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
+const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
 const deliveredAt = normalizeDateValue(pickFirstPresent(posting, ['fact_delivery_date', 'delivered_at', 'delivery_date']))
 const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
 if (!postingNumber) continue
@@ -316,6 +342,8 @@ posting_number: postingNumber,
 related_postings: related || '',
 shipment_date: shipmentDate || '',
 status: status || '',
+status_details: statusDetails || '',
+carrier_status_details: carrierStatusDetails || '',
 delivery_date: deliveredAt || '',
 delivery_model: deliverySchema || '',
 price: normalizeNumberValue(pickFirstPresent(item, ['price', 'your_price', 'seller_price'])),
