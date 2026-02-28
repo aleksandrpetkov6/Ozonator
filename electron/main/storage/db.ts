@@ -22,10 +22,13 @@ type AppLogType =
 
 type GridColsDataset = 'products' | 'sales' | 'returns' | 'stocks'
 
+type GridColHiddenBucket = 'main' | 'add'
+
 type GridColLayoutItem = {
   id: string
   w: number
   visible: boolean
+  hiddenBucket: GridColHiddenBucket
 }
 
 export type ApiRawCacheResponseRow = {
@@ -541,8 +544,9 @@ function normalizeGridColLayoutItems(value: unknown): GridColLayoutItem[] {
     const wRaw = Number((raw as any).w)
     const w = Number.isFinite(wRaw) ? Math.max(60, Math.min(2000, Math.round(wRaw))) : 120
     const visible = typeof (raw as any).visible === 'boolean' ? (raw as any).visible : true
+    const hiddenBucket: GridColHiddenBucket = (raw as any).hiddenBucket === 'add' ? 'add' : 'main'
 
-    out.push({ id, w, visible })
+    out.push({ id, w, visible, hiddenBucket })
     seen.add(id)
     if (out.length >= 200) break
   }
