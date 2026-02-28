@@ -20,16 +20,16 @@ type Props = {
   sortColId: ColDef['id'] | null
   sortDir?: TableSortDir
   photoPreview: { url: string; alt: string; x: number; y: number } | null
-  collapsedBtnRef: React.RefObject<HTMLButtonElement | null>
-  collapsedMenuRef: React.RefObject<HTMLDivElement | null>
-  resizeIndicatorRef: React.RefObject<HTMLDivElement | null>
-  headScrollRef: React.RefObject<HTMLDivElement | null>
-  headInnerRef: React.RefObject<HTMLDivElement | null>
-  headTableRef: React.RefObject<HTMLTableElement | null>
-  headerRowRef: React.RefObject<HTMLTableRowElement | null>
-  bodyScrollRef: React.RefObject<HTMLDivElement | null>
-  bodyInnerRef: React.RefObject<HTMLDivElement | null>
-  bodyTableRef: React.RefObject<HTMLTableElement | null>
+  collapsedBtnRef: React.RefObject<HTMLButtonElement>
+  collapsedMenuRef: React.RefObject<HTMLDivElement>
+  resizeIndicatorRef: React.RefObject<HTMLDivElement>
+  headScrollRef: React.RefObject<HTMLDivElement>
+  headInnerRef: React.RefObject<HTMLDivElement>
+  headTableRef: React.RefObject<HTMLTableElement>
+  headerRowRef: React.RefObject<HTMLTableRowElement>
+  bodyScrollRef: React.RefObject<HTMLDivElement>
+  bodyInnerRef: React.RefObject<HTMLDivElement>
+  bodyTableRef: React.RefObject<HTMLTableElement>
   getHeaderTitleText: (c: ColDef) => string
   getRowKey: (p: GridRow, absoluteRowIndex: number) => string
   cellText: (p: GridRow, colId: ColDef['id']) => { text: string; title?: string }
