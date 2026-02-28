@@ -19,6 +19,7 @@ type GridRow = {
   hidden_reasons?: string | null
   created_at?: string | null
   updated_at?: string | null
+  in_process_at?: string | null
   warehouse_id?: number | null
   warehouse_name?: string | null
   placement_zone?: string | null
@@ -65,6 +66,10 @@ function buildDefaultCols(dataset: DataSet): ColDef[] {
     asMainCol({ id: 'created_at', title: 'Создан', w: 180, visible: true }),
   ]
 
+  if (dataset === 'sales') {
+    base.push(asMainCol({ id: 'in_process_at', title: 'Принят в обработку', w: 180, visible: true }))
+  }
+
   if (dataset === 'stocks') {
     base.push(
       { id: 'warehouse_name', title: 'Склад', w: 180, visible: true, hiddenBucket: 'main' },
@@ -95,6 +100,7 @@ const AUTO_MAX_W: Record<string, number> = {
   hidden_reasons: 440,
   created_at: 240,
   updated_at: 240,
+  in_process_at: 240,
   warehouse_name: 240,
   placement_zone: 320,
   type: 380,
@@ -212,7 +218,7 @@ async function fetchRowsCached(dataset: DataSet, force = false): Promise<GridRow
         if (resp.ok) list = (resp.products as any) as GridRow[]
         else return DATASET_CACHE[dataset]
       } else if (dataset === 'sales') {
-        const resp = await window.api.getSales()
+        const resp = await window.api.getSales({ from: '2026-02-01' })
         if (resp.ok) list = (resp.rows as any) as GridRow[]
         else return DATASET_CACHE[dataset]
       } else if (dataset === 'returns') {
@@ -584,6 +590,7 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
             const v = (p as any)[colId]
             return (v == null || String(v).trim() === '') ? '-' : String(v)
           }
+          if (colId === 'in_process_at') return formatDateTimeRu((p as any)[colId])
           if (colId === 'photo_url') return ''
           return toText((p as any)[colId])
         })
@@ -857,7 +864,7 @@ function onDragOverHeader(e: React.DragEvent) {
       const rs = visibilityReasonText(v)
       return { text: rs, title: rs !== '-' ? rs : undefined }
     }
-    if (colId === 'created_at' || colId === 'updated_at') {
+    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at') {
       const f = formatDateTimeRu(v)
       return { text: f || '-', title: f || undefined }
     }
@@ -921,7 +928,7 @@ function onDragOverHeader(e: React.DragEvent) {
       const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
       return zone || 'Нет данных синхронизации'
     }
-    if (colId === 'created_at' || colId === 'updated_at') return formatDateTimeRu((p as any)[colId])
+    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at') return formatDateTimeRu((p as any)[colId])
     return toText((p as any)[colId])
   }
 
