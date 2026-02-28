@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { formatDateTimeRu } from '../utils/dateTime'
+import { formatTemporalCellRu, isTemporalColumnId } from '../utils/dateTime'
 import { type TableSortState, sortTableRows, toggleTableSort } from '../utils/tableSort'
 import ProductsGridView from './products/ProductsGridView'
 import {
@@ -306,7 +306,7 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
             const v = (p as any)[colId]
             return (v == null || String(v).trim() === '') ? '-' : String(v)
           }
-          if (colId === 'in_process_at') return formatDateTimeRu((p as any)[colId])
+          if (isTemporalColumnId(colId)) return formatTemporalCellRu(colId, (p as any)[colId])
           if (colId === 'photo_url') return ''
           return toText((p as any)[colId])
         })
@@ -544,8 +544,8 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
       const rs = visibilityReasonText(v)
       return { text: rs, title: rs !== '-' ? rs : undefined }
     }
-    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at') {
-      const f = formatDateTimeRu(v)
+    if (isTemporalColumnId(colId)) {
+      const f = formatTemporalCellRu(colId, v)
       return { text: f || '-', title: f || undefined }
     }
     if (colId === 'warehouse_name') {
@@ -608,7 +608,7 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
       const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
       return zone || 'Нет данных синхронизации'
     }
-    if (colId === 'created_at' || colId === 'updated_at' || colId === 'in_process_at') return formatDateTimeRu((p as any)[colId])
+    if (isTemporalColumnId(colId)) return formatTemporalCellRu(colId, (p as any)[colId])
     return toText((p as any)[colId])
   }
 
