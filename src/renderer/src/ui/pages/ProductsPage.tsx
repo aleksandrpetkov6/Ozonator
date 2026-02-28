@@ -54,6 +54,92 @@ const AUTO_MAX_W: Record<string, number> = {
   photo_url: 90,
 }
 
+
+const SALES_UI_LABELS_RU: Record<string, string> = {
+  awaiting_packaging: 'Ожидает упаковки',
+  awaiting_deliver: 'Ожидает доставки',
+  awaiting_registration: 'Ожидает регистрации',
+  awaiting_customer: 'Ожидает покупателя',
+  acceptance_in_progress: 'Идёт приёмка',
+  created: 'Создан',
+  accepted: 'Принят',
+  processing: 'В обработке',
+  in_process: 'В обработке',
+  ready_to_ship: 'Готов к отгрузке',
+  ready_for_pickup: 'Готов к выдаче',
+  handed_over_to_delivery: 'Передан в доставку',
+  sent_to_delivery: 'Передан в доставку',
+  sent_by_seller: 'Отправлен продавцом',
+  in_transit: 'В пути',
+  transit: 'В пути',
+  on_the_way: 'В пути',
+  on_route: 'В пути',
+  delivering: 'Доставляется',
+  delivery_failed: 'Доставка не удалась',
+  delivered: 'Доставлен',
+  delivered_to_customer: 'Доставлен покупателю',
+  returned: 'Возвращён',
+  returning: 'Возвращается',
+  return_in_progress: 'Возврат в обработке',
+  cancelled: 'Отменён',
+  not_found: 'Не найден',
+  lost: 'Утерян',
+  damaged: 'Повреждён',
+  on_point: 'В пункте выдачи',
+  pickup: 'В пункте выдачи',
+  at_pickup_point: 'В пункте выдачи',
+  posting_waiting_buyer: 'Ожидает покупателя',
+  posting_waiting_passport_data: 'Ожидает паспортные данные',
+  posting_delivered_to_customer: 'Доставлен покупателю',
+}
+
+function capitalizeSalesUiText(value: string): string {
+  const text = value.trim()
+  if (!text) return ''
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function getSalesUiFallbackText(mode: 'status' | 'detail' | 'provider'): string {
+  if (mode === 'provider') return 'Прочий статус перевозчика'
+  if (mode === 'detail') return 'Прочая деталь статуса'
+  return 'Прочий статус'
+}
+
+function normalizeSalesUiLookupKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[./\\]+/g, ' ')
+    .replace(/[:=]+/g, ' ')
+    .replace(/[_\-\s]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function translateSalesUiValue(value: unknown, mode: 'status' | 'detail' | 'provider' = 'status'): string {
+  const raw = toText(value).trim()
+  if (!raw) return ''
+
+  if (raw.includes('|')) {
+    const parts = raw
+      .split(/\s*\|\s*/)
+      .map((part) => translateSalesUiValue(part, mode))
+      .filter(Boolean)
+    return Array.from(new Set(parts)).join(' | ')
+  }
+
+  const previousMatch = raw.match(/^(предыдущий|previous|previous_substatus)\s*[:=]\s*(.+)$/i)
+  if (previousMatch?.[2]) {
+    const translated = translateSalesUiValue(previousMatch[2], 'detail')
+    return translated ? `Предыдущий: ${translated}` : ''
+  }
+
+  const cleaned = raw.replace(/^(substatus|provider_status|status|state)\s*[:=]\s*/i, '').trim()
+  if (!cleaned) return ''
+  if (/[А-Яа-яЁё]/.test(cleaned)) return capitalizeSalesUiText(cleaned)
+
+  const mapped = SALES_UI_LABELS_RU[normalizeSalesUiLookupKey(cleaned)]
+  return mapped ?? getSalesUiFallbackText(mode)
+}
+
 export default function ProductsPage({ dataset = 'products', query = '', onStats }: Props) {
   const [products, setProducts] = useState<GridRow[]>(() => getCachedRows(dataset))
   const [cols, setCols] = useState<ColDef[]>(() => readCols(dataset))
@@ -533,6 +619,9 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
       const v = (p as any)[colId]
       return { text: (v == null || String(v).trim() === '') ? '-' : String(v) }
     }
+    if (colId === 'status') return { text: translateSalesUiValue((p as any)[colId], 'status') || '-' }
+    if (colId === 'status_details') return { text: translateSalesUiValue((p as any)[colId], 'detail') || '-' }
+    if (colId === 'carrier_status_details') return { text: translateSalesUiValue((p as any)[colId], 'provider') || '-' }
     if (colId === 'is_visible') {
       const txt = visibilityText(p)
       const rs = visibilityReasonText(p.hidden_reasons)
@@ -598,6 +687,9 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
       return (v == null || String(v).trim() === '') ? '-' : String(v)
     }
     if (colId === 'photo_url') return ''
+    if (colId === 'status') return translateSalesUiValue((p as any)[colId], 'status') || '-'
+    if (colId === 'status_details') return translateSalesUiValue((p as any)[colId], 'detail') || '-'
+    if (colId === 'carrier_status_details') return translateSalesUiValue((p as any)[colId], 'provider') || '-'
     if (colId === 'warehouse_name') {
       const rawName = (p.warehouse_name == null ? '' : String(p.warehouse_name)).trim()
       if (rawName) return rawName
