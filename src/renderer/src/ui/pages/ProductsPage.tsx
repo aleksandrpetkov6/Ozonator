@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { formatDateTimeRu } from '../utils/dateTime'
 
 type GridRow = {
   offer_id: string
@@ -235,22 +236,6 @@ function toText(v: any): string {
   if (typeof v === 'string') return v
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   try { return JSON.stringify(v) } catch { return String(v) }
-}
-
-function formatDateTimeRu(v: any): string {
-  if (v == null || v === '') return ''
-
-  const d = (v instanceof Date) ? v : new Date(v)
-  if (Number.isNaN(d.getTime())) return String(v)
-
-  const dd = String(d.getDate()).padStart(2, '0')
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const yy = String(d.getFullYear()).slice(-2)
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mi = String(d.getMinutes()).padStart(2, '0')
-  const ss = String(d.getSeconds()).padStart(2, '0')
-
-  return `${dd}.${mm}.${yy} ${hh}.${mi}.${ss}`
 }
 
 const VISIBILITY_REASON_MAP_RU: Record<string, string> = {
@@ -843,7 +828,7 @@ function onDragOverHeader(e: React.DragEvent) {
     }
     if (colId === 'created_at' || colId === 'updated_at') {
       const f = formatDateTimeRu(v)
-      return { text: f || '-', title: (v == null || v === '') ? undefined : String(v) }
+      return { text: f || '-', title: f || undefined }
     }
     if (colId === 'warehouse_name') {
       const rawName = (p.warehouse_name == null ? '' : String(p.warehouse_name)).trim()
@@ -1015,7 +1000,6 @@ function onDragOverHeader(e: React.DragEvent) {
     const updateViewport = () => setBodyViewportH(body.clientHeight || 0)
     updateViewport()
 
-    // eslint-disable-next-line no-undef
     const ro = new ResizeObserver(() => updateViewport())
     ro.observe(body)
     return () => ro.disconnect()
