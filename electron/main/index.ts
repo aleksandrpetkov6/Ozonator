@@ -49,6 +49,7 @@ status?: string | null
 status_details?: string | null
 carrier_status_details?: string | null
 delivery_date?: string | null
+delivery_cluster?: string | null
 delivery_model?: string | null
 price?: number | ''
 quantity?: number | ''
@@ -81,6 +82,119 @@ function normalizeTextValue(value: any): string {
 if (typeof value === 'string') return value.trim()
 if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
 return ''
+}
+
+const SALES_STATUS_LABELS_RU: Record<string, string> = {
+awaiting_packaging: 'Ожидает упаковки',
+awaiting_deliver: 'Ожидает доставки',
+awaiting_approve: 'Ожидает подтверждения',
+awaiting_registration: 'Ожидает регистрации',
+acceptance_in_progress: 'Идёт приёмка',
+created: 'Создан',
+processing: 'В обработке',
+in_process: 'В обработке',
+ready_to_ship: 'Готов к отгрузке',
+shipped: 'Отгружен',
+sent_by_seller: 'Отправлен продавцом',
+driver_pickup: 'Забирает курьер',
+delivering: 'Доставляется',
+delivered: 'Доставлен',
+returned: 'Возвращён',
+returning: 'Возвращается',
+cancelled: 'Отменён',
+not_accepted: 'Не принят',
+arbitration: 'Арбитраж',
+client_arbitration: 'Арбитраж с клиентом',
+posting_created: 'Создан',
+posting_created_from_split: 'Создан после разделения',
+posting_registered: 'Зарегистрирован',
+posting_accepted: 'Принят',
+posting_reception_transfer: 'Передан на приёмку',
+posting_ready_to_ship: 'Готов к отгрузке',
+posting_sent_by_seller: 'Отправлен продавцом',
+posting_transferring_to_delivery: 'Передаётся в доставку',
+posting_transfered_to_courier_service: 'Передан в службу доставки',
+posting_transferred_to_courier_service: 'Передан в службу доставки',
+posting_driver_pick_up: 'Забирает курьер',
+posting_in_carriage: 'В пути',
+posting_sent_to_city: 'Отправлен в город получения',
+posting_on_way_to_city: 'В пути в город получения',
+posting_on_way_to_pickup_point: 'В пути в пункт выдачи',
+posting_arrived_at_pickup_point: 'Прибыл в пункт выдачи',
+posting_in_pickup_point: 'В пункте выдачи',
+posting_on_pickup_point: 'В пункте выдачи',
+posting_waiting_buyer: 'Ожидает покупателя',
+posting_waiting_passport_data: 'Ожидает паспортные данные',
+posting_conditionally_delivered: 'Условно доставлен',
+posting_delivering: 'Доставляется',
+posting_delivered: 'Доставлен',
+posting_delivered_to_customer: 'Доставлен покупателю',
+posting_not_in_sort_center: 'Не найден в сортировочном центре',
+posting_not_in_pickup_point: 'Не найден в пункте выдачи',
+posting_lost: 'Утерян',
+posting_damaged: 'Повреждён',
+posting_timeout: 'Истёк срок хранения',
+posting_return_in_progress: 'Возврат в обработке',
+posting_returning: 'Возвращается',
+posting_returned: 'Возвращён',
+posting_returned_to_seller: 'Возвращён продавцу',
+posting_partial_return: 'Частичный возврат',
+returned_to_seller: 'Возвращён продавцу',
+}
+
+const SALES_PROVIDER_STATUS_LABELS_RU: Record<string, string> = {
+created: 'Создан',
+accepted: 'Принят',
+awaiting_registration: 'Ожидает регистрации',
+ready_for_pickup: 'Готов к выдаче',
+ready_to_ship: 'Готов к отгрузке',
+in_transit: 'В пути',
+transit: 'В пути',
+delivering: 'Доставляется',
+delivered: 'Доставлен',
+returned: 'Возвращён',
+returning: 'Возвращается',
+cancelled: 'Отменён',
+lost: 'Утерян',
+damaged: 'Повреждён',
+not_found: 'Не найден',
+on_point: 'В пункте выдачи',
+pickup: 'В пункте выдачи',
+}
+
+function capitalizeSalesText(value: string): string {
+const text = value.trim()
+if (!text) return ''
+return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+function humanizeSalesCode(value: string): string {
+const text = normalizeTextValue(value)
+if (!text) return ''
+return capitalizeSalesText(text.replace(/[./]+/g, ' ').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim())
+}
+
+function translateSalesCodeValue(value: any, mode: 'status' | 'detail' | 'provider' = 'status'): string {
+const raw = normalizeTextValue(value)
+if (!raw) return ''
+const key = raw.toLowerCase()
+const providerMapped = SALES_PROVIDER_STATUS_LABELS_RU[key]
+const statusMapped = SALES_STATUS_LABELS_RU[key]
+if (mode === 'provider') return capitalizeSalesText(providerMapped ?? statusMapped ?? humanizeSalesCode(raw))
+return capitalizeSalesText(statusMapped ?? providerMapped ?? humanizeSalesCode(raw))
+}
+
+function pushUniqueSalesPart(parts: string[], value: any) {
+const text = normalizeTextValue(value)
+if (!text) return
+if (!parts.includes(text)) parts.push(text)
+}
+
+function pushLabeledSalesPart(parts: string[], label: string, value: any) {
+const text = normalizeTextValue(value)
+if (!text) return
+const normalized = `${label}: ${text}`
+if (!parts.includes(normalized)) parts.push(normalized)
 }
 function normalizeDateValue(value: any): string {
 if (value == null || value === '') return ''
@@ -180,26 +294,25 @@ const normalizedEndpoint = normalizeSalesEndpointName(endpoint)
 if (normalizedEndpoint) return normalizedEndpoint
 return normalizeTextValue(pickFirstPresent(posting, ['delivery_method.name', 'delivery_method', 'delivery_type']))
 }
-function pushSalesDetailPart(parts: string[], label: string, value: any) {
-const text = normalizeTextValue(value)
-if (!text) return
-const normalized = label ? `${label}: ${text}` : text
-if (!parts.includes(normalized)) parts.push(normalized)
-}
 function buildSalesStatusDetailsValue(posting: any, endpoint: string): string {
 const parts: string[] = []
 if (normalizeSalesEndpointName(endpoint) === 'FBO') {
-pushSalesDetailPart(parts, 'new_state', pickFirstPresent(posting, ['new_state', 'result.new_state']))
-pushSalesDetailPart(parts, 'changed_state_date', pickFirstPresent(posting, ['changed_state_date', 'result.changed_state_date']))
+const nextState = translateSalesCodeValue(pickFirstPresent(posting, ['new_state', 'result.new_state']), 'detail')
+pushUniqueSalesPart(parts, nextState)
+pushLabeledSalesPart(parts, 'Дата изменения', pickFirstPresent(posting, ['changed_state_date', 'result.changed_state_date']))
 return parts.join(' | ')
 }
-pushSalesDetailPart(parts, 'substatus', pickFirstPresent(posting, ['substatus', 'result.substatus']))
-pushSalesDetailPart(parts, 'previous_substatus', pickFirstPresent(posting, ['previous_substatus', 'result.previous_substatus']))
+const substatus = translateSalesCodeValue(pickFirstPresent(posting, ['substatus', 'result.substatus']), 'detail')
+pushUniqueSalesPart(parts, substatus)
+const previousSubstatus = translateSalesCodeValue(pickFirstPresent(posting, ['previous_substatus', 'result.previous_substatus']), 'detail')
+if (previousSubstatus && previousSubstatus !== substatus) {
+pushLabeledSalesPart(parts, 'Предыдущий', previousSubstatus)
+}
 return parts.join(' | ')
 }
 function buildSalesCarrierStatusDetailsValue(posting: any): string {
 const parts: string[] = []
-pushSalesDetailPart(parts, 'provider_status', pickFirstPresent(posting, ['provider_status', 'result.provider_status']))
+pushUniqueSalesPart(parts, translateSalesCodeValue(pickFirstPresent(posting, ['provider_status', 'result.provider_status']), 'provider'))
 return parts.join(' | ')
 }
 function normalizeSalesPeriodDate(value: any): string {
@@ -321,10 +434,11 @@ const fallbackRelated = endpointKind === 'FBO' && orderKey
 : []
 const related = buildRelatedPostingsText(posting, fallbackRelated)
 const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date']))
-const status = normalizeTextValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']))
+const status = translateSalesCodeValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']), 'status')
 const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
 const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
 const deliveredAt = normalizeDateValue(pickFirstPresent(posting, ['fact_delivery_date', 'delivered_at', 'delivery_date']))
+const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
 const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
 if (!postingNumber) continue
 for (const item of items) {
@@ -345,6 +459,7 @@ status: status || '',
 status_details: statusDetails || '',
 carrier_status_details: carrierStatusDetails || '',
 delivery_date: deliveredAt || '',
+delivery_cluster: deliveryCluster || '',
 delivery_model: deliverySchema || '',
 price: normalizeNumberValue(pickFirstPresent(item, ['price', 'your_price', 'seller_price'])),
 quantity: normalizeNumberValue(pickFirstPresent(item, ['quantity', 'qty'])),
