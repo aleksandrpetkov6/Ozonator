@@ -127,7 +127,7 @@ export default function LogsPage() {
         title={getSortButtonTitle(isSorted, sortState?.dir)}
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%', padding: 0, border: 'none', background: 'transparent', color: 'inherit', font: 'inherit', fontWeight: 'inherit', cursor: 'pointer', textAlign: 'left' }}
       >
-        <span style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+        <span className="tableHeaderLabel" data-table-header-label="true" style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
         {isSorted && <span aria-hidden="true" style={{ fontSize: 10, opacity: 0.72, flex: '0 0 auto' }}>{sortState?.dir === 'asc' ? '▲' : '▼'}</span>}
       </button>
     )
