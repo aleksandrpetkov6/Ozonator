@@ -23,6 +23,9 @@ export type GridRow = {
   related_postings?: string | null
   delivery_model?: string | null
   shipment_date?: string | null
+  status?: string | null
+  status_details?: string | null
+  carrier_status_details?: string | null
   warehouse_id?: number | null
   warehouse_name?: string | null
   placement_zone?: string | null
@@ -202,6 +205,9 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
       asMainCol({ id: 'related_postings', title: 'Связанные отправления', w: 300, visible: true }),
       asMainCol({ id: 'delivery_model', title: 'Метод доставки', w: 150, visible: true }),
       asMainCol({ id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.shipment_date) ?? '' }),
+      asMainCol({ id: 'status', title: 'Статус', w: 180, visible: true }),
+      asMainCol({ id: 'status_details', title: 'Детали статуса', w: 260, visible: true }),
+      asMainCol({ id: 'carrier_status_details', title: 'Детали перевозчика по статусу', w: 320, visible: true }),
     )
   }
 
