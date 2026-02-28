@@ -19,6 +19,10 @@ export type GridRow = {
   created_at?: string | null
   updated_at?: string | null
   in_process_at?: string | null
+  posting_number?: string | null
+  related_postings?: string | null
+  delivery_model?: string | null
+  shipment_date?: string | null
   warehouse_id?: number | null
   warehouse_name?: string | null
   placement_zone?: string | null
@@ -192,7 +196,13 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
   ]
 
   if (dataset === 'sales') {
-    base.push(asMainCol({ id: 'in_process_at', title: 'Принят в обработку', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.in_process_at) ?? '' }))
+    base.push(
+      asMainCol({ id: 'in_process_at', title: 'Принят в обработку', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.in_process_at) ?? '' }),
+      asMainCol({ id: 'posting_number', title: 'Номер отправления', w: 220, visible: true }),
+      asMainCol({ id: 'related_postings', title: 'Связанные отправления', w: 300, visible: true }),
+      asMainCol({ id: 'delivery_model', title: 'Метод доставки', w: 150, visible: true }),
+      asMainCol({ id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.shipment_date) ?? '' }),
+    )
   }
 
   if (dataset === 'stocks') {
