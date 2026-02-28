@@ -44,24 +44,26 @@ type Props = {
 const PHOTO_PREVIEW_SIZE = 200
 const PHOTO_PREVIEW_DELAY_MS = 1000
 
+const asMainCol = (col: Omit<ColDef, 'hiddenBucket'>): ColDef => ({ ...col, hiddenBucket: 'main' })
+
 function buildDefaultCols(dataset: DataSet): ColDef[] {
   const base: ColDef[] = [
-    { id: 'offer_id', title: 'Артикул', w: 160, visible: true },
-    { id: 'product_id', title: 'ID', w: 110, visible: true },
-    { id: 'ozon_sku', title: 'SKU Ozon', w: 150, visible: true },
-    { id: 'seller_sku', title: 'SKU продавца', w: 180, visible: true },
-    { id: 'fbo_sku', title: 'SKU FBO', w: 150, visible: true },
-    { id: 'fbs_sku', title: 'SKU FBS', w: 150, visible: true },
-    { id: 'photo_url', title: 'Фото', w: 74, visible: true },
-    { id: 'name', title: 'Наименование', w: 320, visible: true },
-    { id: 'brand', title: 'Бренд', w: 180, visible: true },
-    { id: 'sku', title: 'SKU', w: 140, visible: true },
-    { id: 'barcode', title: 'Штрихкод', w: 170, visible: true },
-    { id: 'type', title: 'Категория', w: 280, visible: true },
-    { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
-    { id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: true },
-    { id: 'created_at', title: 'Создан', w: 180, visible: true },
-  ].map((col) => ({ ...col, hiddenBucket: 'main' as const }))
+    asMainCol({ id: 'offer_id', title: 'Артикул', w: 160, visible: true }),
+    asMainCol({ id: 'product_id', title: 'ID', w: 110, visible: true }),
+    asMainCol({ id: 'ozon_sku', title: 'SKU Ozon', w: 150, visible: true }),
+    asMainCol({ id: 'seller_sku', title: 'SKU продавца', w: 180, visible: true }),
+    asMainCol({ id: 'fbo_sku', title: 'SKU FBO', w: 150, visible: true }),
+    asMainCol({ id: 'fbs_sku', title: 'SKU FBS', w: 150, visible: true }),
+    asMainCol({ id: 'photo_url', title: 'Фото', w: 74, visible: true }),
+    asMainCol({ id: 'name', title: 'Наименование', w: 320, visible: true }),
+    asMainCol({ id: 'brand', title: 'Бренд', w: 180, visible: true }),
+    asMainCol({ id: 'sku', title: 'SKU', w: 140, visible: true }),
+    asMainCol({ id: 'barcode', title: 'Штрихкод', w: 170, visible: true }),
+    asMainCol({ id: 'type', title: 'Категория', w: 280, visible: true }),
+    asMainCol({ id: 'is_visible', title: 'Видимость', w: 140, visible: true }),
+    asMainCol({ id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: true }),
+    asMainCol({ id: 'created_at', title: 'Создан', w: 180, visible: true }),
+  ]
 
   if (dataset === 'stocks') {
     base.push(
