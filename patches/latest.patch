@@ -1,87 +1,104 @@
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
-@@ -33,6 +33,14 @@
- 
- export type ApiRawCacheResponseRow = {
-   endpoint: string
-+  response_body: string | null
-+  fetched_at: string
-+  store_client_id?: string | null
+diff --git a/electron/main/index.ts b/electron/main/index.ts
+index 5ab089e..57a7e4f 100644
+--- a/electron/main/index.ts
++++ b/electron/main/index.ts
+@@ -3,7 +3,7 @@ import { join } from 'path'
+ import { appendFileSync, mkdirSync } from 'fs'
+ import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
+ import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
+-import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboList, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
++import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboGet, ozonPostingFboList, ozonPostingFbsGet, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
+ let mainWindow: BrowserWindow | null = null
+ let startupShowTimer: NodeJS.Timeout | null = null
+ function startupLog(...args: any[]) {
+@@ -36,6 +36,7 @@ for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+ return out
+ }
+ const SALES_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
++const SALES_DETAIL_ENDPOINTS = ['/v3/posting/fbs/get', '/v2/posting/fbo/get'] as const
+ type SalesPeriod = {
+ from?: string | null
+ to?: string | null
+@@ -543,6 +544,82 @@ if (aPosting !== bPosting) return bPosting.localeCompare(aPosting)
+ return String(a?.offer_id ?? '').localeCompare(String(b?.offer_id ?? ''), 'ru')
+ })
+ }
++function getSalesDetailEndpoint(listEndpoint: string): typeof SALES_DETAIL_ENDPOINTS[number] | null {
++const normalized = String(listEndpoint ?? '').trim()
++if (normalized === '/v3/posting/fbs/list') return '/v3/posting/fbs/get'
++if (normalized === '/v2/posting/fbo/list') return '/v2/posting/fbo/get'
++return null
 +}
-+
-+export type ApiRawCachePostingDetailRow = {
-+  endpoint: string
-+  posting_number: string
-   response_body: string | null
-   fetched_at: string
-   store_client_id?: string | null
-@@ -500,6 +508,69 @@
-     seen.add(endpoint)
- 
-     if (seen.size >= endpoints.length) break
-+  }
-+
-+  return out
++function extractPostingDetailResult(payload: any): any {
++const result = safeGetByPath(payload, 'result', undefined)
++if (result && typeof result === 'object') return result
++return payload && typeof payload === 'object' ? payload : null
 +}
-+
-+function extractPostingNumberFromApiRequestBody(requestBodyRaw: unknown): string {
-+  if (typeof requestBodyRaw !== 'string' || !requestBodyRaw.trim()) return ''
-+
-+  try {
-+    const parsed = JSON.parse(requestBodyRaw)
-+    const postingNumber = String((parsed as any)?.posting_number ?? '').trim()
-+    return postingNumber
-+  } catch {
-+    return ''
-+  }
++function replacePayloadPostings(payload: any, postings: any[]): any {
++if (!payload || typeof payload !== 'object') return payload
++const result = safeGetByPath(payload, 'result', null)
++if (result && typeof result === 'object' && Array.isArray((result as any).postings)) {
++return {
++...(payload as any),
++result: {
++...(result as any),
++postings,
++},
 +}
-+
-+export function dbGetLatestPostingDetailResponses(storeClientId: string | null | undefined, endpointsRaw: unknown): ApiRawCachePostingDetailRow[] {
-+  const endpoints = Array.from(new Set((Array.isArray(endpointsRaw) ? endpointsRaw : [])
-+    .map((v) => String(v ?? '').trim())
-+    .filter(Boolean)))
-+
-+  if (endpoints.length === 0) return []
-+
-+  const placeholders = endpoints.map(() => '?').join(', ')
-+  const params = [...endpoints]
-+  let sql = `
-+    SELECT endpoint, request_body, response_body, fetched_at, store_client_id
-+    FROM api_raw_cache
-+    WHERE is_success = 1
-+      AND response_body IS NOT NULL
-+      AND response_truncated = 0
-+      AND endpoint IN (${placeholders})
-+  `
-+
-+  const scopedStoreClientId = String(storeClientId ?? '').trim()
-+  if (scopedStoreClientId) {
-+    sql += ` AND store_client_id = ?`
-+    params.push(scopedStoreClientId)
-+  }
-+
-+  sql += ` ORDER BY fetched_at DESC, id DESC`
-+
-+  const rows = mustDb().prepare(sql).all(...params) as any[]
-+  const out: ApiRawCachePostingDetailRow[] = []
-+  const seen = new Set<string>()
-+
-+  for (const row of rows) {
-+    const endpoint = String((row as any)?.endpoint ?? '').trim()
-+    const postingNumber = extractPostingNumberFromApiRequestBody((row as any)?.request_body)
-+    if (!endpoint || !postingNumber) continue
-+
-+    const dedupKey = `${endpoint}\n${postingNumber}`
-+    if (seen.has(dedupKey)) continue
-+
-+    out.push({
-+      endpoint,
-+      posting_number: postingNumber,
-+      response_body: typeof (row as any)?.response_body === 'string' ? (row as any).response_body : null,
-+      fetched_at: String((row as any)?.fetched_at ?? ''),
-+      store_client_id: typeof (row as any)?.store_client_id === 'string' ? (row as any).store_client_id : null,
-+    })
-+    seen.add(dedupKey)
-   }
- 
-   return out
++}
++if (Array.isArray((payload as any).postings)) {
++return {
++...(payload as any),
++postings,
++}
++}
++return payload
++}
++function mergeSalesPostingWithDetail(posting: any, detailPayload: any): any {
++const detail = extractPostingDetailResult(detailPayload)
++if (!detail || typeof detail !== 'object') return posting
++return {
++...((posting && typeof posting === 'object') ? posting : {}),
++...(detail as any),
++}
++}
++async function hydrateSalesPayloadDetails(
++payloads: SalesPayloadEnvelope[],
++secrets: { clientId?: string | null; apiKey?: string | null } | null | undefined,
++): Promise<SalesPayloadEnvelope[]> {
++if (!Array.isArray(payloads) || payloads.length === 0) return payloads
++if (!secrets?.clientId || !secrets?.apiKey) return payloads
++const out: SalesPayloadEnvelope[] = []
++for (const envelope of payloads) {
++const detailEndpoint = getSalesDetailEndpoint(envelope?.endpoint)
++const postings = extractPostingsFromPayload(envelope?.payload)
++if (!detailEndpoint || postings.length === 0) {
++out.push(envelope)
++continue
++}
++const hydratedPostings: any[] = []
++for (const posting of postings) {
++const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
++if (!postingNumber) {
++hydratedPostings.push(posting)
++continue
++}
++try {
++const detailPayload = detailEndpoint === '/v3/posting/fbs/get'
++? await ozonPostingFbsGet(secrets as any, postingNumber)
++: await ozonPostingFboGet(secrets as any, postingNumber)
++hydratedPostings.push(mergeSalesPostingWithDetail(posting, detailPayload))
++} catch {
++hydratedPostings.push(posting)
++}
++}
++out.push({
++endpoint: envelope.endpoint,
++payload: replacePayloadPostings(envelope.payload, hydratedPostings),
++})
++}
++return out
++}
+ function getCachedSalesPayloadMap(storeClientId: string | null | undefined): Map<string, SalesPayloadEnvelope> {
+ const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_ENDPOINTS as unknown as string[])
+ const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_ENDPOINTS as unknown as string[])
