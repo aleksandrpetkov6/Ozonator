@@ -766,6 +766,32 @@ export async function ozonPostingFboList(secrets: Secrets, body?: any) {
   return ozonPost(secrets, '/v2/posting/fbo/list', body ?? buildPostingListBody())
 }
 
+function buildPostingGetBody(postingNumber: string, includeExtendedFields = false) {
+  const normalizedPostingNumber = String(postingNumber ?? '').trim()
+  if (!normalizedPostingNumber) throw new Error('Не указан posting_number')
+
+  const body: any = { posting_number: normalizedPostingNumber }
+
+  if (includeExtendedFields) {
+    body.with = {
+      analytics_data: true,
+      financial_data: true,
+      barcodes: true,
+      related_postings: true,
+    }
+  }
+
+  return body
+}
+
+export async function ozonPostingFbsGet(secrets: Secrets, postingNumber: string) {
+  return ozonPost(secrets, '/v3/posting/fbs/get', buildPostingGetBody(postingNumber, true))
+}
+
+export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string) {
+  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber))
+}
+
 export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
   // Ozon API периодически меняет версию/эндпойнт: поэтому делаем несколько попыток.
   const candidates: Array<() => Promise<any>> = [
