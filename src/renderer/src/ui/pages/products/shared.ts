@@ -26,6 +26,8 @@ export type GridRow = {
   status?: string | null
   status_details?: string | null
   carrier_status_details?: string | null
+  delivery_date?: string | null
+  delivery_cluster?: string | null
   warehouse_id?: number | null
   warehouse_name?: string | null
   placement_zone?: string | null
@@ -208,6 +210,8 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
       asMainCol({ id: 'status', title: 'Статус', w: 180, visible: true }),
       asMainCol({ id: 'status_details', title: 'Детали статуса', w: 260, visible: true }),
       asMainCol({ id: 'carrier_status_details', title: 'Детали перевозчика по статусу', w: 320, visible: true }),
+      asMainCol({ id: 'delivery_date', title: 'Дата доставки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.delivery_date) ?? '' }),
+      asMainCol({ id: 'delivery_cluster', title: 'Кластер доставки', w: 180, visible: true }),
     )
   }
 
