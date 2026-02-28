@@ -4,6 +4,7 @@ import SettingsPage from './pages/SettingsPage'
 import ProductsPage from './pages/ProductsPage'
 import LogsPage from './pages/LogsPage'
 import AdminPage from './pages/AdminPage'
+import { formatDateTimeRu } from './utils/dateTime'
 
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
@@ -46,6 +47,11 @@ function toShortRuDate(value: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return ''
   const [, m, d] = value.split('-')
   return `${d}.${m}`
+}
+
+function formatPeriodBoundary(value: string, boundary: 'startOfDay' | 'endOfDay'): string {
+  const formatted = formatDateTimeRu(value, { dateOnlyBoundary: boundary })
+  return formatted || ''
 }
 
 function readDemandForecastPeriod(): DemandForecastPeriod {
@@ -171,6 +177,15 @@ export default function App() {
     const from = toShortRuDate(demandPeriod.from)
     const to = toShortRuDate(demandPeriod.to)
     if (from && to) return `${from}—${to}`
+    if (from) return `с ${from}`
+    if (to) return `по ${to}`
+    return 'Указать промежуток'
+  }, [demandPeriod.from, demandPeriod.to])
+
+  const dateTriggerTitle = useMemo(() => {
+    const from = formatPeriodBoundary(demandPeriod.from, 'startOfDay')
+    const to = formatPeriodBoundary(demandPeriod.to, 'endOfDay')
+    if (from && to) return `${from} — ${to}`
     if (from) return `с ${from}`
     if (to) return `по ${to}`
     return 'Указать промежуток'
@@ -388,7 +403,7 @@ export default function App() {
                   type="button"
                   className={`topbarDateTrigger${datePresetOpen ? ' open' : ''}`}
                   onClick={() => setDatePresetOpen((v) => !v)}
-                  title={dateTriggerLabel}
+                  title={dateTriggerTitle}
                   aria-haspopup="dialog"
                   aria-expanded={datePresetOpen}
                 >
@@ -454,7 +469,7 @@ export default function App() {
                   type="button"
                   className={`topbarDateTrigger${datePresetOpen ? ' open' : ''}`}
                   onClick={() => setDatePresetOpen((v) => !v)}
-                  title={dateTriggerLabel}
+                  title={dateTriggerTitle}
                   aria-haspopup="dialog"
                   aria-expanded={datePresetOpen}
                 >
@@ -520,7 +535,7 @@ export default function App() {
                   type="button"
                   className={`topbarDateTrigger${datePresetOpen ? ' open' : ''}`}
                   onClick={() => setDatePresetOpen((v) => !v)}
-                  title={dateTriggerLabel}
+                  title={dateTriggerTitle}
                   aria-haspopup="dialog"
                   aria-expanded={datePresetOpen}
                 >
