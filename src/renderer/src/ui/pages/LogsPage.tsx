@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { formatDateTimeRu } from '../utils/dateTime'
 
 type LogRow = {
   id: number
@@ -42,15 +43,8 @@ function statusRu(v?: string | null) {
 // Формат: дд.мм.гг чч:мм:сс (локальное время компьютера)
 function fmtDt(iso?: string | null) {
   if (!iso) return '-'
-  const d = new Date(iso)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const dd = pad(d.getDate())
-  const mm = pad(d.getMonth() + 1)
-  const yy = pad(d.getFullYear() % 100)
-  const hh = pad(d.getHours())
-  const mi = pad(d.getMinutes())
-  const ss = pad(d.getSeconds())
-  return `${dd}.${mm}.${yy} ${hh}:${mi}:${ss}`
+  const formatted = formatDateTimeRu(iso)
+  return formatted || '-'
 }
 
 function detailsRu(type?: string | null, meta?: string | null, itemsCount?: number | null): string {
