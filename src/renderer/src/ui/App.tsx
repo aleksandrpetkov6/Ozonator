@@ -5,6 +5,7 @@ import ProductsPage from './pages/ProductsPage'
 import LogsPage from './pages/LogsPage'
 import AdminPage from './pages/AdminPage'
 import { formatDateTimeRu } from './utils/dateTime'
+import { useGlobalTableEnhancements } from './utils/tableEnhancements'
 
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
@@ -106,6 +107,7 @@ function parseLogLifeDays(value: string): number | null {
 }
 
 export default function App() {
+  useGlobalTableEnhancements()
   const location = useLocation()
   const online = useOnline()
 
