@@ -28,6 +28,8 @@ declare global {
     related_postings?: string | null
     shipment_date?: string | null
     status?: string | null
+    status_details?: string | null
+    carrier_status_details?: string | null
     delivery_date?: string | null
     delivery_model?: string | null
     price?: number | string | null
