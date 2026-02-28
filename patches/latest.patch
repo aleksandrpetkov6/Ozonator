@@ -1,104 +1,35 @@
 diff --git a/electron/main/index.ts b/electron/main/index.ts
-index 5ab089e..57a7e4f 100644
+index 57a7e4f..e2626fd 100644
 --- a/electron/main/index.ts
 +++ b/electron/main/index.ts
-@@ -3,7 +3,7 @@ import { join } from 'path'
- import { appendFileSync, mkdirSync } from 'fs'
- import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
- import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
--import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboList, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
-+import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboGet, ozonPostingFboList, ozonPostingFbsGet, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
- let mainWindow: BrowserWindow | null = null
- let startupShowTimer: NodeJS.Timeout | null = null
- function startupLog(...args: any[]) {
-@@ -36,6 +36,7 @@ for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
- return out
+@@ -500,7 +500,7 @@ const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_d
+ const status = translateSalesCodeValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']), 'status')
+ const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
+ const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
+-const deliveredAt = normalizeDateValue(pickFirstPresent(posting, ['fact_delivery_date', 'delivered_at', 'delivery_date']))
++const deliveredAt = normalizeDateValue(pickFirstPresent(posting, ['fact_delivery_date', 'delivered_at', 'delivery_date', 'changed_state_date']))
+ const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
+ const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
+ if (!postingNumber) continue
+@@ -1052,13 +1052,19 @@ onlineEndpoints.add('/v2/posting/fbo/list')
  }
- const SALES_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
-+const SALES_DETAIL_ENDPOINTS = ['/v3/posting/fbs/get', '/v2/posting/fbo/get'] as const
- type SalesPeriod = {
- from?: string | null
- to?: string | null
-@@ -543,6 +544,82 @@ if (aPosting !== bPosting) return bPosting.localeCompare(aPosting)
- return String(a?.offer_id ?? '').localeCompare(String(b?.offer_id ?? ''), 'ru')
- })
+ } catch {}
  }
-+function getSalesDetailEndpoint(listEndpoint: string): typeof SALES_DETAIL_ENDPOINTS[number] | null {
-+const normalized = String(listEndpoint ?? '').trim()
-+if (normalized === '/v3/posting/fbs/list') return '/v3/posting/fbs/get'
-+if (normalized === '/v2/posting/fbo/list') return '/v2/posting/fbo/get'
-+return null
-+}
-+function extractPostingDetailResult(payload: any): any {
-+const result = safeGetByPath(payload, 'result', undefined)
-+if (result && typeof result === 'object') return result
-+return payload && typeof payload === 'object' ? payload : null
-+}
-+function replacePayloadPostings(payload: any, postings: any[]): any {
-+if (!payload || typeof payload !== 'object') return payload
-+const result = safeGetByPath(payload, 'result', null)
-+if (result && typeof result === 'object' && Array.isArray((result as any).postings)) {
-+return {
-+...(payload as any),
-+result: {
-+...(result as any),
-+postings,
-+},
-+}
-+}
-+if (Array.isArray((payload as any).postings)) {
-+return {
-+...(payload as any),
-+postings,
-+}
-+}
-+return payload
-+}
-+function mergeSalesPostingWithDetail(posting: any, detailPayload: any): any {
-+const detail = extractPostingDetailResult(detailPayload)
-+if (!detail || typeof detail !== 'object') return posting
-+return {
-+...((posting && typeof posting === 'object') ? posting : {}),
-+...(detail as any),
-+}
-+}
-+async function hydrateSalesPayloadDetails(
-+payloads: SalesPayloadEnvelope[],
-+secrets: { clientId?: string | null; apiKey?: string | null } | null | undefined,
-+): Promise<SalesPayloadEnvelope[]> {
-+if (!Array.isArray(payloads) || payloads.length === 0) return payloads
-+if (!secrets?.clientId || !secrets?.apiKey) return payloads
-+const out: SalesPayloadEnvelope[] = []
-+for (const envelope of payloads) {
-+const detailEndpoint = getSalesDetailEndpoint(envelope?.endpoint)
-+const postings = extractPostingsFromPayload(envelope?.payload)
-+if (!detailEndpoint || postings.length === 0) {
-+out.push(envelope)
-+continue
-+}
-+const hydratedPostings: any[] = []
-+for (const posting of postings) {
-+const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
-+if (!postingNumber) {
-+hydratedPostings.push(posting)
-+continue
-+}
++let resolvedPayloads = payloads
++if (payloads.length > 0 && secrets?.clientId && secrets?.apiKey) {
 +try {
-+const detailPayload = detailEndpoint === '/v3/posting/fbs/get'
-+? await ozonPostingFbsGet(secrets as any, postingNumber)
-+: await ozonPostingFboGet(secrets as any, postingNumber)
-+hydratedPostings.push(mergeSalesPostingWithDetail(posting, detailPayload))
-+} catch {
-+hydratedPostings.push(posting)
++resolvedPayloads = await hydrateSalesPayloadDetails(payloads, secrets as NonNullable<typeof secrets>)
++} catch {}
 +}
-+}
-+out.push({
-+endpoint: envelope.endpoint,
-+payload: replacePayloadPostings(envelope.payload, hydratedPostings),
-+})
-+}
-+return out
-+}
- function getCachedSalesPayloadMap(storeClientId: string | null | undefined): Map<string, SalesPayloadEnvelope> {
- const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_ENDPOINTS as unknown as string[])
- const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_ENDPOINTS as unknown as string[])
+ if (onlineEndpoints.size < SALES_ENDPOINTS.length) {
+ const cachedByEndpoint = getCachedSalesPayloadMap(storeClientId)
+ for (const [endpoint, payload] of cachedByEndpoint.entries()) {
+-if (!onlineEndpoints.has(endpoint)) payloads.push(payload)
++if (!onlineEndpoints.has(endpoint)) resolvedPayloads.push(payload)
+ }
+ }
+-const rows = normalizeSalesRows(payloads, products)
++const rows = normalizeSalesRows(resolvedPayloads, products)
+ return { ok: true, rows }
+ } catch (e: any) {
+ return { ok: false, error: e?.message ?? String(e), rows: [] }
