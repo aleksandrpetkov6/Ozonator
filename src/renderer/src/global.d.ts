@@ -54,8 +54,8 @@ declare global {
       getSales: (period?: { from?: string; to?: string }) => Promise<{ ok: boolean; error?: string; rows: GridApiRow[] }>
       getReturns: () => Promise<{ ok: boolean; error?: string; rows: GridApiRow[] }>
       getStocks: () => Promise<{ ok: boolean; error?: string; rows: GridApiRow[] }>
-      getGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks') => Promise<{ ok: boolean; error?: string; dataset: 'products' | 'sales' | 'returns' | 'stocks'; cols: Array<{ id: string; w: number; visible: boolean }> | null }>
-      saveGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks', cols: Array<{ id: string; w: number; visible: boolean }>) => Promise<{ ok: boolean; error?: string; dataset: 'products' | 'sales' | 'returns' | 'stocks'; savedCount: number }>
+      getGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks') => Promise<{ ok: boolean; error?: string; dataset: 'products' | 'sales' | 'returns' | 'stocks'; cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }> | null }>
+      saveGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks', cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }>) => Promise<{ ok: boolean; error?: string; dataset: 'products' | 'sales' | 'returns' | 'stocks'; savedCount: number }>
       getSyncLog: () => Promise<{ ok: boolean; logs: any[] }>
       clearLogs: () => Promise<{ ok: boolean }>
     }
