@@ -773,13 +773,41 @@ button:disabled{
 .thInner{ display: flex; align-items: center; gap: 8px; min-height: 28px; min-width: 0; overflow: hidden; padding-right: 10px; }
 .thGrip{ margin-left: auto; color: rgba(0,0,0,.30); font-size: 14px; cursor: grab; }
 
-.thTitle{
+.thTitle,
+.tableHeaderLabel{
   min-width: 0;
   overflow: hidden;
   text-overflow: clip;
   white-space: nowrap;
   display: block;
   flex: 1 1 auto;
+}
+
+.tableHeaderWrapActive th{
+  white-space: normal;
+}
+
+.tableHeaderWrapActive .thInner{
+  min-height: 42px;
+  align-items: center;
+}
+
+.productsCard .tableHeaderWrapActive .thInner{
+  min-height: 30px;
+}
+
+.tableHeaderWrapActive .thTitle,
+.tableHeaderWrapActive .tableHeaderLabel{
+  white-space: normal;
+  overflow: hidden;
+  text-overflow: clip;
+  line-height: 1.15;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  hyphens: auto;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .colToggle{
@@ -959,6 +987,11 @@ button:disabled{
   width: 2px;
   border-radius: 2px;
   background: rgba(60,60,67,.25);
+}
+
+.tableHeaderWrapActive .thResizer::after{
+  top: 8px;
+  bottom: 8px;
 }
 
 .thDragging{ opacity: .55; }
