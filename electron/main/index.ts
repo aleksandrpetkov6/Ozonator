@@ -89,20 +89,40 @@ awaiting_packaging: 'Ожидает упаковки',
 awaiting_deliver: 'Ожидает доставки',
 awaiting_approve: 'Ожидает подтверждения',
 awaiting_registration: 'Ожидает регистрации',
+awaiting_customer: 'Ожидает покупателя',
 acceptance_in_progress: 'Идёт приёмка',
 created: 'Создан',
 processing: 'В обработке',
 in_process: 'В обработке',
 ready_to_ship: 'Готов к отгрузке',
+ready_for_pickup: 'Готов к выдаче',
 shipped: 'Отгружен',
+handed_over_to_delivery: 'Передан в доставку',
+sent_to_delivery: 'Передан в доставку',
 sent_by_seller: 'Отправлен продавцом',
 driver_pickup: 'Забирает курьер',
+in_transit: 'В пути',
+transit: 'В пути',
+on_the_way: 'В пути',
+on_route: 'В пути',
 delivering: 'Доставляется',
+delivery_failed: 'Доставка не удалась',
 delivered: 'Доставлен',
+delivered_to_customer: 'Доставлен покупателю',
+customer_received: 'Получен покупателем',
 returned: 'Возвращён',
 returning: 'Возвращается',
+return_in_progress: 'Возврат в обработке',
+return_preparing: 'Готовится возврат',
+return_arrived_to_seller: 'Возврат прибыл продавцу',
+return_ready_for_seller_pickup: 'Готов к выдаче продавцу',
+return_not_possible: 'Возврат невозможен',
 cancelled: 'Отменён',
 not_accepted: 'Не принят',
+not_in_time: 'Не доставлен вовремя',
+not_found: 'Не найден',
+lost: 'Утерян',
+damaged: 'Повреждён',
 arbitration: 'Арбитраж',
 client_arbitration: 'Арбитраж с клиентом',
 posting_created: 'Создан',
@@ -148,10 +168,16 @@ accepted: 'Принят',
 awaiting_registration: 'Ожидает регистрации',
 ready_for_pickup: 'Готов к выдаче',
 ready_to_ship: 'Готов к отгрузке',
+handed_over_to_delivery: 'Передан в доставку',
+sent_to_delivery: 'Передан в доставку',
 in_transit: 'В пути',
 transit: 'В пути',
+on_the_way: 'В пути',
+on_route: 'В пути',
 delivering: 'Доставляется',
+delivery_failed: 'Доставка не удалась',
 delivered: 'Доставлен',
+delivered_to_customer: 'Доставлен покупателю',
 returned: 'Возвращён',
 returning: 'Возвращается',
 cancelled: 'Отменён',
@@ -160,6 +186,7 @@ damaged: 'Повреждён',
 not_found: 'Не найден',
 on_point: 'В пункте выдачи',
 pickup: 'В пункте выдачи',
+at_pickup_point: 'В пункте выдачи',
 }
 
 function capitalizeSalesText(value: string): string {
@@ -174,14 +201,49 @@ if (!text) return ''
 return capitalizeSalesText(text.replace(/[./]+/g, ' ').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim())
 }
 
+function getUnknownSalesText(mode: 'status' | 'detail' | 'provider'): string {
+if (mode === 'provider') return 'Прочий статус перевозчика'
+if (mode === 'detail') return 'Прочая деталь статуса'
+return 'Прочий статус'
+}
+
+function normalizeSalesLookupKey(value: any): string {
+let text = normalizeTextValue(value)
+if (!text) return ''
+const prefixed = text.match(/^(substatus|previous_substatus|provider_status|status|state)\s*[:=]\s*(.+)$/i)
+if (prefixed?.[2]) text = prefixed[2].trim()
+return text
+.toLowerCase()
+.replace(/[|]+/g, ' ')
+.replace(/[./\\]+/g, ' ')
+.replace(/[:=]+/g, ' ')
+.replace(/[_\-\s]+/g, '_')
+.replace(/^_+|_+$/g, '')
+}
+
 function translateSalesCodeValue(value: any, mode: 'status' | 'detail' | 'provider' = 'status'): string {
 const raw = normalizeTextValue(value)
 if (!raw) return ''
-const key = raw.toLowerCase()
+if (raw.includes('|')) {
+const parts = raw
+.split(/\s*\|\s*/)
+.map((part) => translateSalesCodeValue(part, mode))
+.filter(Boolean)
+return Array.from(new Set(parts)).join(' | ')
+}
+const prefixedPrevious = raw.match(/^(previous|previous_substatus)\s*[:=]\s*(.+)$/i)
+if (prefixedPrevious?.[2]) {
+const translated = translateSalesCodeValue(prefixedPrevious[2], 'detail')
+return translated ? `Предыдущий: ${translated}` : ''
+}
+if (/[А-Яа-яЁё]/.test(raw)) return capitalizeSalesText(raw)
+const key = normalizeSalesLookupKey(raw)
+if (!key) return ''
 const providerMapped = SALES_PROVIDER_STATUS_LABELS_RU[key]
 const statusMapped = SALES_STATUS_LABELS_RU[key]
-if (mode === 'provider') return capitalizeSalesText(providerMapped ?? statusMapped ?? humanizeSalesCode(raw))
-return capitalizeSalesText(statusMapped ?? providerMapped ?? humanizeSalesCode(raw))
+const mapped = mode === 'provider' ? (providerMapped ?? statusMapped) : (statusMapped ?? providerMapped)
+if (mapped) return capitalizeSalesText(mapped)
+return getUnknownSalesText(mode)
 }
 
 function pushUniqueSalesPart(parts: string[], value: any) {
