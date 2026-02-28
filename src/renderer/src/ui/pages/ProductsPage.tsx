@@ -608,7 +608,6 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   }
 
   function moveHiddenColToBucket(id: string, hiddenBucket: HiddenBucket) {
-    if (hiddenBucket === 'add') setAddColumnMenuOpen(true)
     setCols((prev) => prev.map((c) => (String(c.id) === id ? { ...c, hiddenBucket } : c)))
   }
 
@@ -1138,16 +1137,21 @@ function onDragOverHeader(e: React.DragEvent) {
                       fontWeight: 600,
                     }}
                     onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => setAddColumnMenuOpen((v) => !v)}
+                    onClick={() => {
+                      if (addMenuHiddenCols.length === 0) {
+                        setAddColumnMenuOpen(false)
+                        return
+                      }
+                      setAddColumnMenuOpen((v) => !v)
+                    }}
                   >
                     <span style={{ flex: '1 1 auto', minWidth: 0 }}>Добавить столбец</span>
                     <span aria-hidden="true" style={{ fontSize: 11, opacity: 0.7 }}>{addColumnMenuOpen ? '▾' : '▸'}</span>
                   </button>
 
-                  {addColumnMenuOpen && (
+                  {addColumnMenuOpen && addMenuHiddenCols.length > 0 && (
                     <div style={{ display: 'grid', gap: 4, marginBottom: 6, padding: '2px 0 6px 10px' }}>
-                      {addMenuHiddenCols.length > 0 ? (
-                        addMenuHiddenCols.map((c) => {
+                      {addMenuHiddenCols.map((c) => {
                           const id = String(c.id)
                           return (
                             <div
@@ -1178,10 +1182,7 @@ function onDragOverHeader(e: React.DragEvent) {
                               </button>
                             </div>
                           )
-                        })
-                      ) : (
-                        <div style={{ padding: '4px 10px 2px', fontSize: 12, color: 'rgba(28,28,30,.56)' }}>Пока пусто</div>
-                      )}
+                        })}
                     </div>
                   )}
 
