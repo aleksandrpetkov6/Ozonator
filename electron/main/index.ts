@@ -835,7 +835,7 @@ ipcMain.handle('ui:getGridColumns', async (_e, args: { dataset: 'products' | 'sa
   }
 })
 
-ipcMain.handle('ui:saveGridColumns', async (_e, args: { dataset: 'products' | 'sales' | 'returns' | 'stocks'; cols: Array<{ id: string; w: number; visible: boolean }> }) => {
+ipcMain.handle('ui:saveGridColumns', async (_e, args: { dataset: 'products' | 'sales' | 'returns' | 'stocks'; cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }> }) => {
   try {
     return { ok: true, ...dbSaveGridColumns(args?.dataset, args?.cols) }
   } catch (e: any) {
