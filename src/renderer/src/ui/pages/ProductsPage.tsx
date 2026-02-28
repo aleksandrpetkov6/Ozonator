@@ -25,12 +25,14 @@ type GridRow = {
 }
 
 type DataSet = 'products' | 'sales' | 'returns' | 'stocks'
+type HiddenBucket = 'main' | 'add'
 
 type ColDef = {
   id: keyof GridRow | 'archived'
   title: string
   w: number
   visible: boolean
+  hiddenBucket: HiddenBucket
 }
 
 type Props = {
@@ -59,17 +61,17 @@ function buildDefaultCols(dataset: DataSet): ColDef[] {
     { id: 'is_visible', title: 'Видимость', w: 140, visible: true },
     { id: 'hidden_reasons', title: 'Причина скрытия', w: 320, visible: true },
     { id: 'created_at', title: 'Создан', w: 180, visible: true },
-  ]
+  ].map((col) => ({ ...col, hiddenBucket: 'main' as const }))
 
   if (dataset === 'stocks') {
     base.push(
-      { id: 'warehouse_name', title: 'Склад', w: 180, visible: true },
-      { id: 'placement_zone', title: 'Зона размещения', w: 220, visible: true },
+      { id: 'warehouse_name', title: 'Склад', w: 180, visible: true, hiddenBucket: 'main' },
+      { id: 'placement_zone', title: 'Зона размещения', w: 220, visible: true, hiddenBucket: 'main' },
     )
   }
 
   if (dataset === 'products') {
-    base.push({ id: 'updated_at', title: 'Обновлён', w: 180, visible: false })
+    base.push({ id: 'updated_at', title: 'Обновлён', w: 180, visible: false, hiddenBucket: 'main' })
   }
 
   return base
@@ -102,7 +104,7 @@ function colsStorageKey(dataset: DataSet) {
   return `ozonator_cols_${dataset}`
 }
 
-type PersistedColLayout = Pick<ColDef, 'id' | 'w' | 'visible'>
+type PersistedColLayout = Pick<ColDef, 'id' | 'w' | 'visible' | 'hiddenBucket'>
 
 function normalizePersistedCols(value: unknown): PersistedColLayout[] {
   if (!Array.isArray(value)) return []
@@ -117,8 +119,9 @@ function normalizePersistedCols(value: unknown): PersistedColLayout[] {
     const wNum = Number((raw as any).w)
     const w = Number.isFinite(wNum) ? Math.max(60, Math.min(2000, Math.round(wNum))) : 120
     const visible = typeof (raw as any).visible === 'boolean' ? (raw as any).visible : true
+    const hiddenBucket: HiddenBucket = (raw as any).hiddenBucket === 'add' ? 'add' : 'main'
 
-    out.push({ id: id as ColDef['id'], w, visible })
+    out.push({ id: id as ColDef['id'], w, visible, hiddenBucket })
     seen.add(id)
     if (out.length >= 200) break
   }
@@ -145,6 +148,7 @@ function mergeColsWithDefaults(dataset: DataSet, persistedRaw: unknown): ColDef[
       title: d.title,
       w: p.w,
       visible: p.visible,
+      hiddenBucket: p.hiddenBucket,
     })
     used.add(String(d.id))
   }
@@ -170,7 +174,7 @@ function readCols(dataset: DataSet): ColDef[] {
 }
 
 function saveCols(dataset: DataSet, cols: ColDef[]) {
-  const payload: PersistedColLayout[] = cols.map((c) => ({ id: c.id, w: c.w, visible: c.visible }))
+  const payload: PersistedColLayout[] = cols.map((c) => ({ id: c.id, w: c.w, visible: c.visible, hiddenBucket: c.hiddenBucket }))
   localStorage.setItem(colsStorageKey(dataset), JSON.stringify(payload))
 }
 const DATASET_CACHE: Record<DataSet, GridRow[] | null> = {
@@ -303,6 +307,7 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   const [dropHint, setDropHint] = useState<{ id: string; side: 'left' | 'right'; x: number } | null>(null)
 
   const [collapsedOpen, setCollapsedOpen] = useState(false)
+  const [addColumnMenuOpen, setAddColumnMenuOpen] = useState(false)
   const [bodyWindowAnchorRow, setBodyWindowAnchorRow] = useState(0)
   const [bodyViewportH, setBodyViewportH] = useState(600)
   const [photoPreview, setPhotoPreview] = useState<{ url: string; alt: string; x: number; y: number } | null>(null)
@@ -425,7 +430,7 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
           setCols(merged)
           setHasStoredCols(true)
           try {
-            await window.api.saveGridColumns(dataset, merged.map((c) => ({ id: String(c.id), w: c.w, visible: c.visible })))
+            await window.api.saveGridColumns(dataset, merged.map((c) => ({ id: String(c.id), w: c.w, visible: c.visible, hiddenBucket: c.hiddenBucket })))
           } catch {}
           setColsSyncReady(true)
           return
@@ -477,7 +482,7 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   useEffect(() => {
     if (!colsSyncReady) return
     const id = window.setTimeout(() => {
-      const payload = cols.map((c) => ({ id: String(c.id), w: c.w, visible: c.visible }))
+      const payload = cols.map((c) => ({ id: String(c.id), w: c.w, visible: c.visible, hiddenBucket: c.hiddenBucket }))
       try { saveCols(dataset, cols) } catch {}
       window.api.saveGridColumns(dataset, payload).catch(() => {})
     }, 250)
@@ -487,6 +492,8 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   const visibleCols = useMemo(() => cols.filter(c => c.visible), [cols])
   const rowH = useMemo(() => (visibleCols.some(c => c.id === 'photo_url') ? 58 : 28), [visibleCols])
   const hiddenCols = useMemo(() => cols.filter(c => !c.visible), [cols])
+  const primaryHiddenCols = useMemo(() => hiddenCols.filter((c) => c.hiddenBucket !== 'add'), [hiddenCols])
+  const addMenuHiddenCols = useMemo(() => hiddenCols.filter((c) => c.hiddenBucket === 'add'), [hiddenCols])
 
   useEffect(() => {
     if (!collapsedOpen) return
@@ -497,10 +504,14 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
       if (collapsedMenuRef.current?.contains(t)) return
       if (collapsedBtnRef.current?.contains(t)) return
       setCollapsedOpen(false)
+      setAddColumnMenuOpen(false)
     }
 
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') setCollapsedOpen(false)
+      if (ev.key === 'Escape') {
+        setCollapsedOpen(false)
+        setAddColumnMenuOpen(false)
+      }
     }
 
     window.addEventListener('mousedown', onDown)
@@ -512,8 +523,22 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   }, [collapsedOpen])
 
   useEffect(() => {
-    if (collapsedOpen && hiddenCols.length === 0) setCollapsedOpen(false)
+    if (collapsedOpen && hiddenCols.length === 0) {
+      setCollapsedOpen(false)
+      setAddColumnMenuOpen(false)
+    }
   }, [collapsedOpen, hiddenCols.length])
+
+  useEffect(() => {
+    if (!addColumnMenuOpen) return
+    if (addMenuHiddenCols.length > 0) return
+    setAddColumnMenuOpen(false)
+  }, [addColumnMenuOpen, addMenuHiddenCols.length])
+
+  useEffect(() => {
+    setCollapsedOpen(false)
+    setAddColumnMenuOpen(false)
+  }, [dataset])
 
   // Для поиска не учитываем ширины столбцов (чтобы ресайз не тормозил)
   const visibleSearchKey = useMemo(
@@ -578,6 +603,11 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
 
   function showCol(id: string) {
     setCols(prev => prev.map(c => String(c.id) === id ? { ...c, visible: true } : c))
+  }
+
+  function moveHiddenColToBucket(id: string, hiddenBucket: HiddenBucket) {
+    if (hiddenBucket === 'add') setAddColumnMenuOpen(true)
+    setCols((prev) => prev.map((c) => (String(c.id) === id ? { ...c, hiddenBucket } : c)))
   }
 
   function onDragStart(e: React.DragEvent, id: string) {
@@ -1078,7 +1108,10 @@ function onDragOverHeader(e: React.DragEvent) {
                 aria-haspopup="menu"
                 aria-expanded={collapsedOpen}
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setCollapsedOpen(v => !v)}
+                onClick={() => {
+                  if (collapsedOpen) setAddColumnMenuOpen(false)
+                  setCollapsedOpen((v) => !v)
+                }}
               >
                 +
               </button>
@@ -1090,21 +1123,95 @@ function onDragOverHeader(e: React.DragEvent) {
                   role="menu"
                   style={{ position: 'absolute', top: 0, right: 'calc(100% + 6px)', left: 'auto', zIndex: 6 }}
                 >
-                  {hiddenCols.map(c => (
-                    <button
-                      type="button"
-                      key={String(c.id)}
-                      className="collapsedMenuItem"
-                      role="menuitem"
-                      style={{ padding: '6px 10px', lineHeight: 1.1 }}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        showCol(String(c.id))
-                      }}
-                    >
-                      {c.title}
-                    </button>
-                  ))}
+                  <button
+                    type="button"
+                    className="collapsedMenuItem"
+                    role="menuitem"
+                    style={{
+                      padding: '6px 10px',
+                      lineHeight: 1.1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontWeight: 600,
+                    }}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => setAddColumnMenuOpen((v) => !v)}
+                  >
+                    <span style={{ flex: '1 1 auto', minWidth: 0 }}>Добавить столбец</span>
+                    <span aria-hidden="true" style={{ fontSize: 11, opacity: 0.7 }}>{addColumnMenuOpen ? '▾' : '▸'}</span>
+                  </button>
+
+                  {addColumnMenuOpen && (
+                    <div style={{ display: 'grid', gap: 4, marginBottom: 6, padding: '2px 0 6px 10px' }}>
+                      {addMenuHiddenCols.length > 0 ? (
+                        addMenuHiddenCols.map((c) => {
+                          const id = String(c.id)
+                          return (
+                            <div
+                              key={id}
+                              style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
+                            >
+                              <button
+                                type="button"
+                                className="collapsedMenuItem"
+                                role="menuitem"
+                                style={{ padding: '6px 10px', lineHeight: 1.1, flex: '1 1 auto', minWidth: 0 }}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => showCol(id)}
+                              >
+                                {c.title}
+                              </button>
+                              <button
+                                type="button"
+                                className="colToggle"
+                                title="Вернуть в общий список"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  moveHiddenColToBucket(id, 'main')
+                                }}
+                              >
+                                +
+                              </button>
+                            </div>
+                          )
+                        })
+                      ) : (
+                        <div style={{ padding: '4px 10px 2px', fontSize: 12, color: 'rgba(28,28,30,.56)' }}>Пока пусто</div>
+                      )}
+                    </div>
+                  )}
+
+                  {primaryHiddenCols.map((c) => {
+                    const id = String(c.id)
+                    return (
+                      <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <button
+                          type="button"
+                          className="collapsedMenuItem"
+                          role="menuitem"
+                          style={{ padding: '6px 10px', lineHeight: 1.1, flex: '1 1 auto', minWidth: 0 }}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => showCol(id)}
+                        >
+                          {c.title}
+                        </button>
+                        <button
+                          type="button"
+                          className="colToggle"
+                          title="Перенести в список «Добавить столбец»"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            moveHiddenColToBucket(id, 'add')
+                          }}
+                        >
+                          −
+                        </button>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
