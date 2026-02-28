@@ -116,6 +116,62 @@ export function toSortTimestamp(value: unknown): number | null {
   return Number.isFinite(time) ? time : null
 }
 
+function getOfferIdSortBucket(value: unknown): number {
+  const text = toText(value).trim()
+  if (!text) return 2
+  const firstLetter = text.match(/[A-Za-zА-ЯЁа-яё]/)?.[0] ?? text[0]
+  return /[А-ЯЁа-яё]/.test(firstLetter) ? 0 : 1
+}
+
+function compareOfferIdsRuFirst(a: unknown, b: unknown): number {
+  const left = toText(a).trim()
+  const right = toText(b).trim()
+  const leftEmpty = left === ''
+  const rightEmpty = right === ''
+  if (leftEmpty || rightEmpty) {
+    if (leftEmpty && rightEmpty) return 0
+    return leftEmpty ? 1 : -1
+  }
+
+  const bucketDiff = getOfferIdSortBucket(left) - getOfferIdSortBucket(right)
+  if (bucketDiff) return bucketDiff
+
+  return left.localeCompare(right, 'ru', { numeric: true, sensitivity: 'base' })
+}
+
+function compareRowsByDefaultSort(dataset: DataSet, left: GridRow, right: GridRow): number {
+  if (dataset === 'sales') {
+    const leftAt = toSortTimestamp(left.in_process_at)
+    const rightAt = toSortTimestamp(right.in_process_at)
+    const leftEmpty = leftAt == null
+    const rightEmpty = rightAt == null
+    if (leftEmpty || rightEmpty) {
+      if (leftEmpty && rightEmpty) return 0
+      return leftEmpty ? 1 : -1
+    }
+    return rightAt - leftAt
+  }
+
+  if (dataset === 'products' || dataset === 'stocks') {
+    return compareOfferIdsRuFirst(left.offer_id, right.offer_id)
+  }
+
+  return 0
+}
+
+function sortRowsForDefaultView(dataset: DataSet, rows: GridRow[]): GridRow[] {
+  if (rows.length < 2) return rows
+  if (dataset === 'returns') return rows
+
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      const compared = compareRowsByDefaultSort(dataset, left.row, right.row)
+      return compared || (left.index - right.index)
+    })
+    .map((entry) => entry.row)
+}
+
 export function buildDefaultCols(dataset: DataSet): ColDef[] {
   const base: ColDef[] = [
     asMainCol({ id: 'offer_id', title: 'Артикул', w: 160, visible: true }),
@@ -281,9 +337,10 @@ export async function fetchRowsCached(dataset: DataSet, force = false): Promise<
         if (resp.ok) list = (resp.rows as any) as GridRow[]
         else return DATASET_CACHE[dataset]
       }
-      DATASET_CACHE[dataset] = list
+      const sortedList = sortRowsForDefaultView(dataset, list)
+      DATASET_CACHE[dataset] = sortedList
       DATASET_CACHE_AT[dataset] = Date.now()
-      return list
+      return sortedList
     } catch {
       return DATASET_CACHE[dataset]
     } finally {
