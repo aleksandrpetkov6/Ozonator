@@ -3,6 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 
+const AUTOFIX_TOKEN_BUDGET_MAX = 7900;
+const APPROX_CHARS_PER_TOKEN = 4;
+const PROMPT_CHAR_BUDGET = Math.floor(AUTOFIX_TOKEN_BUDGET_MAX * APPROX_CHARS_PER_TOKEN * 0.8);
+
 function parseArgs(argv) {
   const out = {};
   for (let i = 2; i < argv.length; i++) {
@@ -74,10 +78,10 @@ function collectLogs(logsDir) {
   for (const f of files.slice(0, 50)) {
     const content = readTextSafe(f);
     if (!content.trim()) continue;
-    chunks.push(`===== FILE: ${f} =====\n${truncate(content, 12000)}`);
+    chunks.push(`===== FILE: ${f} =====\n${truncate(content, 3000)}`);
   }
 
-  return truncate(chunks.join("\n\n"), 120000);
+  return truncate(chunks.join("\n\n"), 18000);
 }
 
 function safeExec(cmd) {
@@ -91,6 +95,45 @@ function safeExec(cmd) {
     const stderr = e?.stderr ? String(e.stderr) : "";
     return [stdout, stderr].filter(Boolean).join("\n");
   }
+}
+
+function estimateTokens(text) {
+  if (!text) return 0;
+  return Math.ceil(String(text).length / APPROX_CHARS_PER_TOKEN);
+}
+
+function fitPromptToBudget({ runId, sha, triggerWorkflow, logsText }) {
+  const fallbackLogs = "[logs omitted due to token budget precheck]";
+  const baseline = buildPrompt({ runId, sha, triggerWorkflow, logsText: fallbackLogs });
+  const baselineTokens = estimateTokens(baseline);
+
+  if (baselineTokens >= AUTOFIX_TOKEN_BUDGET_MAX) {
+    throw new Error(
+      `AUTOFIX_TOKEN_BUDGET_PRECHECK: baseline prompt ${baselineTokens} exceeds hard limit ${AUTOFIX_TOKEN_BUDGET_MAX}`
+    );
+  }
+
+  const allowedExtraChars = Math.max(0, PROMPT_CHAR_BUDGET - baseline.length - 200);
+  const boundedLogs = logsText ? truncate(logsText, allowedExtraChars) : fallbackLogs;
+  const prompt = buildPrompt({
+    runId,
+    sha,
+    triggerWorkflow,
+    logsText: boundedLogs || fallbackLogs,
+  });
+  const promptTokens = estimateTokens(prompt);
+
+  if (promptTokens >= AUTOFIX_TOKEN_BUDGET_MAX) {
+    throw new Error(
+      `AUTOFIX_TOKEN_BUDGET_PRECHECK: prompt ${promptTokens} exceeds hard limit ${AUTOFIX_TOKEN_BUDGET_MAX}`
+    );
+  }
+
+  return {
+    prompt,
+    promptTokens,
+    logsWereTrimmed: String(boundedLogs || "").length < String(logsText || "").length,
+  };
 }
 
 function buildPrompt({ runId, sha, triggerWorkflow, logsText }) {
@@ -120,10 +163,10 @@ Context:
 - Failed SHA: ${sha || ""}
 
 Current git status (for reference):
-${truncate(gitStatus, 4000)}
+${truncate(gitStatus, 1500)}
 
 Repository tracked files (first 500):
-${truncate(fileList, 12000)}
+${truncate(fileList, 4000)}
 
 CI logs:
 ${logsText || "[no logs found]"}
@@ -261,10 +304,31 @@ async function main() {
   ensureDir("patches");
 
   const logsText = collectLogs(logsDir);
-  const prompt = buildPrompt({ runId, sha, triggerWorkflow, logsText });
+  const { prompt, promptTokens, logsWereTrimmed } = fitPromptToBudget({
+    runId,
+    sha,
+    triggerWorkflow,
+    logsText,
+  });
 
   // Debug artifacts (useful when patch generation fails)
   fs.writeFileSync("patches/_autofix_prompt.txt", prompt, "utf8");
+  fs.writeFileSync(
+    "patches/_autofix_budget.json",
+    JSON.stringify(
+      {
+        tokenBudgetAllowed: AUTOFIX_TOKEN_BUDGET_MAX,
+        promptTokensEstimated: promptTokens,
+        logsWereTrimmed,
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  console.log(
+    `[AutoFix] token budget: estimated=${promptTokens}, allowed=${AUTOFIX_TOKEN_BUDGET_MAX}, logsWereTrimmed=${logsWereTrimmed}`
+  );
 
   const raw = await generatePatch(prompt);
   fs.writeFileSync("patches/_autofix_raw_response.txt", raw, "utf8");
