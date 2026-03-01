@@ -1,242 +1,273 @@
-diff --git a/electron/main/index.ts b/electron/main/index.ts
-index 5ab089e..2799377 100644
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -1,9 +1,9 @@
- import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
- import { join } from 'path'
- import { appendFileSync, mkdirSync } from 'fs'
--import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
-+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetLatestPostingDetailResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
- import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
--import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboList, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
-+import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboGet, ozonPostingFboList, ozonPostingFbsGet, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
- let mainWindow: BrowserWindow | null = null
- let startupShowTimer: NodeJS.Timeout | null = null
- function startupLog(...args: any[]) {
-@@ -36,6 +36,10 @@ for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
- return out
- }
- const SALES_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
-+const SALES_DETAIL_ENDPOINTS = {
-+'/v3/posting/fbs/list': '/v3/posting/fbs/get',
-+'/v2/posting/fbo/list': '/v2/posting/fbo/get',
-+} as const
- type SalesPeriod = {
- from?: string | null
- to?: string | null
-@@ -448,6 +452,106 @@ if (postings.length < limit) break
- }
- return payloads
- }
-+function getSalesDetailEndpoint(endpoint: string): string | null {
-+return (SALES_DETAIL_ENDPOINTS as Record<string, string>)[String(endpoint ?? '').trim()] ?? null
-+}
-+function extractPostingDetailResult(payload: any) {
-+if (payload && typeof payload === 'object' && payload.result && typeof payload.result === 'object') return payload.result
-+return payload && typeof payload === 'object' ? payload : null
-+}
-+function replacePayloadPostings(payload: any, nextPostings: any[]) {
-+if (!payload || typeof payload !== 'object') return payload
-+if ((payload as any).result && typeof (payload as any).result === 'object' && Array.isArray(((payload as any).result as any).postings)) {
-+return { ...payload, result: { ...((payload as any).result as any), postings: nextPostings } }
-+}
-+if (Array.isArray((payload as any).postings)) return { ...payload, postings: nextPostings }
-+return payload
-+}
-+function mergeSalesPostingWithDetail(posting: any, detailPayload: any) {
-+const base = posting && typeof posting === 'object' ? posting : {}
-+const detail = extractPostingDetailResult(detailPayload)
-+if (!detail || typeof detail !== 'object') return base
-+const merged: any = { ...base, ...detail }
-+const baseProducts = Array.isArray((base as any).products) ? (base as any).products : null
-+const detailProducts = Array.isArray((detail as any).products) ? (detail as any).products : null
-+if (detailProducts && detailProducts.length > 0) merged.products = detailProducts
-+else if (baseProducts && baseProducts.length > 0) merged.products = baseProducts
-+const baseItems = Array.isArray((base as any).items) ? (base as any).items : null
-+const detailItems = Array.isArray((detail as any).items) ? (detail as any).items : null
-+if (detailItems && detailItems.length > 0) merged.items = detailItems
-+else if (baseItems && baseItems.length > 0) merged.items = baseItems
-+const baseFinancial = (base as any).financial_data && typeof (base as any).financial_data === 'object' ? (base as any).financial_data : null
-+const detailFinancial = (detail as any).financial_data && typeof (detail as any).financial_data === 'object' ? (detail as any).financial_data : null
-+if (baseFinancial || detailFinancial) merged.financial_data = { ...(baseFinancial ?? {}), ...(detailFinancial ?? {}) }
-+return merged
-+}
-+function getCachedSalesDetailPayloadMap(storeClientId: string | null) {
-+const detailEndpoints = Object.values(SALES_DETAIL_ENDPOINTS) as string[]
-+const out = new Map<string, any>()
-+const seedRows = (rows: Array<{ endpoint: string; request_body: string | null; response_body: string | null }>) => {
-+for (const row of rows) {
-+const requestBody = parseJsonTextSafe((row as any)?.request_body)
-+const postingNumber = normalizeTextValue((requestBody as any)?.posting_number)
-+if (!postingNumber) continue
-+const payload = parseJsonTextSafe((row as any)?.response_body)
-+if (!payload) continue
-+const endpoint = normalizeTextValue((row as any)?.endpoint)
-+if (!endpoint) continue
-+const cacheKey = `${endpoint}::${postingNumber}`
-+if (!out.has(cacheKey)) out.set(cacheKey, payload)
-+}
-+}
-+const scopedRows = dbGetLatestPostingDetailResponses(storeClientId ?? null, detailEndpoints)
-+seedRows(scopedRows as any)
-+if (String(storeClientId ?? '').trim()) {
-+const fallbackRows = dbGetLatestPostingDetailResponses(null, detailEndpoints)
-+seedRows(fallbackRows as any)
-+}
-+return out
-+}
-+async function hydrateSalesPayloadDetails(
-+payloads: SalesPayloadEnvelope[],
-+secrets: ReturnType<typeof loadSecrets> | null,
-+storeClientId: string | null,
-+): Promise<SalesPayloadEnvelope[]> {
-+const detailCache = getCachedSalesDetailPayloadMap(storeClientId)
-+const out: SalesPayloadEnvelope[] = []
-+for (const envelope of payloads) {
-+const detailEndpoint = getSalesDetailEndpoint(envelope.endpoint)
-+if (!detailEndpoint) {
-+out.push(envelope)
-+continue
-+}
-+const postings = extractPostingsFromPayload(envelope.payload)
-+if (postings.length === 0) {
-+out.push(envelope)
-+continue
-+}
-+const nextPostings = postings.slice()
-+const groups = chunk(postings.map((posting, index) => ({ posting, index })), 10)
-+for (const group of groups) {
-+const resolved = await Promise.all(group.map(async ({ posting, index }) => {
-+const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
-+if (!postingNumber) return { index, posting }
-+const cacheKey = `${detailEndpoint}::${postingNumber}`
-+let detailPayload = detailCache.get(cacheKey) ?? null
-+if (secrets?.clientId && secrets?.apiKey) {
-+try {
-+detailPayload = detailEndpoint.includes('/fbs/')
-+? await ozonPostingFbsGet(secrets as NonNullable<ReturnType<typeof loadSecrets>>, postingNumber)
-+: await ozonPostingFboGet(secrets as NonNullable<ReturnType<typeof loadSecrets>>, postingNumber)
-+detailCache.set(cacheKey, detailPayload)
-+} catch {}
-+}
-+if (!detailPayload) return { index, posting }
-+return { index, posting: mergeSalesPostingWithDetail(posting, detailPayload) }
-+}))
-+for (const item of resolved) nextPostings[item.index] = item.posting
-+}
-+out.push({ endpoint: envelope.endpoint, payload: replacePayloadPostings(envelope.payload, nextPostings) })
-+}
-+return out
-+}
- function shouldReplaceSalesRow(prev: SalesRow, next: SalesRow): boolean {
- const prevDelivered = String(prev?.delivery_date ?? '').trim()
- const nextDelivered = String(next?.delivery_date ?? '').trim()
-@@ -499,7 +603,7 @@ const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_d
- const status = translateSalesCodeValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']), 'status')
- const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
- const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
--const deliveredAt = normalizeDateValue(pickFirstPresent(posting, ['fact_delivery_date', 'delivered_at', 'delivery_date']))
-+const deliveredAt = normalizeDateValue(pickFirstPresent(posting, ['fact_delivery_date', 'delivered_at', 'delivery_date', 'changed_state_date']))
- const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
- const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
- if (!postingNumber) continue
-@@ -981,7 +1085,11 @@ for (const [endpoint, payload] of cachedByEndpoint.entries()) {
- if (!onlineEndpoints.has(endpoint)) payloads.push(payload)
- }
- }
--const rows = normalizeSalesRows(payloads, products)
-+let resolvedPayloads = payloads
-+try {
-+resolvedPayloads = await hydrateSalesPayloadDetails(payloads, secrets, storeClientId)
-+} catch {}
-+const rows = normalizeSalesRows(resolvedPayloads, products)
- return { ok: true, rows }
- } catch (e: any) {
- return { ok: false, error: e?.message ?? String(e), rows: [] }
-diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
-index 1271239..bf180ad 100644
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
-@@ -38,6 +38,10 @@ export type ApiRawCacheResponseRow = {
-   store_client_id?: string | null
+diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
+index 74e14df..787e2a0 100644
+--- a/electron/main/ozon.ts
++++ b/electron/main/ozon.ts
+@@ -7,6 +7,13 @@ import type { Secrets } from './types'
+  */
+ 
+ const OZON_BASE = 'https://api-seller.ozon.ru'
++const OZON_MIN_REQUEST_GAP_MS = 250
++const OZON_RETRY_BASE_DELAY_MS = 1_200
++const OZON_MAX_RETRIES = 4
++const OZON_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
++
++let ozonQueueTail: Promise<void> = Promise.resolve()
++let ozonLastRequestStartedAt = 0
+ 
+ export type OzonApiCaptureEvent = {
+   storeClientId: string | null
+@@ -45,37 +52,120 @@ async function parseJsonSafe(text: string) {
+   try { return JSON.parse(text) } catch { return null }
  }
  
-+export type ApiRawPostingDetailResponseRow = ApiRawCacheResponseRow & {
-+  request_body: string | null
+-async function ozonRequest(secrets: Secrets, method: 'GET'|'POST', endpoint: string, body?: any) {
+-  const url = `${OZON_BASE}${endpoint}`
+-  const res = await fetch(url, {
+-    method,
+-    headers: headers(secrets) as any,
+-    body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
++function sleep(ms: number) {
++  if (ms <= 0) return Promise.resolve()
++  return new Promise<void>((resolve) => setTimeout(resolve, ms))
 +}
 +
- const GRID_COLS_DATASETS = new Set<GridColsDataset>(['products', 'sales', 'returns', 'stocks'])
- const GRID_COLS_KEY_PREFIX = 'grid_cols_layout:'
++function parseRetryAfterMs(value: string | null | undefined): number | null {
++  const raw = String(value ?? '').trim()
++  if (!raw) return null
++
++  const asSeconds = Number(raw)
++  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
++    return Math.round(asSeconds * 1000)
++  }
++
++  const asDate = Date.parse(raw)
++  if (Number.isFinite(asDate)) {
++    return Math.max(0, asDate - Date.now())
++  }
++
++  return null
++}
++
++function getRetryDelayMs(status: number, retryAfterHeader: string | null, attempt: number): number {
++  const retryAfterMs = parseRetryAfterMs(retryAfterHeader)
++  if (retryAfterMs != null) {
++    return Math.min(15_000, Math.max(OZON_RETRY_BASE_DELAY_MS, retryAfterMs))
++  }
++
++  const multiplier = status === 429 ? 2 ** attempt : Math.max(1, attempt + 1)
++  return Math.min(15_000, OZON_RETRY_BASE_DELAY_MS * multiplier)
++}
++
++async function runWithOzonRateLimit<T>(task: () => Promise<T>): Promise<T> {
++  let releaseQueue = () => {}
++  const queueSlot = new Promise<void>((resolve) => {
++    releaseQueue = resolve
+   })
  
-@@ -505,6 +509,70 @@ export function dbGetLatestApiRawResponses(storeClientId: string | null | undefi
-   return out
- }
+-  const text = await res.text()
+-  const json = await parseJsonSafe(text)
+-
+-  if (ozonApiCaptureHook) {
+-    const fetchedAt = new Date().toISOString()
+-    await ozonApiCaptureHook({
+-      storeClientId: String(secrets?.clientId ?? '').trim() || null,
+-      method,
+-      endpoint,
+-      requestBody: body ?? null,
+-      responseBody: json ?? { __raw_text: text },
+-      httpStatus: res.status,
+-      isSuccess: res.ok,
+-      errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
+-      fetchedAt,
+-    })
++  const waitPrev = ozonQueueTail
++  ozonQueueTail = waitPrev.then(() => queueSlot, () => queueSlot)
++
++  await waitPrev
++
++  const gapMs = Date.now() - ozonLastRequestStartedAt
++  if (ozonLastRequestStartedAt > 0 && gapMs < OZON_MIN_REQUEST_GAP_MS) {
++    await sleep(OZON_MIN_REQUEST_GAP_MS - gapMs)
+   }
  
-+function extractPostingNumberFromRequestBody(text: string | null | undefined): string {
-+  if (typeof text !== 'string' || !text.trim()) return ''
+-  if (!res.ok) {
+-    throw normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })
++  ozonLastRequestStartedAt = Date.now()
 +
 +  try {
-+    const parsed = JSON.parse(text) as any
-+    const postingNumber = parsed?.posting_number
-+    return String(postingNumber ?? '').trim()
-+  } catch {
-+    return ''
-+  }
++    return await task()
++  } finally {
++    releaseQueue()
+   }
 +}
 +
-+export function dbGetLatestPostingDetailResponses(storeClientId: string | null | undefined, endpointsRaw: unknown): ApiRawPostingDetailResponseRow[] {
-+  const endpoints = Array.from(new Set((Array.isArray(endpointsRaw) ? endpointsRaw : [])
-+    .map((v) => String(v ?? '').trim())
-+    .filter(Boolean)))
++async function ozonRequest(secrets: Secrets, method: 'GET'|'POST', endpoint: string, body?: any) {
++  const url = `${OZON_BASE}${endpoint}`
 +
-+  if (endpoints.length === 0) return []
++  return runWithOzonRateLimit(async () => {
++    let lastError: any = null
 +
-+  const placeholders = endpoints.map(() => '?').join(', ')
-+  const params = [...endpoints]
-+  let sql = `
-+    SELECT endpoint, request_body, response_body, fetched_at, store_client_id
-+    FROM api_raw_cache
-+    WHERE is_success = 1
-+      AND response_body IS NOT NULL
-+      AND response_truncated = 0
-+      AND endpoint IN (${placeholders})
-+  `
++    for (let attempt = 0; attempt <= OZON_MAX_RETRIES; attempt++) {
++      try {
++        const res = await fetch(url, {
++          method,
++          headers: headers(secrets) as any,
++          body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
++        })
 +
-+  const scopedStoreClientId = String(storeClientId ?? '').trim()
-+  if (scopedStoreClientId) {
-+    sql += ` AND store_client_id = ?`
-+    params.push(scopedStoreClientId)
-+  }
++        const text = await res.text()
++        const json = await parseJsonSafe(text)
 +
-+  sql += ` ORDER BY fetched_at DESC, id DESC`
++        if (ozonApiCaptureHook) {
++          const fetchedAt = new Date().toISOString()
++          await ozonApiCaptureHook({
++            storeClientId: String(secrets?.clientId ?? '').trim() || null,
++            method,
++            endpoint,
++            requestBody: body ?? null,
++            responseBody: json ?? { __raw_text: text },
++            httpStatus: res.status,
++            isSuccess: res.ok,
++            errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
++            fetchedAt,
++          })
++        }
 +
-+  const rows = mustDb().prepare(sql).all(...params) as any[]
-+  const out: ApiRawPostingDetailResponseRow[] = []
-+  const seen = new Set<string>()
++        if (res.ok) {
++          return json
++        }
 +
-+  for (const row of rows) {
-+    const endpoint = String((row as any)?.endpoint ?? '').trim()
-+    const requestBody = typeof (row as any)?.request_body === 'string' ? (row as any).request_body : null
-+    const postingNumber = extractPostingNumberFromRequestBody(requestBody)
-+    if (!endpoint || !postingNumber) continue
++        lastError = normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })
 +
-+    const dedupKey = `${endpoint}::${postingNumber}`
-+    if (seen.has(dedupKey)) continue
++        if (!OZON_RETRYABLE_STATUSES.has(res.status) || attempt >= OZON_MAX_RETRIES) {
++          throw lastError
++        }
 +
-+    out.push({
-+      endpoint,
-+      request_body: requestBody,
-+      response_body: typeof (row as any)?.response_body === 'string' ? (row as any).response_body : null,
-+      fetched_at: String((row as any)?.fetched_at ?? ''),
-+      store_client_id: typeof (row as any)?.store_client_id === 'string' ? (row as any).store_client_id : null,
-+    })
-+    seen.add(dedupKey)
-+  }
++        await sleep(getRetryDelayMs(res.status, res.headers.get('retry-after'), attempt))
++      } catch (error: any) {
++        if (error?.details?.status) {
++          throw error
++        }
+ 
+-  return json
++        lastError = error
++        if (attempt >= OZON_MAX_RETRIES) throw error
 +
-+  return out
-+}
++        await sleep(getRetryDelayMs(503, null, attempt))
++      }
++    }
 +
- export function dbGetAdminSettings() {
-   const raw = getSettingValue('log_retention_days')
-   return {
++    throw lastError ?? normalizeError('Ozon API error: request failed', { endpoint, body })
++  })
+ }
+ 
+ async function ozonPost(secrets: Secrets, endpoint: string, body: any) {
+diff --git a/src/renderer/src/ui/App.tsx b/src/renderer/src/ui/App.tsx
+index 48e01d8..1ef9755 100644
+--- a/src/renderer/src/ui/App.tsx
++++ b/src/renderer/src/ui/App.tsx
+@@ -640,47 +640,63 @@ export default function App() {
+         <div className={isProductsLike ? 'container containerWide' : 'container'}>
+           {visibleLastError && <div className="notice error">{visibleLastError}</div>}
+ 
+-          <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
+-            <ProductsPageMemo key="products" dataset="products" query={productsQuery} onStats={onProductStats} />
+-          </div>
+-
+-          <div style={{ display: isSales ? 'block' : 'none', height: '100%' }}>
+-            <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
+-          </div>
+-
+-          <div style={{ display: isReturns ? 'block' : 'none', height: '100%' }}>
+-            <ProductsPageMemo key="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
+-          </div>
+-
+-          <div style={{ display: isStocks ? 'block' : 'none', height: '100%' }}>
+-            <ProductsPageMemo key="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
+-          </div>
+-
+-          <div style={{ display: isDemandForecast ? 'block' : 'none', height: '100%' }}>
+-            <ProductsPageMemo key="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
+-          </div>
+-
+-          <div style={{ display: isLogs ? 'block' : 'none', height: '100%' }}>
+-            <LogsPage />
+-          </div>
+-
+-          <div style={{ display: isAdmin ? 'block' : 'none', height: '100%' }}>
+-            <AdminPage
+-              loading={adminLoading}
+-              saving={adminSaving}
+-              logLifeDaysValue={adminLogLifeDraft}
+-              onChangeLogLifeDays={(v) => {
+-                setAdminLogLifeDraft(v)
+-                if (adminNotice) setAdminNotice(null)
+-              }}
+-              notice={adminNotice}
+-              currentSavedDays={adminLogLifeSaved}
+-            />
+-          </div>
+-
+-          <div style={{ display: isSettings ? 'block' : 'none', height: '100%' }}>
+-            <SettingsPage />
+-          </div>
++          {isProducts && (
++            <div style={{ height: '100%' }}>
++              <ProductsPageMemo key="products" dataset="products" query={productsQuery} onStats={onProductStats} />
++            </div>
++          )}
++
++          {isSales && (
++            <div style={{ height: '100%' }}>
++              <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
++            </div>
++          )}
++
++          {isReturns && (
++            <div style={{ height: '100%' }}>
++              <ProductsPageMemo key="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
++            </div>
++          )}
++
++          {isStocks && (
++            <div style={{ height: '100%' }}>
++              <ProductsPageMemo key="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
++            </div>
++          )}
++
++          {isDemandForecast && (
++            <div style={{ height: '100%' }}>
++              <ProductsPageMemo key="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
++            </div>
++          )}
++
++          {isLogs && (
++            <div style={{ height: '100%' }}>
++              <LogsPage />
++            </div>
++          )}
++
++          {isAdmin && (
++            <div style={{ height: '100%' }}>
++              <AdminPage
++                loading={adminLoading}
++                saving={adminSaving}
++                logLifeDaysValue={adminLogLifeDraft}
++                onChangeLogLifeDays={(v) => {
++                  setAdminLogLifeDraft(v)
++                  if (adminNotice) setAdminNotice(null)
++                }}
++                notice={adminNotice}
++                currentSavedDays={adminLogLifeSaved}
++              />
++            </div>
++          )}
++
++          {isSettings && (
++            <div style={{ height: '100%' }}>
++              <SettingsPage />
++            </div>
++          )}
+ 
+           {productsTotal /* noop */ && false}
+           {productsFiltered /* noop */ && false}
