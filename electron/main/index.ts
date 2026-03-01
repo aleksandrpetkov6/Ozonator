@@ -36,7 +36,16 @@ const out: T[][] = []
 for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
 return out
 }
-const SALES_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
+const SALES_CACHE_SNAPSHOT_ENDPOINTS = {
+  fbs: '/__local__/sales-cache/fbs',
+  fbo: '/__local__/sales-cache/fbo',
+  details: '/__local__/sales-cache/posting-details',
+} as const
+const SALES_CACHE_SNAPSHOT_KEYS = [
+  SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs,
+  SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo,
+  SALES_CACHE_SNAPSHOT_ENDPOINTS.details,
+] as const
 
 function parseJsonTextSafe(text: string | null | undefined) {
 if (typeof text !== 'string' || !text.trim()) return null
@@ -47,16 +56,138 @@ return null
 }
 }
 
-function getCachedSalesPayloadMap(storeClientId: string | null | undefined): Map<string, SalesPayloadEnvelope> {
-const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_ENDPOINTS as unknown as string[])
-const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_ENDPOINTS as unknown as string[])
-const out = new Map<string, SalesPayloadEnvelope>()
+function normalizeSalesPeriodCacheValue(value: any): string | null {
+const raw = typeof value === 'string' ? value.trim() : ''
+return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
+}
+
+function normalizeSalesPeriodCache(period: SalesPeriod | null | undefined): { from: string | null; to: string | null } {
+let from = normalizeSalesPeriodCacheValue(period?.from)
+let to = normalizeSalesPeriodCacheValue(period?.to)
+if (!from && to) from = to
+if (from && !to) to = from
+if (from && to && from > to) [from, to] = [to, from]
+return { from, to }
+}
+
+function sameSalesPeriodCache(
+left: { from?: string | null; to?: string | null } | null | undefined,
+right: { from?: string | null; to?: string | null } | null | undefined,
+) {
+return (left?.from ?? null) === (right?.from ?? null) && (left?.to ?? null) === (right?.to ?? null)
+}
+
+function getCachedSalesSnapshotMap(storeClientId: string | null | undefined) {
+const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_CACHE_SNAPSHOT_KEYS as unknown as string[])
+const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_CACHE_SNAPSHOT_KEYS as unknown as string[])
+const out = new Map<string, any>()
 for (const row of rows) {
 if (out.has(row.endpoint)) continue
 const parsed = parseJsonTextSafe(row?.response_body)
-if (parsed) out.set(row.endpoint, { endpoint: row.endpoint, payload: parsed })
+if (parsed) out.set(row.endpoint, parsed)
 }
 return out
+}
+
+function buildSalesPayloadsFromLocalCache(
+cacheByEndpoint: Map<string, any>,
+requestedPeriod: SalesPeriod | null | undefined,
+): SalesPayloadEnvelope[] {
+const normalizedRequestedPeriod = normalizeSalesPeriodCache(requestedPeriod)
+const fbsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs)
+const fboSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo)
+const hasExactPeriodSnapshot = [fbsSnapshot, fboSnapshot].some((snapshot) => (
+  snapshot && sameSalesPeriodCache(normalizeSalesPeriodCache(snapshot?.period ?? null), normalizedRequestedPeriod)
+))
+const out: SalesPayloadEnvelope[] = []
+const pushSnapshot = (snapshot: any, fallbackEndpoint: string) => {
+if (!snapshot || typeof snapshot !== 'object') return
+const snapshotPeriod = normalizeSalesPeriodCache(snapshot?.period ?? null)
+if (hasExactPeriodSnapshot && !sameSalesPeriodCache(snapshotPeriod, normalizedRequestedPeriod)) return
+const payloads = Array.isArray(snapshot?.payloads) ? snapshot.payloads : []
+const sourceEndpoint = String(snapshot?.sourceEndpoint ?? '').trim() || fallbackEndpoint
+for (const payload of payloads) out.push({ endpoint: sourceEndpoint, payload })
+}
+pushSnapshot(fbsSnapshot, '/v3/posting/fbs/list')
+pushSnapshot(fboSnapshot, '/v2/posting/fbo/list')
+return out
+}
+
+function buildSalesPostingDetailsFromLocalCache(
+cacheByEndpoint: Map<string, any>,
+requestedPeriod: SalesPeriod | null | undefined,
+): Map<string, any> {
+const detailsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.details)
+if (!detailsSnapshot || typeof detailsSnapshot !== 'object') return new Map<string, any>()
+const normalizedRequestedPeriod = normalizeSalesPeriodCache(requestedPeriod)
+const fbsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs)
+const fboSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo)
+const hasExactPeriodSnapshot = [fbsSnapshot, fboSnapshot].some((snapshot) => (
+  snapshot && sameSalesPeriodCache(normalizeSalesPeriodCache(snapshot?.period ?? null), normalizedRequestedPeriod)
+))
+const detailsPeriod = normalizeSalesPeriodCache(detailsSnapshot?.period ?? null)
+if (hasExactPeriodSnapshot && !sameSalesPeriodCache(detailsPeriod, normalizedRequestedPeriod)) {
+return new Map<string, any>()
+}
+const out = new Map<string, any>()
+const items = Array.isArray(detailsSnapshot?.items) ? detailsSnapshot.items : []
+for (const item of items) {
+const key = String(item?.key ?? '').trim()
+if (!key) continue
+out.set(key, item?.payload ?? null)
+}
+return out
+}
+
+async function refreshSalesCacheFromApi(
+secrets: ReturnType<typeof loadSecrets>,
+requestedPeriod: SalesPeriod | null | undefined,
+) {
+const normalizedRequestedPeriod = normalizeSalesPeriodCache(requestedPeriod)
+const fbsPayloads = await fetchSalesEndpointPages(
+(body) => ozonPostingFbsList(secrets, body),
+requestedPeriod,
+'/v3/posting/fbs/list',
+)
+const fboPayloads = await fetchSalesEndpointPages(
+(body) => ozonPostingFboList(secrets, body),
+requestedPeriod,
+'/v2/posting/fbo/list',
+)
+const payloads = [...fbsPayloads, ...fboPayloads]
+const postingDetailsByKey = payloads.length > 0
+? await fetchSalesPostingDetails(secrets, payloads)
+: new Map<string, any>()
+const fetchedAt = new Date().toISOString()
+const persistSnapshot = (endpoint: string, responseBody: any) => {
+  dbRecordApiRawResponse({
+    storeClientId: secrets.clientId,
+    method: 'LOCAL',
+    endpoint,
+    requestBody: {
+      mode: 'sales-cache-snapshot',
+      period: normalizedRequestedPeriod,
+    },
+    responseBody,
+    httpStatus: 200,
+    isSuccess: true,
+    fetchedAt,
+  })
+}
+persistSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs, {
+  sourceEndpoint: '/v3/posting/fbs/list',
+  period: normalizedRequestedPeriod,
+  payloads: fbsPayloads.map((item) => item.payload),
+})
+persistSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo, {
+  sourceEndpoint: '/v2/posting/fbo/list',
+  period: normalizedRequestedPeriod,
+  payloads: fboPayloads.map((item) => item.payload),
+})
+persistSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.details, {
+  period: normalizedRequestedPeriod,
+  items: Array.from(postingDetailsByKey.entries()).map(([key, payload]) => ({ key, payload })),
+})
 }
 function createWindow() {
 startupLog('createWindow.begin', { packaged: app.isPackaged, appPath: app.getAppPath(), __dirname })
@@ -452,42 +583,16 @@ secrets = null
 storeClientId = null
 }
 const requestedPeriod: SalesPeriod | null = args?.period ?? null
-const products = dbGetProducts(storeClientId)
-const payloads: SalesPayloadEnvelope[] = []
-const onlineEndpoints = new Set<string>()
 if (secrets?.clientId && secrets?.apiKey) {
 try {
-const fbsPayloads = await fetchSalesEndpointPages(
-(body) => ozonPostingFbsList(secrets as NonNullable<typeof secrets>, body),
-requestedPeriod,
-'/v3/posting/fbs/list',
-)
-if (fbsPayloads.length > 0) {
-payloads.push(...fbsPayloads)
-onlineEndpoints.add('/v3/posting/fbs/list')
-}
-} catch {}
-try {
-const fboPayloads = await fetchSalesEndpointPages(
-(body) => ozonPostingFboList(secrets as NonNullable<typeof secrets>, body),
-requestedPeriod,
-'/v2/posting/fbo/list',
-)
-if (fboPayloads.length > 0) {
-payloads.push(...fboPayloads)
-onlineEndpoints.add('/v2/posting/fbo/list')
-}
-} catch {}
-}
-if (onlineEndpoints.size < SALES_ENDPOINTS.length) {
-const cachedByEndpoint = getCachedSalesPayloadMap(storeClientId)
-for (const [endpoint, payload] of cachedByEndpoint.entries()) {
-if (!onlineEndpoints.has(endpoint)) payloads.push(payload)
+await refreshSalesCacheFromApi(secrets, requestedPeriod)
+} catch {
 }
 }
-const postingDetailsByKey = secrets?.clientId && secrets?.apiKey && onlineEndpoints.size > 0
-? await fetchSalesPostingDetails(secrets as NonNullable<typeof secrets>, payloads)
-: new Map<string, any>()
+const products = dbGetProducts(storeClientId)
+const cacheByEndpoint = getCachedSalesSnapshotMap(storeClientId)
+const payloads = buildSalesPayloadsFromLocalCache(cacheByEndpoint, requestedPeriod)
+const postingDetailsByKey = buildSalesPostingDetailsFromLocalCache(cacheByEndpoint, requestedPeriod)
 const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
 return { ok: true, rows }
 } catch (e: any) {
