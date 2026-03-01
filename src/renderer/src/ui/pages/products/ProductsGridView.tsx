@@ -2,6 +2,52 @@ import React from 'react'
 import { getSortButtonTitle, type TableSortDir } from '../../utils/tableSort'
 import { type ColDef, type GridRow, type HiddenBucket } from './shared'
 
+const SALES_SHIPMENT_CONFIRMED_MARKERS = [
+  'отгружен',
+  'отправлен продавцом',
+  'передан в доставку',
+  'передан в службу доставки',
+  'забирает курьер',
+  'в пути',
+  'доставляется',
+  'доставлен',
+  'доставлен покупателю',
+  'получен покупателем',
+  'возвращается',
+  'возвращён',
+  'возвращен',
+  'возврат',
+]
+
+function toRowText(value: unknown): string {
+  if (value == null) return ''
+  return String(value).trim()
+}
+
+function toRowTimestamp(value: unknown): number | null {
+  const raw = toRowText(value)
+  if (!raw) return null
+  const parsed = Date.parse(raw)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function hasConfirmedShipmentDate(row: GridRow): boolean {
+  const rawShipmentDate = toRowText(row.shipment_date)
+  if (!rawShipmentDate) return false
+
+  const shipmentTs = toRowTimestamp(rawShipmentDate)
+  if (shipmentTs != null && shipmentTs > (Date.now() + 60_000)) return false
+  if (toRowTimestamp(row.delivery_date) != null) return true
+
+  const signalText = [row.status, row.status_details, row.carrier_status_details]
+    .map((value) => toRowText(value).toLowerCase())
+    .filter(Boolean)
+    .join(' | ')
+
+  if (!signalText) return false
+  return SALES_SHIPMENT_CONFIRMED_MARKERS.some((marker) => signalText.includes(marker))
+}
+
 type Props = {
   hiddenCols: ColDef[]
   collapsedOpen: boolean
@@ -296,7 +342,13 @@ export default function ProductsGridView(props: Props) {
                     <tr key={getRowKey(p, startRow + rowIdx)}>
                       {visibleCols.map((c) => {
                         const id = String(c.id)
-                        const { text, title } = cellText(p, c.id)
+                        const baseCell = cellText(p, c.id)
+                        let text = baseCell.text
+                        let title = baseCell.title
+                        if (id === 'shipment_date' && !hasConfirmedShipmentDate(p)) {
+                          text = ''
+                          title = undefined
+                        }
                         if (id === 'photo_url') {
                           const url = (p.photo_url && String(p.photo_url).trim()) ? String(p.photo_url).trim() : ''
                           return (
