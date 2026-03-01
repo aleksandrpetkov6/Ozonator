@@ -327,6 +327,35 @@ const DATASET_INFLIGHT: Record<DataSet, Promise<GridRow[] | null> | null> = {
 }
 
 const PRODUCTS_CACHE_TTL_MS = 60_000
+const SALES_PERIOD_LS_KEY = 'ozonator_demand_forecast_period_v1'
+
+let salesCacheKey = ''
+let salesInflightKey = ''
+
+function normSalesPeriodValue(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ''
+}
+
+function readSalesPeriod(): { from?: string; to?: string } | undefined {
+  try {
+    const raw = localStorage.getItem(SALES_PERIOD_LS_KEY)
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw) as { from?: unknown; to?: unknown }
+    const from = normSalesPeriodValue(parsed?.from)
+    const to = normSalesPeriodValue(parsed?.to)
+    if (!from && !to) return undefined
+    return { from, to }
+  } catch {
+    return undefined
+  }
+}
+
+function getSalesPeriodCacheKey(period?: { from?: string; to?: string }): string {
+  const from = normSalesPeriodValue(period?.from)
+  const to = normSalesPeriodValue(period?.to)
+  return `${from}|${to}`
+}
 
 export function getCachedRows(dataset: DataSet): GridRow[] {
   return DATASET_CACHE[dataset] ?? []
@@ -334,10 +363,18 @@ export function getCachedRows(dataset: DataSet): GridRow[] {
 
 export async function fetchRowsCached(dataset: DataSet, force = false): Promise<GridRow[] | null> {
   const now = Date.now()
-  if (!force && DATASET_CACHE[dataset] && (now - DATASET_CACHE_AT[dataset]) < PRODUCTS_CACHE_TTL_MS) return DATASET_CACHE[dataset]
-  if (DATASET_INFLIGHT[dataset]) return DATASET_INFLIGHT[dataset]
+  const salesPeriod = dataset === 'sales' ? readSalesPeriod() : undefined
+  const salesKey = dataset === 'sales' ? getSalesPeriodCacheKey(salesPeriod) : ''
 
-  DATASET_INFLIGHT[dataset] = (async () => {
+  if (!force && DATASET_CACHE[dataset] && (now - DATASET_CACHE_AT[dataset]) < PRODUCTS_CACHE_TTL_MS) {
+    if (dataset !== 'sales' || salesCacheKey === salesKey) return DATASET_CACHE[dataset]
+  }
+
+  if (DATASET_INFLIGHT[dataset]) {
+    if (dataset !== 'sales' || salesInflightKey === salesKey) return DATASET_INFLIGHT[dataset]
+  }
+
+  const request = (async () => {
     try {
       let list: GridRow[] = []
       if (dataset === 'products') {
@@ -345,7 +382,7 @@ export async function fetchRowsCached(dataset: DataSet, force = false): Promise<
         if (resp.ok) list = (resp.products as any) as GridRow[]
         else return DATASET_CACHE[dataset]
       } else if (dataset === 'sales') {
-        const resp = await window.api.getSales({ from: '2026-02-01' })
+        const resp = await window.api.getSales(salesPeriod)
         if (resp.ok) list = (resp.rows as any) as GridRow[]
         else return DATASET_CACHE[dataset]
       } else if (dataset === 'returns') {
@@ -360,13 +397,17 @@ export async function fetchRowsCached(dataset: DataSet, force = false): Promise<
       const sortedList = sortRowsForDefaultView(dataset, list)
       DATASET_CACHE[dataset] = sortedList
       DATASET_CACHE_AT[dataset] = Date.now()
+      if (dataset === 'sales') salesCacheKey = salesKey
       return sortedList
     } catch {
       return DATASET_CACHE[dataset]
     } finally {
-      DATASET_INFLIGHT[dataset] = null
+      if (DATASET_INFLIGHT[dataset] === request) DATASET_INFLIGHT[dataset] = null
+      if (dataset === 'sales' && salesInflightKey === salesKey) salesInflightKey = ''
     }
   })()
 
-  return DATASET_INFLIGHT[dataset]
+  DATASET_INFLIGHT[dataset] = request
+  if (dataset === 'sales') salesInflightKey = salesKey
+  return request
 }
