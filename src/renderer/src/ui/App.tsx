@@ -5,44 +5,17 @@ import ProductsPage from './pages/ProductsPage'
 import LogsPage from './pages/LogsPage'
 import AdminPage from './pages/AdminPage'
 import { formatDateTimeRu } from './utils/dateTime'
+import { DEFAULT_UI_DATE_RANGE_DAYS, UI_DATE_RANGE_LS_KEY, getDefaultDateRange, readDateRangeWithDefault, sanitizeDateInput, type UiDateRange } from './utils/dateRangeDefaults'
 import { useGlobalTableEnhancements } from './utils/tableEnhancements'
 
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
-const DEMAND_FORECAST_PERIOD_LS_KEY = 'ozonator_demand_forecast_period_v1'
+const DEMAND_FORECAST_PERIOD_LS_KEY = UI_DATE_RANGE_LS_KEY
 
-type DemandForecastPeriod = {
-  from: string
-  to: string
-}
+type DemandForecastPeriod = UiDateRange
 
-const DEMAND_PERIOD_PRESETS = [30, 90, 180, 365] as const
+const DEMAND_PERIOD_PRESETS = [DEFAULT_UI_DATE_RANGE_DAYS, 90, 180, 365] as const
 
-
-function toDateInputValue(date: Date): string {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
-
-function getPresetDemandPeriod(days: number): DemandForecastPeriod {
-  const end = new Date()
-  end.setHours(0, 0, 0, 0)
-  end.setDate(end.getDate() - 1)
-
-  const start = new Date(end)
-  start.setDate(end.getDate() - (days - 1))
-
-  return {
-    from: toDateInputValue(start),
-    to: toDateInputValue(end)
-  }
-}
-
-function sanitizeDateInput(value: string): string {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ''
-}
 
 function toShortRuDate(value: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return ''
@@ -56,21 +29,7 @@ function formatPeriodBoundary(value: string, boundary: 'startOfDay' | 'endOfDay'
 }
 
 function readDemandForecastPeriod(): DemandForecastPeriod {
-  try {
-    const raw = localStorage.getItem(DEMAND_FORECAST_PERIOD_LS_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<DemandForecastPeriod>
-      const from = sanitizeDateInput(String(parsed.from ?? ''))
-      const to = sanitizeDateInput(String(parsed.to ?? ''))
-      if (from || to) {
-        return { from, to }
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  return getPresetDemandPeriod(90)
+  return readDateRangeWithDefault(DEMAND_FORECAST_PERIOD_LS_KEY, DEFAULT_UI_DATE_RANGE_DAYS)
 }
 
 const ProductsPageMemo = React.memo(ProductsPage)
@@ -164,12 +123,12 @@ export default function App() {
   }, [])
 
   const applyDemandPreset = useCallback((days: number) => {
-    setDemandPeriod(getPresetDemandPeriod(days))
+    setDemandPeriod(getDefaultDateRange(days))
   }, [])
 
   const demandPresetDays = useMemo(() => {
     for (const days of DEMAND_PERIOD_PRESETS) {
-      const preset = getPresetDemandPeriod(days)
+      const preset = getDefaultDateRange(days)
       if (preset.from === demandPeriod.from && preset.to === demandPeriod.to) return days
     }
     return null
