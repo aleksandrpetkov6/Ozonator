@@ -55,8 +55,33 @@ const AUTO_MAX_W: Record<string, number> = {
   photo_url: 90,
 }
 
-export default function ProductsPage({ dataset = 'products', query = '', onStats }: Props) {
-  const [products, setProducts] = useState<GridRow[]>(() => getCachedRows(dataset))
+function normDay(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ''
+}
+function rowDay(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (!raw) return ''
+  const head = raw.slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(head)) return head
+  const parsed = new Date(raw)
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10)
+}
+function scopeSalesRows(rows: GridRow[], period?: { from?: string; to?: string }): GridRow[] {
+  let from = normDay(period?.from)
+  let to = normDay(period?.to)
+  if (!from && !to) return rows
+  if (!from) from = to
+  if (!to) to = from
+  if (!from || !to) return rows
+  if (from > to) [from, to] = [to, from]
+  return rows.filter((row) => {
+    const day = rowDay((row as any)?.in_process_at)
+    return !!day && day >= from && day <= to
+  })
+}
+export default function ProductsPage({ dataset = 'products', query = '', period, onStats }: Props) {
+  const [products, setProducts] = useState<GridRow[]>(() => (dataset === 'sales' ? [] : getCachedRows(dataset)))
   const [cols, setCols] = useState<ColDef[]>(() => readCols(dataset))
   const [sortState, setSortState] = useState<SortState>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -202,9 +227,18 @@ export default function ProductsPage({ dataset = 'products', query = '', onStats
   }, [dataset])
 
   const load = useCallback(async (force = false) => {
+    if (dataset === 'sales') {
+      try {
+        const resp = await window.api.getSales(period)
+        if (resp?.ok && Array.isArray(resp.rows)) {
+          setProducts(scopeSalesRows((resp.rows as any) as GridRow[], period))
+          return
+        }
+      } catch {}
+    }
     const list = await fetchRowsCached(dataset, force)
-    if (Array.isArray(list)) setProducts(list)
-  }, [dataset])
+    if (Array.isArray(list)) setProducts(dataset === 'sales' ? scopeSalesRows(list, period) : list)
+  }, [dataset, period?.from, period?.to])
 
   useEffect(() => { load() }, [load])
 
