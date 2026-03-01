@@ -238,7 +238,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
     }
     const list = await fetchRowsCached(dataset, force)
     if (Array.isArray(list)) setProducts(dataset === 'sales' ? scopeSalesRows(list, period) : list)
-  }, [dataset, period?.from, period?.to])
+  }, [dataset, period])
 
   useEffect(() => { load() }, [load])
 
