@@ -1,38 +1,70 @@
 --- a/electron/main/index.ts
 +++ b/electron/main/index.ts
-@@ -468,6 +468,14 @@
+@@ -468,6 +468,24 @@
  function getFactDeliveryDateValue(source: any): string {
  return normalizeDateValue(pickFirstPresent(source, ['result.fact_delivery_date', 'fact_delivery_date']))
  }
-+function getFallbackDeliveryDateValue(source: any): string {
++function getDeliveryDateFallbackValue(source: any): string {
 +return normalizeDateValue(pickFirstPresent(source, [
-+'result.delivery_date',
-+'delivery_date',
 +'result.customer_deliver_date',
 +'customer_deliver_date',
++'result.delivered_at',
++'delivered_at',
++'result.delivered_date',
++'delivered_date',
++'result.delivery_date',
++'delivery_date',
++'result.analytics_data.delivery_date',
++'analytics_data.delivery_date',
++'result.analytics_data.delivery_date_begin',
++'analytics_data.delivery_date_begin',
++'result.analytics_data.delivery_date_end',
++'analytics_data.delivery_date_end',
 +]))
 +}
  const SALES_DELIVERED_STATUS_KEYS = new Set([
  'delivered',
  'delivered_to_customer',
-@@ -577,7 +585,19 @@
+@@ -475,6 +493,10 @@
+ 'posting_delivered',
+ 'posting_delivered_to_customer',
+ 'posting_conditionally_delivered',
++'доставлен',
++'доставлен_покупателю',
++'получен_покупателем',
++'условно_доставлен',
+ ])
+ function hasDeliveredStatusSignal(posting: any): boolean {
+ const statusCandidates = [
+@@ -490,7 +512,7 @@
+ }
+ function shouldFetchSalesPostingDetails(posting: any): boolean {
+ if (getFactDeliveryDateValue(posting)) return false
+-if (normalizeDateValue(pickFirstPresent(posting, ['delivery_date', 'result.delivery_date']))) return true
++if (getDeliveryDateFallbackValue(posting)) return true
+ if (hasDeliveredStatusSignal(posting)) return true
+ return false
+ }
+@@ -577,7 +599,11 @@
  const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
  const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
  const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
 -const deliveredAt = getFactDeliveryDateValue(detailPosting) || getFactDeliveryDateValue(posting)
-+const deliveredSignals = [detailPosting, posting].filter(Boolean)
-+const deliveredAt = (() => {
-+for (const source of deliveredSignals) {
-+const factDate = getFactDeliveryDateValue(source)
-+if (factDate) return factDate
-+}
-+if (!deliveredSignals.some((source) => hasDeliveredStatusSignal(source))) return ''
-+for (const source of deliveredSignals) {
-+const fallbackDate = getFallbackDeliveryDateValue(source)
-+if (fallbackDate) return fallbackDate
-+}
-+return ''
-+})()
++const detailFactDeliveredAt = getFactDeliveryDateValue(detailPosting)
++const postingFactDeliveredAt = getFactDeliveryDateValue(posting)
++const detailFallbackDeliveredAt = hasDeliveredStatusSignal(detailPosting) ? getDeliveryDateFallbackValue(detailPosting) : ''
++const postingFallbackDeliveredAt = hasDeliveredStatusSignal(posting) ? getDeliveryDateFallbackValue(posting) : ''
++const deliveredAt = detailFactDeliveredAt || postingFactDeliveredAt || detailFallbackDeliveredAt || postingFallbackDeliveredAt
  const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
  const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
  if (!postingNumber) continue
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -583,6 +583,7 @@
+     }
+     if (isTemporalColumnId(colId)) {
+       const f = formatTemporalCellRu(colId, v)
++      if (colId === 'delivery_date') return { text: f, title: f || undefined }
+       return { text: f || '-', title: f || undefined }
+     }
+     if (colId === 'warehouse_name') {
