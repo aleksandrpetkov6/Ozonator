@@ -11,6 +11,7 @@ import { useGlobalTableEnhancements } from './utils/tableEnhancements'
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
 const DEMAND_FORECAST_PERIOD_LS_KEY = UI_DATE_RANGE_LS_KEY
+const AUTO_SYNC_ENABLED_LS_KEY = 'ozonator_auto_sync_enabled'
 
 type DemandForecastPeriod = UiDateRange
 
@@ -71,6 +72,9 @@ export default function App() {
   const online = useOnline()
 
   const [running, setRunning] = useState(false)
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem(AUTO_SYNC_ENABLED_LS_KEY) === '1' } catch { return false }
+  })
   const runningRef = useRef(false)
   useEffect(() => {
     runningRef.current = running
@@ -280,6 +284,10 @@ export default function App() {
       if (!resp.ok) {
         setLastError(resp.error ?? 'Ошибка синхронизации')
       } else {
+        if (reason === 'manual' && !autoSyncEnabled) {
+          setAutoSyncEnabled(true)
+          try { localStorage.setItem(AUTO_SYNC_ENABLED_LS_KEY, '1') } catch {}
+        }
         setLastError(null)
         window.dispatchEvent(new Event('ozon:products-updated'))
         window.dispatchEvent(new Event('ozon:logs-updated'))
@@ -291,21 +299,20 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!online || !autoSyncEnabled) return
+
     let cancelled = false
 
     async function runAuto() {
-      if (cancelled) return
+      if (cancelled || document.hidden) return
       try {
         const st = await window.api.secretsStatus()
-        if (st.hasSecrets) {
-          await syncNow('auto')
-        }
+        if (cancelled || !st.hasSecrets) return
+        await syncNow('auto')
       } catch {
         // ignore
       }
     }
-
-    runAuto()
 
     const id = setInterval(runAuto, 60 * 60 * 1000)
     return () => {
@@ -313,7 +320,7 @@ export default function App() {
       clearInterval(id)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [online])
+  }, [autoSyncEnabled, online])
 
   const saveAdmin = useCallback(async () => {
     const parsed = parseLogLifeDays(adminLogLifeDraft)
@@ -640,47 +647,63 @@ export default function App() {
         <div className={isProductsLike ? 'container containerWide' : 'container'}>
           {visibleLastError && <div className="notice error">{visibleLastError}</div>}
 
-          <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
-            <ProductsPageMemo key="products" dataset="products" query={productsQuery} onStats={onProductStats} />
-          </div>
+          {isProducts && (
+            <div style={{ height: '100%' }}>
+              <ProductsPageMemo key="products" dataset="products" query={productsQuery} onStats={onProductStats} />
+            </div>
+          )}
 
-          <div style={{ display: isSales ? 'block' : 'none', height: '100%' }}>
-            <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
-          </div>
+          {isSales && (
+            <div style={{ height: '100%' }}>
+              <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
+            </div>
+          )}
 
-          <div style={{ display: isReturns ? 'block' : 'none', height: '100%' }}>
-            <ProductsPageMemo key="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
-          </div>
+          {isReturns && (
+            <div style={{ height: '100%' }}>
+              <ProductsPageMemo key="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
+            </div>
+          )}
 
-          <div style={{ display: isStocks ? 'block' : 'none', height: '100%' }}>
-            <ProductsPageMemo key="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
-          </div>
+          {isStocks && (
+            <div style={{ height: '100%' }}>
+              <ProductsPageMemo key="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
+            </div>
+          )}
 
-          <div style={{ display: isDemandForecast ? 'block' : 'none', height: '100%' }}>
-            <ProductsPageMemo key="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
-          </div>
+          {isDemandForecast && (
+            <div style={{ height: '100%' }}>
+              <ProductsPageMemo key="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
+            </div>
+          )}
 
-          <div style={{ display: isLogs ? 'block' : 'none', height: '100%' }}>
-            <LogsPage />
-          </div>
+          {isLogs && (
+            <div style={{ height: '100%' }}>
+              <LogsPage />
+            </div>
+          )}
 
-          <div style={{ display: isAdmin ? 'block' : 'none', height: '100%' }}>
-            <AdminPage
-              loading={adminLoading}
-              saving={adminSaving}
-              logLifeDaysValue={adminLogLifeDraft}
-              onChangeLogLifeDays={(v) => {
-                setAdminLogLifeDraft(v)
-                if (adminNotice) setAdminNotice(null)
-              }}
-              notice={adminNotice}
-              currentSavedDays={adminLogLifeSaved}
-            />
-          </div>
+          {isAdmin && (
+            <div style={{ height: '100%' }}>
+              <AdminPage
+                loading={adminLoading}
+                saving={adminSaving}
+                logLifeDaysValue={adminLogLifeDraft}
+                onChangeLogLifeDays={(v) => {
+                  setAdminLogLifeDraft(v)
+                  if (adminNotice) setAdminNotice(null)
+                }}
+                notice={adminNotice}
+                currentSavedDays={adminLogLifeSaved}
+              />
+            </div>
+          )}
 
-          <div style={{ display: isSettings ? 'block' : 'none', height: '100%' }}>
-            <SettingsPage />
-          </div>
+          {isSettings && (
+            <div style={{ height: '100%' }}>
+              <SettingsPage />
+            </div>
+          )}
 
           {productsTotal /* noop */ && false}
           {productsFiltered /* noop */ && false}
