@@ -244,13 +244,10 @@ function normalizeNumberValue(value: any): number | '' {
 }
 
 export function extractPostingsFromPayload(payload: any): any[] {
-  const fromResultPostings = safeGetByPath(payload, 'result.postings', null)
-  if (Array.isArray(fromResultPostings)) return fromResultPostings
-  const fromResult = safeGetByPath(payload, 'result', null)
+  const fromResult = safeGetByPath(payload, 'result.postings', null)
   if (Array.isArray(fromResult)) return fromResult
   const direct = safeGetByPath(payload, 'postings', null)
   if (Array.isArray(direct)) return direct
-  if (Array.isArray(payload)) return payload
   return []
 }
 
