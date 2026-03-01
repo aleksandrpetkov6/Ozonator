@@ -374,7 +374,9 @@ export async function fetchRowsCached(dataset: DataSet, force = false): Promise<
     if (dataset !== 'sales' || salesInflightKey === salesKey) return DATASET_INFLIGHT[dataset]
   }
 
-  const request = (async () => {
+  let request: Promise<GridRow[] | null> | null = null
+
+  request = (async () => {
     try {
       let list: GridRow[] = []
       if (dataset === 'products') {
