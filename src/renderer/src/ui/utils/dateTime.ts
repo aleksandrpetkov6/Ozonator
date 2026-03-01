@@ -14,6 +14,13 @@ function formatDateRu(parsed: Date): string {
   return `${dd}.${mm}.${yy}.`
 }
 
+function formatDateCompactRu(parsed: Date): string {
+  const dd = pad(parsed.getDate())
+  const mm = pad(parsed.getMonth() + 1)
+  const yy = pad(parsed.getFullYear() % 100)
+  return `${dd}.${mm}.${yy}`
+}
+
 function formatTimeRu(value: string): string {
   const match = TIME_ONLY_RE.exec(value.trim())
   if (!match) return value
@@ -119,5 +126,14 @@ export function formatTemporalCellRu(columnId: unknown, value: unknown): string 
     if (value == null || value === '') return ''
     return typeof value === 'string' ? value : String(value)
   }
+
+  const normalizedColumnId = String(columnId ?? '').trim().toLowerCase()
+  if (normalizedColumnId === 'delivery_date') {
+    const parsed = toDate(value, 'keep')
+    if (parsed && parsed.getMinutes() === 0 && parsed.getSeconds() === 0 && parsed.getMilliseconds() === 0) {
+      return formatDateCompactRu(parsed)
+    }
+  }
+
   return formatTemporalValueRu(value, { columnId })
 }
