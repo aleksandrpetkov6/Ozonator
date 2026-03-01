@@ -313,16 +313,71 @@ function normalizeSalesEndpointName(endpoint: string): 'FBS' | 'FBO' | '' {
   return ''
 }
 
-function buildDeliveryModelValue(posting: any, endpoint: string): string {
-  const explicit = normalizeTextValue(pickFirstPresent(posting, [
-    'delivery_schema',
-    'posting.delivery_schema',
-    'analytics_data.delivery_schema',
-  ]))
-  if (explicit) return explicit.toUpperCase()
+function normalizeDeliveryModelLabel(value: any): 'FBS' | 'rFBS' | 'FBO' | '' {
+  const raw = normalizeTextValue(value)
+  if (!raw) return ''
+  const compact = raw.replace(/[^a-z]/gi, '').toUpperCase()
+  if (!compact) return ''
+  if (compact.includes('RFBS')) return 'rFBS'
+  if (compact.includes('FBO')) return 'FBO'
+  if (compact.includes('FBS')) return 'FBS'
+  return ''
+}
+
+function pickDeliverySchemaFromOperations(source: any): any {
+  if (!source || typeof source !== 'object') return undefined
+  const operations = Array.isArray((source as any)?.operations)
+    ? (source as any).operations
+    : (Array.isArray((source as any)?.result?.operations) ? (source as any).result.operations : [])
+  for (const operation of operations) {
+    const value = pickFirstPresent(operation, ['posting.delivery_schema', 'delivery_schema'])
+    if (value !== undefined && value !== null && value !== '') return value
+  }
+  return undefined
+}
+
+function hasRfbsAnalyticsSignal(...sources: any[]): boolean {
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue
+    const city = normalizeTextValue(pickFirstPresent(source, ['analytics_data.city', 'city']))
+    const region = normalizeTextValue(pickFirstPresent(source, ['analytics_data.region', 'region']))
+    if (city || region) return true
+  }
+  return false
+}
+
+function buildDeliveryModelValue(posting: any, detailPosting: any, endpoint: string): string {
+  const explicit = normalizeDeliveryModelLabel(
+    pickFirstPresent(detailPosting, [
+      'delivery_schema',
+      'posting.delivery_schema',
+      'analytics_data.delivery_schema',
+      'result.delivery_schema',
+      'result.posting.delivery_schema',
+    ])
+    ?? pickDeliverySchemaFromOperations(detailPosting)
+    ?? pickFirstPresent(posting, [
+      'delivery_schema',
+      'posting.delivery_schema',
+      'analytics_data.delivery_schema',
+      'result.delivery_schema',
+      'result.posting.delivery_schema',
+    ])
+    ?? pickDeliverySchemaFromOperations(posting),
+  )
+  if (explicit) return explicit
+
   const normalizedEndpoint = normalizeSalesEndpointName(endpoint)
-  if (normalizedEndpoint) return normalizedEndpoint
-  return normalizeTextValue(pickFirstPresent(posting, ['delivery_method.name', 'delivery_method', 'delivery_type']))
+  if (normalizedEndpoint === 'FBO') return 'FBO'
+  if (normalizedEndpoint === 'FBS') {
+    if (hasRfbsAnalyticsSignal(detailPosting, posting)) return 'rFBS'
+    return 'FBS'
+  }
+
+  return normalizeDeliveryModelLabel(
+    pickFirstPresent(detailPosting, ['delivery_method.name', 'delivery_method', 'delivery_type', 'analytics_data.delivery_type'])
+    ?? pickFirstPresent(posting, ['delivery_method.name', 'delivery_method', 'delivery_type', 'analytics_data.delivery_type']),
+  )
 }
 
 function buildSalesStatusDetailsValue(posting: any, endpoint: string): string {
@@ -594,7 +649,7 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
       const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
       const deliveredAt = resolvePostingDeliveryDate(detailPosting, posting)
       const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
-      const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
+      const deliverySchema = buildDeliveryModelValue(posting, detailPosting, envelope.endpoint)
       if (!postingNumber) continue
       for (const item of items) {
         const sku = normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
