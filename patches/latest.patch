@@ -1,273 +1,38 @@
-diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
-index 74e14df..787e2a0 100644
---- a/electron/main/ozon.ts
-+++ b/electron/main/ozon.ts
-@@ -7,6 +7,13 @@ import type { Secrets } from './types'
-  */
- 
- const OZON_BASE = 'https://api-seller.ozon.ru'
-+const OZON_MIN_REQUEST_GAP_MS = 250
-+const OZON_RETRY_BASE_DELAY_MS = 1_200
-+const OZON_MAX_RETRIES = 4
-+const OZON_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
-+
-+let ozonQueueTail: Promise<void> = Promise.resolve()
-+let ozonLastRequestStartedAt = 0
- 
- export type OzonApiCaptureEvent = {
-   storeClientId: string | null
-@@ -45,37 +52,120 @@ async function parseJsonSafe(text: string) {
-   try { return JSON.parse(text) } catch { return null }
+--- a/electron/main/index.ts
++++ b/electron/main/index.ts
+@@ -468,6 +468,14 @@
+ function getFactDeliveryDateValue(source: any): string {
+ return normalizeDateValue(pickFirstPresent(source, ['result.fact_delivery_date', 'fact_delivery_date']))
  }
- 
--async function ozonRequest(secrets: Secrets, method: 'GET'|'POST', endpoint: string, body?: any) {
--  const url = `${OZON_BASE}${endpoint}`
--  const res = await fetch(url, {
--    method,
--    headers: headers(secrets) as any,
--    body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
-+function sleep(ms: number) {
-+  if (ms <= 0) return Promise.resolve()
-+  return new Promise<void>((resolve) => setTimeout(resolve, ms))
++function getFallbackDeliveryDateValue(source: any): string {
++return normalizeDateValue(pickFirstPresent(source, [
++'result.delivery_date',
++'delivery_date',
++'result.customer_deliver_date',
++'customer_deliver_date',
++]))
 +}
-+
-+function parseRetryAfterMs(value: string | null | undefined): number | null {
-+  const raw = String(value ?? '').trim()
-+  if (!raw) return null
-+
-+  const asSeconds = Number(raw)
-+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
-+    return Math.round(asSeconds * 1000)
-+  }
-+
-+  const asDate = Date.parse(raw)
-+  if (Number.isFinite(asDate)) {
-+    return Math.max(0, asDate - Date.now())
-+  }
-+
-+  return null
+ const SALES_DELIVERED_STATUS_KEYS = new Set([
+ 'delivered',
+ 'delivered_to_customer',
+@@ -577,7 +585,19 @@
+ const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
+ const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
+ const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
+-const deliveredAt = getFactDeliveryDateValue(detailPosting) || getFactDeliveryDateValue(posting)
++const deliveredSignals = [detailPosting, posting].filter(Boolean)
++const deliveredAt = (() => {
++for (const source of deliveredSignals) {
++const factDate = getFactDeliveryDateValue(source)
++if (factDate) return factDate
 +}
-+
-+function getRetryDelayMs(status: number, retryAfterHeader: string | null, attempt: number): number {
-+  const retryAfterMs = parseRetryAfterMs(retryAfterHeader)
-+  if (retryAfterMs != null) {
-+    return Math.min(15_000, Math.max(OZON_RETRY_BASE_DELAY_MS, retryAfterMs))
-+  }
-+
-+  const multiplier = status === 429 ? 2 ** attempt : Math.max(1, attempt + 1)
-+  return Math.min(15_000, OZON_RETRY_BASE_DELAY_MS * multiplier)
++if (!deliveredSignals.some((source) => hasDeliveredStatusSignal(source))) return ''
++for (const source of deliveredSignals) {
++const fallbackDate = getFallbackDeliveryDateValue(source)
++if (fallbackDate) return fallbackDate
 +}
-+
-+async function runWithOzonRateLimit<T>(task: () => Promise<T>): Promise<T> {
-+  let releaseQueue = () => {}
-+  const queueSlot = new Promise<void>((resolve) => {
-+    releaseQueue = resolve
-   })
- 
--  const text = await res.text()
--  const json = await parseJsonSafe(text)
--
--  if (ozonApiCaptureHook) {
--    const fetchedAt = new Date().toISOString()
--    await ozonApiCaptureHook({
--      storeClientId: String(secrets?.clientId ?? '').trim() || null,
--      method,
--      endpoint,
--      requestBody: body ?? null,
--      responseBody: json ?? { __raw_text: text },
--      httpStatus: res.status,
--      isSuccess: res.ok,
--      errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
--      fetchedAt,
--    })
-+  const waitPrev = ozonQueueTail
-+  ozonQueueTail = waitPrev.then(() => queueSlot, () => queueSlot)
-+
-+  await waitPrev
-+
-+  const gapMs = Date.now() - ozonLastRequestStartedAt
-+  if (ozonLastRequestStartedAt > 0 && gapMs < OZON_MIN_REQUEST_GAP_MS) {
-+    await sleep(OZON_MIN_REQUEST_GAP_MS - gapMs)
-   }
- 
--  if (!res.ok) {
--    throw normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })
-+  ozonLastRequestStartedAt = Date.now()
-+
-+  try {
-+    return await task()
-+  } finally {
-+    releaseQueue()
-   }
-+}
-+
-+async function ozonRequest(secrets: Secrets, method: 'GET'|'POST', endpoint: string, body?: any) {
-+  const url = `${OZON_BASE}${endpoint}`
-+
-+  return runWithOzonRateLimit(async () => {
-+    let lastError: any = null
-+
-+    for (let attempt = 0; attempt <= OZON_MAX_RETRIES; attempt++) {
-+      try {
-+        const res = await fetch(url, {
-+          method,
-+          headers: headers(secrets) as any,
-+          body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
-+        })
-+
-+        const text = await res.text()
-+        const json = await parseJsonSafe(text)
-+
-+        if (ozonApiCaptureHook) {
-+          const fetchedAt = new Date().toISOString()
-+          await ozonApiCaptureHook({
-+            storeClientId: String(secrets?.clientId ?? '').trim() || null,
-+            method,
-+            endpoint,
-+            requestBody: body ?? null,
-+            responseBody: json ?? { __raw_text: text },
-+            httpStatus: res.status,
-+            isSuccess: res.ok,
-+            errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
-+            fetchedAt,
-+          })
-+        }
-+
-+        if (res.ok) {
-+          return json
-+        }
-+
-+        lastError = normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })
-+
-+        if (!OZON_RETRYABLE_STATUSES.has(res.status) || attempt >= OZON_MAX_RETRIES) {
-+          throw lastError
-+        }
-+
-+        await sleep(getRetryDelayMs(res.status, res.headers.get('retry-after'), attempt))
-+      } catch (error: any) {
-+        if (error?.details?.status) {
-+          throw error
-+        }
- 
--  return json
-+        lastError = error
-+        if (attempt >= OZON_MAX_RETRIES) throw error
-+
-+        await sleep(getRetryDelayMs(503, null, attempt))
-+      }
-+    }
-+
-+    throw lastError ?? normalizeError('Ozon API error: request failed', { endpoint, body })
-+  })
- }
- 
- async function ozonPost(secrets: Secrets, endpoint: string, body: any) {
-diff --git a/src/renderer/src/ui/App.tsx b/src/renderer/src/ui/App.tsx
-index 48e01d8..1ef9755 100644
---- a/src/renderer/src/ui/App.tsx
-+++ b/src/renderer/src/ui/App.tsx
-@@ -640,47 +640,63 @@ export default function App() {
-         <div className={isProductsLike ? 'container containerWide' : 'container'}>
-           {visibleLastError && <div className="notice error">{visibleLastError}</div>}
- 
--          <div style={{ display: isProducts ? 'block' : 'none', height: '100%' }}>
--            <ProductsPageMemo key="products" dataset="products" query={productsQuery} onStats={onProductStats} />
--          </div>
--
--          <div style={{ display: isSales ? 'block' : 'none', height: '100%' }}>
--            <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
--          </div>
--
--          <div style={{ display: isReturns ? 'block' : 'none', height: '100%' }}>
--            <ProductsPageMemo key="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
--          </div>
--
--          <div style={{ display: isStocks ? 'block' : 'none', height: '100%' }}>
--            <ProductsPageMemo key="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
--          </div>
--
--          <div style={{ display: isDemandForecast ? 'block' : 'none', height: '100%' }}>
--            <ProductsPageMemo key="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
--          </div>
--
--          <div style={{ display: isLogs ? 'block' : 'none', height: '100%' }}>
--            <LogsPage />
--          </div>
--
--          <div style={{ display: isAdmin ? 'block' : 'none', height: '100%' }}>
--            <AdminPage
--              loading={adminLoading}
--              saving={adminSaving}
--              logLifeDaysValue={adminLogLifeDraft}
--              onChangeLogLifeDays={(v) => {
--                setAdminLogLifeDraft(v)
--                if (adminNotice) setAdminNotice(null)
--              }}
--              notice={adminNotice}
--              currentSavedDays={adminLogLifeSaved}
--            />
--          </div>
--
--          <div style={{ display: isSettings ? 'block' : 'none', height: '100%' }}>
--            <SettingsPage />
--          </div>
-+          {isProducts && (
-+            <div style={{ height: '100%' }}>
-+              <ProductsPageMemo key="products" dataset="products" query={productsQuery} onStats={onProductStats} />
-+            </div>
-+          )}
-+
-+          {isSales && (
-+            <div style={{ height: '100%' }}>
-+              <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
-+            </div>
-+          )}
-+
-+          {isReturns && (
-+            <div style={{ height: '100%' }}>
-+              <ProductsPageMemo key="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
-+            </div>
-+          )}
-+
-+          {isStocks && (
-+            <div style={{ height: '100%' }}>
-+              <ProductsPageMemo key="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
-+            </div>
-+          )}
-+
-+          {isDemandForecast && (
-+            <div style={{ height: '100%' }}>
-+              <ProductsPageMemo key="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
-+            </div>
-+          )}
-+
-+          {isLogs && (
-+            <div style={{ height: '100%' }}>
-+              <LogsPage />
-+            </div>
-+          )}
-+
-+          {isAdmin && (
-+            <div style={{ height: '100%' }}>
-+              <AdminPage
-+                loading={adminLoading}
-+                saving={adminSaving}
-+                logLifeDaysValue={adminLogLifeDraft}
-+                onChangeLogLifeDays={(v) => {
-+                  setAdminLogLifeDraft(v)
-+                  if (adminNotice) setAdminNotice(null)
-+                }}
-+                notice={adminNotice}
-+                currentSavedDays={adminLogLifeSaved}
-+              />
-+            </div>
-+          )}
-+
-+          {isSettings && (
-+            <div style={{ height: '100%' }}>
-+              <SettingsPage />
-+            </div>
-+          )}
- 
-           {productsTotal /* noop */ && false}
-           {productsFiltered /* noop */ && false}
++return ''
++})()
+ const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
+ const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
+ if (!postingNumber) continue
