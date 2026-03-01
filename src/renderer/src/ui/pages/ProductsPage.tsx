@@ -583,7 +583,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
     }
     if (isTemporalColumnId(colId)) {
       const f = formatTemporalCellRu(colId, v)
-      return { text: f || '-', title: f || undefined }
+      return { text: f || (colId === 'delivery_date' ? '' : '-'), title: f || undefined }
     }
     if (colId === 'warehouse_name') {
       const rawName = (p.warehouse_name == null ? '' : String(p.warehouse_name)).trim()
