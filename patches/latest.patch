@@ -1,70 +1,61 @@
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -468,6 +468,24 @@
- function getFactDeliveryDateValue(source: any): string {
- return normalizeDateValue(pickFirstPresent(source, ['result.fact_delivery_date', 'fact_delivery_date']))
+--- a/electron/main/sales-sync.ts
++++ b/electron/main/sales-sync.ts
+@@ -559,7 +559,8 @@
+   return getFallbackDeliveryDateValue(detailPosting) || getFallbackDeliveryDateValue(posting)
  }
-+function getDeliveryDateFallbackValue(source: any): string {
-+return normalizeDateValue(pickFirstPresent(source, [
-+'result.customer_deliver_date',
-+'customer_deliver_date',
-+'result.delivered_at',
-+'delivered_at',
-+'result.delivered_date',
-+'delivered_date',
-+'result.delivery_date',
-+'delivery_date',
-+'result.analytics_data.delivery_date',
-+'analytics_data.delivery_date',
-+'result.analytics_data.delivery_date_begin',
-+'analytics_data.delivery_date_begin',
-+'result.analytics_data.delivery_date_end',
-+'analytics_data.delivery_date_end',
-+]))
-+}
- const SALES_DELIVERED_STATUS_KEYS = new Set([
- 'delivered',
- 'delivered_to_customer',
-@@ -475,6 +493,10 @@
- 'posting_delivered',
- 'posting_delivered_to_customer',
- 'posting_conditionally_delivered',
-+'доставлен',
-+'доставлен_покупателю',
-+'получен_покупателем',
-+'условно_доставлен',
- ])
- function hasDeliveredStatusSignal(posting: any): boolean {
- const statusCandidates = [
-@@ -490,7 +512,7 @@
+ 
+-function shouldFetchSalesPostingDetails(posting: any): boolean {
++function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO' | ''): boolean {
++  if (endpointKind === 'FBO') return true
+   if (getFactDeliveryDateValue(posting)) return false
+   if (hasDeliveryDateSignal(posting)) return true
+   if (hasDeliveredStatusSignal(posting)) return true
+@@ -577,7 +578,7 @@
+     if (endpointKind !== 'FBS' && endpointKind !== 'FBO') continue
+     for (const posting of extractPostingsFromPayload(envelope.payload)) {
+       const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
+-      if (!postingNumber || !shouldFetchSalesPostingDetails(posting)) continue
++      if (!postingNumber || !shouldFetchSalesPostingDetails(posting, endpointKind)) continue
+       const requestKey = getSalesPostingDetailsKey(endpointKind, postingNumber)
+       if (seen.has(requestKey)) continue
+       seen.add(requestKey)
+@@ -645,13 +646,23 @@
+         ? Array.from(fboOrderPostingMap.get(orderKey) ?? []).filter((value) => value !== postingNumber)
+         : []
+       const related = buildRelatedPostingsText(posting, fallbackRelated)
+-      const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date']))
+-      const status = translateSalesCodeValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']), 'status')
+-      const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
+-      const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
+       const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
++      const shipmentDate = normalizeDateValue(
++        pickFirstPresent(detailPosting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date'])
++        ?? pickFirstPresent(posting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date']),
++      )
++      const status = translateSalesCodeValue(
++        pickFirstPresent(detailPosting, ['status', 'state', 'result.status', 'result.state'])
++        ?? pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']),
++        'status',
++      )
++      const statusDetails = buildSalesStatusDetailsValue(detailPosting, envelope.endpoint) || buildSalesStatusDetailsValue(posting, envelope.endpoint)
++      const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(detailPosting) || buildSalesCarrierStatusDetailsValue(posting)
+       const deliveredAt = resolvePostingDeliveryDate(detailPosting, posting)
+-      const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
++      const deliveryCluster = normalizeTextValue(
++        pickFirstPresent(detailPosting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to'])
++        ?? pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']),
++      )
+       const deliverySchema = buildDeliveryModelValue(posting, detailPosting, envelope.endpoint)
+       if (!postingNumber) continue
+       for (const item of items) {
+--- a/electron/main/ozon.ts
++++ b/electron/main/ozon.ts
+@@ -789,7 +789,7 @@
  }
- function shouldFetchSalesPostingDetails(posting: any): boolean {
- if (getFactDeliveryDateValue(posting)) return false
--if (normalizeDateValue(pickFirstPresent(posting, ['delivery_date', 'result.delivery_date']))) return true
-+if (getDeliveryDateFallbackValue(posting)) return true
- if (hasDeliveredStatusSignal(posting)) return true
- return false
+ 
+ export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string) {
+-  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber))
++  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, true))
  }
-@@ -577,7 +599,11 @@
- const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
- const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
- const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
--const deliveredAt = getFactDeliveryDateValue(detailPosting) || getFactDeliveryDateValue(posting)
-+const detailFactDeliveredAt = getFactDeliveryDateValue(detailPosting)
-+const postingFactDeliveredAt = getFactDeliveryDateValue(posting)
-+const detailFallbackDeliveredAt = hasDeliveredStatusSignal(detailPosting) ? getDeliveryDateFallbackValue(detailPosting) : ''
-+const postingFallbackDeliveredAt = hasDeliveredStatusSignal(posting) ? getDeliveryDateFallbackValue(posting) : ''
-+const deliveredAt = detailFactDeliveredAt || postingFactDeliveredAt || detailFallbackDeliveredAt || postingFallbackDeliveredAt
- const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
- const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
- if (!postingNumber) continue
---- a/src/renderer/src/ui/pages/ProductsPage.tsx
-+++ b/src/renderer/src/ui/pages/ProductsPage.tsx
-@@ -583,6 +583,7 @@
-     }
-     if (isTemporalColumnId(colId)) {
-       const f = formatTemporalCellRu(colId, v)
-+      if (colId === 'delivery_date') return { text: f, title: f || undefined }
-       return { text: f || '-', title: f || undefined }
-     }
-     if (colId === 'warehouse_name') {
+ 
+ export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
