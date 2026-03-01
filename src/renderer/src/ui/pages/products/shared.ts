@@ -125,6 +125,75 @@ export function toSortTimestamp(value: unknown): number | null {
   return Number.isFinite(time) ? time : null
 }
 
+const SALES_SHIPMENT_PREFACT_TEXT = [
+  'создан',
+  'ожидает подтверждения',
+  'ожидает регистрации',
+  'ожидает упаковки',
+  'готов к отгрузке',
+]
+
+const SALES_SHIPMENT_FACT_TEXT = [
+  'ожидает доставки',
+  'отгружен',
+  'отправлен продавцом',
+  'передаётся в доставку',
+  'передан в доставку',
+  'передан в службу доставки',
+  'забирает курьер',
+  'в пути',
+  'доставляется',
+  'доставлен',
+  'доставлен покупателю',
+  'получен покупателем',
+  'возвращается',
+  'возвращён',
+  'возврат',
+]
+
+function containsSalesMarker(text: string, markers: string[]): boolean {
+  if (!text) return false
+  return markers.some((marker) => text.includes(marker))
+}
+
+function hasConfirmedShipmentSignal(row: GridRow): boolean {
+  if (toSortTimestamp(row.delivery_date) != null) return true
+
+  const statusText = [row.status, row.status_details, row.carrier_status_details]
+    .map((value) => toText(value).trim().toLowerCase())
+    .filter(Boolean)
+    .join(' | ')
+
+  if (!statusText) return false
+  if (containsSalesMarker(statusText, SALES_SHIPMENT_FACT_TEXT)) return true
+  if (containsSalesMarker(statusText, SALES_SHIPMENT_PREFACT_TEXT)) return false
+  return false
+}
+
+function normalizeShipmentDateForUi(row: GridRow, nowMs: number): string {
+  const raw = toText(row.shipment_date).trim()
+  if (!raw) return ''
+
+  const shipmentTs = toSortTimestamp(raw)
+  if (shipmentTs == null) return ''
+
+  if (shipmentTs > (nowMs + 60_000)) return ''
+  if (!hasConfirmedShipmentSignal(row)) return ''
+
+  return raw
+}
+
+function sanitizeSalesRows(rows: GridRow[]): GridRow[] {
+  if (rows.length === 0) return rows
+  const nowMs = Date.now()
+
+  return rows.map((row) => {
+    const nextShipmentDate = normalizeShipmentDateForUi(row, nowMs)
+    if (nextShipmentDate === toText(row.shipment_date).trim()) return row
+    return { ...row, shipment_date: nextShipmentDate }
+  })
+}
+
 function getOfferIdSortBucket(value: unknown): number {
   const text = toText(value).trim()
   if (!text) return 2
@@ -385,7 +454,7 @@ export async function fetchRowsCached(dataset: DataSet, force = false): Promise<
         else return DATASET_CACHE[dataset]
       } else if (dataset === 'sales') {
         const resp = await window.api.getSales(salesPeriod)
-        if (resp.ok) list = (resp.rows as any) as GridRow[]
+        if (resp.ok) list = sanitizeSalesRows((resp.rows as any) as GridRow[])
         else return DATASET_CACHE[dataset]
       } else if (dataset === 'returns') {
         const resp = await window.api.getReturns()
