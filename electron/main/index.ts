@@ -3,7 +3,7 @@ import { join } from 'path'
 import { appendFileSync, mkdirSync } from 'fs'
 import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
-import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboList, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
+import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboGet, ozonPostingFboList, ozonPostingFbsGet, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 let mainWindow: BrowserWindow | null = null
 let startupShowTimer: NodeJS.Timeout | null = null
 function startupLog(...args: any[]) {
@@ -456,7 +456,84 @@ if (prevDelivered && !nextDelivered) return false
 if (prevDelivered && nextDelivered) return nextDelivered > prevDelivered
 return false
 }
-function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: GridApiRow[]): SalesRow[] {
+function getSalesPostingDetailsKey(endpointKind: 'FBS' | 'FBO' | '', postingNumber: string): string {
+return `${endpointKind}|${String(postingNumber ?? '').trim()}`
+}
+function extractSalesPostingResult(payload: any): any {
+const result = safeGetByPath(payload, 'result', null)
+if (result && typeof result === 'object') return result
+if (payload && typeof payload === 'object') return payload
+return null
+}
+function getFactDeliveryDateValue(source: any): string {
+return normalizeDateValue(pickFirstPresent(source, ['result.fact_delivery_date', 'fact_delivery_date']))
+}
+const SALES_DELIVERED_STATUS_KEYS = new Set([
+'delivered',
+'delivered_to_customer',
+'customer_received',
+'posting_delivered',
+'posting_delivered_to_customer',
+'posting_conditionally_delivered',
+])
+function hasDeliveredStatusSignal(posting: any): boolean {
+const statusCandidates = [
+pickFirstPresent(posting, ['status', 'result.status', 'state', 'result.state']),
+pickFirstPresent(posting, ['provider_status', 'result.provider_status']),
+pickFirstPresent(posting, ['new_state', 'result.new_state']),
+]
+for (const candidate of statusCandidates) {
+const key = normalizeSalesLookupKey(candidate)
+if (key && SALES_DELIVERED_STATUS_KEYS.has(key)) return true
+}
+return false
+}
+function shouldFetchSalesPostingDetails(posting: any): boolean {
+if (getFactDeliveryDateValue(posting)) return false
+if (normalizeDateValue(pickFirstPresent(posting, ['delivery_date', 'result.delivery_date']))) return true
+if (hasDeliveredStatusSignal(posting)) return true
+return false
+}
+async function fetchSalesPostingDetails(
+secrets: NonNullable<ReturnType<typeof loadSecrets>>,
+payloads: SalesPayloadEnvelope[],
+): Promise<Map<string, any>> {
+const requests: Array<{ endpointKind: 'FBS' | 'FBO'; postingNumber: string }> = []
+const seen = new Set<string>()
+for (const envelope of payloads) {
+const endpointKind = normalizeSalesEndpointName(envelope.endpoint)
+if (endpointKind !== 'FBS' && endpointKind !== 'FBO') continue
+for (const posting of extractPostingsFromPayload(envelope.payload)) {
+const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
+if (!postingNumber || !shouldFetchSalesPostingDetails(posting)) continue
+const requestKey = getSalesPostingDetailsKey(endpointKind, postingNumber)
+if (seen.has(requestKey)) continue
+seen.add(requestKey)
+requests.push({ endpointKind, postingNumber })
+}
+}
+if (requests.length === 0) return new Map()
+const out = new Map<string, any>()
+for (const batch of chunk(requests, 10)) {
+const settled = await Promise.allSettled(batch.map(async (request) => {
+const payload = request.endpointKind === 'FBS'
+? await ozonPostingFbsGet(secrets, request.postingNumber)
+: await ozonPostingFboGet(secrets, request.postingNumber)
+return { request, payload }
+}))
+for (const result of settled) {
+if (result.status !== 'fulfilled') continue
+const detailPosting = extractSalesPostingResult(result.value.payload)
+if (!detailPosting) continue
+const endpointKind = result.value.request.endpointKind
+const postingNumber = normalizeTextValue(pickFirstPresent(detailPosting, ['posting_number', 'postingNumber'])) || result.value.request.postingNumber
+if (!postingNumber) continue
+out.set(getSalesPostingDetailsKey(endpointKind, postingNumber), detailPosting)
+}
+}
+return out
+}
+function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: GridApiRow[], postingDetailsByKey?: Map<string, any>): SalesRow[] {
 const productsByOfferId = new Map<string, GridApiRow>()
 const productsBySku = new Map<string, GridApiRow>()
 for (const product of products) {
@@ -499,7 +576,8 @@ const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_d
 const status = translateSalesCodeValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']), 'status')
 const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
 const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
-const deliveredAt = normalizeDateValue(pickFirstPresent(posting, ['fact_delivery_date', 'delivered_at', 'delivery_date']))
+const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
+const deliveredAt = getFactDeliveryDateValue(detailPosting) || getFactDeliveryDateValue(posting)
 const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
 const deliverySchema = buildDeliveryModelValue(posting, envelope.endpoint)
 if (!postingNumber) continue
@@ -981,7 +1059,10 @@ for (const [endpoint, payload] of cachedByEndpoint.entries()) {
 if (!onlineEndpoints.has(endpoint)) payloads.push(payload)
 }
 }
-const rows = normalizeSalesRows(payloads, products)
+const postingDetailsByKey = secrets?.clientId && secrets?.apiKey && onlineEndpoints.size > 0
+? await fetchSalesPostingDetails(secrets as NonNullable<typeof secrets>, payloads)
+: new Map<string, any>()
+const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
 return { ok: true, rows }
 } catch (e: any) {
 return { ok: false, error: e?.message ?? String(e), rows: [] }
