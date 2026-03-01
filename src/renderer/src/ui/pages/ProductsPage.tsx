@@ -25,6 +25,7 @@ type SortState = TableSortState<GridColId>
 type Props = {
   dataset?: DataSet
   query?: string
+  period?: { from?: string; to?: string }
   onStats?: (s: { total: number; filtered: number }) => void
 }
 
