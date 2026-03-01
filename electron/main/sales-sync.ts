@@ -246,8 +246,23 @@ function normalizeNumberValue(value: any): number | '' {
 export function extractPostingsFromPayload(payload: any): any[] {
   const fromResult = safeGetByPath(payload, 'result.postings', null)
   if (Array.isArray(fromResult)) return fromResult
+
+  const fromResultItems = safeGetByPath(payload, 'result.items', null)
+  if (Array.isArray(fromResultItems)) return fromResultItems
+
+  const fromResultRows = safeGetByPath(payload, 'result.rows', null)
+  if (Array.isArray(fromResultRows)) return fromResultRows
+
   const direct = safeGetByPath(payload, 'postings', null)
   if (Array.isArray(direct)) return direct
+
+  const directItems = safeGetByPath(payload, 'items', null)
+  if (Array.isArray(directItems)) return directItems
+
+  const directResult = safeGetByPath(payload, 'result', null)
+  if (Array.isArray(directResult)) return directResult
+
+  if (Array.isArray(payload)) return payload
   return []
 }
 
@@ -346,32 +361,6 @@ function hasRfbsAnalyticsSignal(...sources: any[]): boolean {
   return false
 }
 
-function hasFboAnalyticsSignal(...sources: any[]): boolean {
-  for (const source of sources) {
-    if (!source || typeof source !== 'object') continue
-    const warehouseName = normalizeTextValue(pickFirstPresent(source, [
-      'analytics_data.warehouse_name',
-      'result.analytics_data.warehouse_name',
-      'warehouse_name',
-      'result.warehouse_name',
-    ]))
-    const warehouseId = normalizeTextValue(pickFirstPresent(source, [
-      'analytics_data.warehouse_id',
-      'result.analytics_data.warehouse_id',
-      'warehouse_id',
-      'result.warehouse_id',
-    ]))
-    if (warehouseName || warehouseId) return true
-    const items = Array.isArray((source as any)?.products)
-      ? (source as any).products
-      : (Array.isArray((source as any)?.items) ? (source as any).items : [])
-    if (items.some((item: any) => item && Object.prototype.hasOwnProperty.call(item, 'is_marketplace_buyout'))) {
-      return true
-    }
-  }
-  return false
-}
-
 function buildDeliveryModelValue(posting: any, detailPosting: any, endpoint: string): string {
   const explicit = normalizeDeliveryModelLabel(
     pickFirstPresent(detailPosting, [
@@ -400,16 +389,10 @@ function buildDeliveryModelValue(posting: any, detailPosting: any, endpoint: str
     return 'FBS'
   }
 
-  if (hasFboAnalyticsSignal(detailPosting, posting)) return 'FBO'
-  if (hasRfbsAnalyticsSignal(detailPosting, posting)) return 'rFBS'
-
-  const deliveryTypeLabel = normalizeDeliveryModelLabel(
+  return normalizeDeliveryModelLabel(
     pickFirstPresent(detailPosting, ['delivery_method.name', 'delivery_method', 'delivery_type', 'analytics_data.delivery_type'])
     ?? pickFirstPresent(posting, ['delivery_method.name', 'delivery_method', 'delivery_type', 'analytics_data.delivery_type']),
   )
-  if (deliveryTypeLabel) return deliveryTypeLabel
-
-  return normalizeDeliveryModelLabel(endpoint)
 }
 
 function buildSalesStatusDetailsValue(posting: any, endpoint: string): string {
@@ -509,50 +492,12 @@ export async function fetchSalesEndpointPages(
   return payloads
 }
 
-function hasSalesRowValue(value: any): boolean {
-  if (value === null || value === undefined) return false
-  if (typeof value === 'number') return Number.isFinite(value)
-  if (typeof value === 'string') return value.trim() !== ''
-  return true
-}
-
-function getSalesRowCompletenessScore(row: SalesRow): number {
-  const fields: Array<keyof SalesRow> = [
-    'in_process_at',
-    'related_postings',
-    'shipment_date',
-    'status',
-    'status_details',
-    'carrier_status_details',
-    'delivery_date',
-    'delivery_cluster',
-    'delivery_model',
-    'price',
-    'quantity',
-    'paid_by_customer',
-  ]
-  let score = 0
-  for (const field of fields) {
-    if (hasSalesRowValue((row as any)?.[field])) score += 1
-  }
-  return score
-}
-
 function shouldReplaceSalesRow(prev: SalesRow, next: SalesRow): boolean {
   const prevDelivered = String(prev?.delivery_date ?? '').trim()
   const nextDelivered = String(next?.delivery_date ?? '').trim()
   if (!prevDelivered && nextDelivered) return true
   if (prevDelivered && !nextDelivered) return false
-  if (prevDelivered && nextDelivered && nextDelivered !== prevDelivered) return nextDelivered > prevDelivered
-
-  const prevDeliveryModel = String(prev?.delivery_model ?? '').trim()
-  const nextDeliveryModel = String(next?.delivery_model ?? '').trim()
-  if (!prevDeliveryModel && nextDeliveryModel) return true
-  if (prevDeliveryModel && !nextDeliveryModel) return false
-
-  const prevScore = getSalesRowCompletenessScore(prev)
-  const nextScore = getSalesRowCompletenessScore(next)
-  if (prevScore !== nextScore) return nextScore > prevScore
+  if (prevDelivered && nextDelivered) return nextDelivered > prevDelivered
   return false
 }
 
