@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
 
   testAuth: () => ipcRenderer.invoke('ozon:testAuth'),
   syncProducts: (salesPeriod?: { from?: string; to?: string } | null) => ipcRenderer.invoke('ozon:syncProducts', { salesPeriod: salesPeriod ?? null }),
+  refreshSales: (period?: { from?: string; to?: string } | null) => ipcRenderer.invoke('data:refreshSales', { period: period ?? null }),
 
   getDatasetRows: (dataset: string, options?: { period?: { from?: string; to?: string } | null }) => ipcRenderer.invoke('data:getDatasetRows', { dataset, period: options?.period ?? null }),
   getProducts: () => ipcRenderer.invoke('data:getProducts'),
