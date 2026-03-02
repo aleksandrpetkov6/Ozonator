@@ -58,7 +58,7 @@ export function getDefaultDateRange(days = DEFAULT_UI_DATE_RANGE_DAYS): UiDateRa
   const end = today ?? new Date()
 
   const start = new Date(end.getTime())
-  start.setUTCDate(start.getUTCDate() - (safeDays - 1))
+  start.setUTCDate(start.getUTCDate() - safeDays)
 
   return {
     from: toDateInputValue(start),
