@@ -1,7 +1,8 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
-import { fetchSalesEndpointPages, fetchSalesPostingDetails, normalizeSalesRows, type SalesPeriod } from './sales-sync'
+import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, type SalesPeriod } from './sales-sync'
 import { dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
+import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
 import type { Secrets } from './types'
 
 const SALES_CACHE_SNAPSHOT_ENDPOINTS = {
@@ -19,6 +20,85 @@ const SALES_CACHE_SNAPSHOT_KEYS = [
 const SALES_LEGACY_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
 
 export type LocalDatasetName = string
+
+function normalizeTextValue(value: any): string {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
+  return ''
+}
+
+function getByPath(source: any, path: string): any {
+  if (!source || typeof source !== 'object') return undefined
+  let cur = source
+  for (const part of String(path ?? '').split('.').filter(Boolean)) {
+    if (cur == null || typeof cur !== 'object' || !(part in cur)) return undefined
+    cur = cur[part]
+  }
+  return cur
+}
+
+function pickFirstPresent(source: any, paths: string[]): any {
+  for (const path of paths) {
+    const value = getByPath(source, path)
+    if (value === undefined || value === null || value === '') continue
+    return value
+  }
+  return undefined
+}
+
+function hasFboCompatDetail(detail: any): boolean {
+  const cluster = normalizeTextValue(pickFirstPresent(detail, [
+    'financial_data.cluster_to',
+    'result.financial_data.cluster_to',
+    'cluster_to',
+    'result.cluster_to',
+  ]))
+  const shipment = normalizeTextValue(pickFirstPresent(detail, [
+    'shipment_date',
+    'shipment_date_actual',
+    'delivering_date',
+    'shipped_at',
+    'changed_state_date',
+    'result.shipment_date',
+    'result.shipment_date_actual',
+    'result.delivering_date',
+    'result.shipped_at',
+    'result.changed_state_date',
+  ]))
+  const delivery = normalizeTextValue(pickFirstPresent(detail, [
+    'fact_delivery_date',
+    'delivery_date',
+    'delivered_date',
+    'result.fact_delivery_date',
+    'result.delivery_date',
+    'result.delivered_date',
+  ]))
+  return Boolean(cluster && (shipment || delivery))
+}
+
+function collectFboPostingNumbersNeedingCompat(
+  fboPayloads: Array<{ endpoint: string; payload: any }>,
+  postingDetailsByKey: Map<string, any>,
+): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+
+  for (const envelope of fboPayloads) {
+    const postings = Array.isArray(envelope?.payload?.result?.postings)
+      ? envelope.payload.result.postings
+      : (Array.isArray(envelope?.payload?.postings) ? envelope.payload.postings : [])
+    for (const posting of postings) {
+      const postingNumber = normalizeTextValue(posting?.posting_number ?? posting?.postingNumber)
+      if (!postingNumber || seen.has(postingNumber)) continue
+      seen.add(postingNumber)
+      const key = getSalesPostingDetailsKey('FBO', postingNumber)
+      if (hasFboCompatDetail(postingDetailsByKey.get(key))) continue
+      out.push(postingNumber)
+    }
+  }
+
+  return out
+}
 
 function parseJsonTextSafe(text: string | null | undefined) {
   if (typeof text !== 'string' || !text.trim()) return null
@@ -202,6 +282,13 @@ export async function refreshSalesRawSnapshotFromApi(
   const postingDetailsByKey = payloads.length > 0
     ? await fetchSalesPostingDetails(secrets, payloads)
     : new Map<string, any>()
+  const compatFboPostingNumbers = collectFboPostingNumbersNeedingCompat(fboPayloads, postingDetailsByKey)
+  if (compatFboPostingNumbers.length > 0) {
+    const compatDetails = await fetchFboPostingDetailsCompat(secrets, compatFboPostingNumbers)
+    for (const [postingNumber, payload] of compatDetails.entries()) {
+      postingDetailsByKey.set(getSalesPostingDetailsKey('FBO', postingNumber), payload)
+    }
+  }
   const fetchedAt = new Date().toISOString()
 
   buildAndPersistFboSalesSnapshot({
