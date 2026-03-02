@@ -1,5 +1,5 @@
-import { type SortableColumn } from '../../utils/tableSort'
 import { DEFAULT_UI_DATE_RANGE_DAYS, getDefaultDateRange } from '../../utils/dateRangeDefaults'
+import { type SortableColumn } from '../../utils/tableSort'
 
 export type GridRow = {
   offer_id: string
@@ -436,10 +436,11 @@ function normSalesPeriodValue(value: unknown): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ''
 }
 
-function readSalesPeriod(): { from?: string; to?: string } | undefined {
-  // Для «Продаж» запасной путь без явного period тоже должен брать
-  // плавающий диапазон: текущая дата минус 30 дней.
-  return getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS + 1)
+function readSalesPeriod(): { from?: string; to?: string } {
+  const preset = getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS)
+  const from = normSalesPeriodValue(preset.from)
+  const to = normSalesPeriodValue(preset.to)
+  return { from, to }
 }
 
 function getSalesPeriodCacheKey(period?: { from?: string; to?: string }): string {
