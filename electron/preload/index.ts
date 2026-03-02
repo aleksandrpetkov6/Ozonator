@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   saveAdminSettings: (payload: { logRetentionDays: number }) => ipcRenderer.invoke('admin:saveSettings', payload),
 
   testAuth: () => ipcRenderer.invoke('ozon:testAuth'),
-  syncProducts: () => ipcRenderer.invoke('ozon:syncProducts'),
+  syncProducts: (salesPeriod?: { from?: string; to?: string } | null) => ipcRenderer.invoke('ozon:syncProducts', { salesPeriod: salesPeriod ?? null }),
 
   getProducts: () => ipcRenderer.invoke('data:getProducts'),
   getSales: (period?: { from?: string; to?: string }) => ipcRenderer.invoke('data:getSales', { period: period ?? null }),
