@@ -36,6 +36,18 @@ function db(): Database.Database {
       PRIMARY KEY (store_client_id, period_key, posting_number, line_no)
     );
     CREATE INDEX IF NOT EXISTS idx_fbo_posting_items_lookup ON fbo_posting_items(store_client_id, period_key, posting_number, sku, offer_id);
+
+    CREATE TABLE IF NOT EXISTS posting_state_events (
+      store_client_id TEXT NOT NULL,
+      period_key TEXT NOT NULL DEFAULT '',
+      posting_number TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      state TEXT NOT NULL,
+      changed_state_date TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (store_client_id, period_key, posting_number, event_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_posting_state_events_lookup ON posting_state_events(store_client_id, period_key, posting_number, state, changed_state_date);
   `)
   return fboDb
 }
@@ -89,8 +101,50 @@ function orderIdOf(source: any): string {
   return text(pick(source, ['order_id', 'order_number']))
 }
 
-function relatedOf(detail: any, fallback: string[]): string {
-  const direct = pickFromSources(['related_postings'], detail)
+function normalizedStateOf(...sources: any[]): string {
+  return text(pickFromSources(['new_state', 'result.new_state', 'status', 'result.status', 'state', 'result.state'], ...sources)).toLowerCase()
+}
+
+function changedStateDateOf(...sources: any[]): string {
+  return dateText(pickFromSources(['changed_state_date', 'result.changed_state_date'], ...sources))
+}
+
+function itemsOf(source: any): any[] {
+  if (Array.isArray(source?.products)) return source.products
+  if (Array.isArray(source?.items)) return source.items
+  return []
+}
+
+function mergeItem(detailItem: any, postingItem: any) {
+  const detailObj = detailItem && typeof detailItem === 'object' ? detailItem : {}
+  const postingObj = postingItem && typeof postingItem === 'object' ? postingItem : {}
+  return {
+    ...postingObj,
+    ...detailObj,
+    sku: pickFromSources(['sku', 'sku_id', 'id'], detailObj, postingObj),
+    offer_id: pickFromSources(['offer_id', 'offerId', 'article'], detailObj, postingObj),
+  }
+}
+
+function mergedItems(detail: any, posting: any): any[] {
+  const detailItems = itemsOf(detail)
+  const postingItems = itemsOf(posting)
+  if (detailItems.length === 0 && postingItems.length === 0) return []
+  const maxLen = Math.max(detailItems.length, postingItems.length)
+  const out: any[] = []
+  for (let i = 0; i < maxLen; i += 1) {
+    out.push(mergeItem(detailItems[i], postingItems[i]))
+  }
+  return out
+}
+
+function relatedOf(detail: any, posting: any, fallback: string[]): string {
+  const direct = pickFromSources([
+    'related_postings.related_posting_numbers',
+    'result.related_postings.related_posting_numbers',
+    'related_postings.related_postings',
+    'related_postings',
+  ], detail, posting)
   if (Array.isArray(direct)) {
     const vals = direct.map((v) => text(v)).filter(Boolean)
     if (vals.length > 0) return vals.join(', ')
@@ -101,8 +155,8 @@ function relatedOf(detail: any, fallback: string[]): string {
 }
 
 function shipmentDateOf(detail: any, posting: any): string {
-  const state = text(pickFromSources(['new_state', 'result.new_state'], detail, posting)).toLowerCase()
-  const changed = dateText(pickFromSources(['changed_state_date', 'result.changed_state_date'], detail, posting))
+  const state = normalizedStateOf(detail, posting)
+  const changed = changedStateDateOf(detail, posting)
   if (state === 'posting_transferring_to_delivery' && changed) return changed
   return dateText(pickFromSources(['shipment_date', 'shipment_date_actual', 'shipped_at', 'delivering_date'], detail, posting))
 }
@@ -117,11 +171,20 @@ function deliveryDateOf(detail: any, posting: any): string {
     'result.delivery_date',
     'analytics_data.delivery_date',
     'result.analytics_data.delivery_date',
+    'analytics_data.delivery_date_begin',
+    'result.analytics_data.delivery_date_begin',
+    'analytics_data.delivery_date_end',
+    'result.analytics_data.delivery_date_end',
   ], detail, posting))
 }
 
 function deliveryClusterOf(detail: any, posting: any): string {
-  return text(pickFromSources(['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to'], detail, posting))
+  return text(pickFromSources([
+    'financial_data.cluster_to',
+    'result.financial_data.cluster_to',
+    'cluster_to',
+    'result.cluster_to',
+  ], detail, posting))
 }
 
 export function buildAndPersistFboSalesSnapshot(args: {
@@ -132,12 +195,13 @@ export function buildAndPersistFboSalesSnapshot(args: {
   fetchedAt?: string
 }) {
   const storeClientId = text(args.storeClientId)
-  if (!storeClientId) return { postingsCount: 0, itemsCount: 0 }
+  if (!storeClientId) return { postingsCount: 0, itemsCount: 0, eventsCount: 0 }
   const periodKey = text(args.periodKey)
   const fetchedAt = text(args.fetchedAt) || new Date().toISOString()
   const orderPostings = new Map<string, Set<string>>()
   const postingRows = new Map<string, any>()
   const itemRows = new Map<string, any>()
+  const eventRows = new Map<string, any>()
 
   for (const envelope of args.fboPayloads) {
     for (const posting of extractPostingsFromPayload(envelope.payload)) {
@@ -161,31 +225,40 @@ export function buildAndPersistFboSalesSnapshot(args: {
       const postingNumber = postingNumberOf(detail) || basePostingNumber
       const orderId = orderIdOf(detail) || orderIdOf(posting)
       const fallback = orderId ? Array.from(orderPostings.get(orderId) ?? []).filter((v) => v !== postingNumber) : []
+      const shipmentDate = shipmentDateOf(detail, posting)
+      const state = normalizedStateOf(detail, posting)
+      const changedStateDate = changedStateDateOf(detail, posting)
 
       postingRows.set(postingNumber, {
         store_client_id: storeClientId,
         period_key: periodKey,
         posting_number: postingNumber,
         order_id: orderId || null,
-        related_postings: relatedOf(detail, fallback) || null,
-        shipment_date: shipmentDateOf(detail, posting) || null,
+        related_postings: relatedOf(detail, posting, fallback) || null,
+        shipment_date: shipmentDate || null,
         delivery_date: deliveryDateOf(detail, posting) || null,
         delivery_cluster: deliveryClusterOf(detail, posting) || null,
         updated_at: fetchedAt,
       })
 
-      const items = Array.isArray(detail?.products)
-        ? detail.products
-        : (Array.isArray(posting?.products)
-          ? posting.products
-          : (Array.isArray(detail?.items)
-            ? detail.items
-            : (Array.isArray(posting?.items) ? posting.items : [])))
+      if (postingNumber && state && changedStateDate) {
+        const eventKey = `${state}|${changedStateDate}`
+        eventRows.set(`${postingNumber}|${eventKey}`, {
+          store_client_id: storeClientId,
+          period_key: periodKey,
+          posting_number: postingNumber,
+          event_key: eventKey,
+          state,
+          changed_state_date: changedStateDate,
+          updated_at: fetchedAt,
+        })
+      }
 
+      const items = mergedItems(detail, posting)
       let lineNo = 0
       for (const item of items) {
-        const sku = text(pick(item, ['sku', 'sku_id', 'id']))
-        const offerId = text(pick(item, ['offer_id', 'offerId', 'article']))
+        const sku = text((item as any)?.sku)
+        const offerId = text((item as any)?.offer_id)
         if (!sku && !offerId) continue
         lineNo += 1
         itemRows.set(`${postingNumber}|${lineNo}|${sku}|${offerId}`, {
@@ -203,6 +276,7 @@ export function buildAndPersistFboSalesSnapshot(args: {
 
   const conn = db()
   const tx = conn.transaction(() => {
+    conn.prepare('DELETE FROM posting_state_events WHERE store_client_id = ? AND period_key = ?').run(storeClientId, periodKey)
     conn.prepare('DELETE FROM fbo_posting_items WHERE store_client_id = ? AND period_key = ?').run(storeClientId, periodKey)
     conn.prepare('DELETE FROM fbo_postings WHERE store_client_id = ? AND period_key = ?').run(storeClientId, periodKey)
 
@@ -222,13 +296,21 @@ export function buildAndPersistFboSalesSnapshot(args: {
         @store_client_id, @period_key, @posting_number, @line_no, @sku, @offer_id, @updated_at
       )
     `)
+    const insertEvent = conn.prepare(`
+      INSERT INTO posting_state_events (
+        store_client_id, period_key, posting_number, event_key, state, changed_state_date, updated_at
+      ) VALUES (
+        @store_client_id, @period_key, @posting_number, @event_key, @state, @changed_state_date, @updated_at
+      )
+    `)
 
     for (const row of postingRows.values()) insertPosting.run(row)
     for (const row of itemRows.values()) insertItem.run(row)
+    for (const row of eventRows.values()) insertEvent.run(row)
   })
   tx()
 
-  return { postingsCount: postingRows.size, itemsCount: itemRows.size }
+  return { postingsCount: postingRows.size, itemsCount: itemRows.size, eventsCount: eventRows.size }
 }
 
 export function mergeSalesRowsWithFboLocalDb(args: {
@@ -238,46 +320,48 @@ export function mergeSalesRowsWithFboLocalDb(args: {
 }) {
   const periodKey = text(args.periodKey)
   const rows = Array.isArray(args.rows) ? args.rows : []
+  if (rows.length === 0) return rows
+
   const storeClientId = text(args.storeClientId)
   let sql = `
     SELECT
-      i.posting_number,
-      i.sku,
-      i.offer_id,
+      p.posting_number,
       p.related_postings,
-      p.shipment_date,
+      COALESCE(
+        p.shipment_date,
+        (
+          SELECT MAX(e.changed_state_date)
+          FROM posting_state_events e
+          WHERE e.store_client_id = p.store_client_id
+            AND e.period_key = p.period_key
+            AND e.posting_number = p.posting_number
+            AND e.state = 'posting_transferring_to_delivery'
+        )
+      ) AS shipment_date,
       p.delivery_date,
       p.delivery_cluster
-    FROM fbo_posting_items i
-    INNER JOIN fbo_postings p
-      ON p.store_client_id = i.store_client_id
-     AND p.period_key = i.period_key
-     AND p.posting_number = i.posting_number
-    WHERE i.period_key = ?
+    FROM fbo_postings p
+    WHERE p.period_key = ?
   `
   const params: any[] = [periodKey]
   if (storeClientId) {
-    sql += ' AND i.store_client_id = ?'
+    sql += ' AND p.store_client_id = ?'
     params.push(storeClientId)
   }
+
   const enrich = db().prepare(sql).all(...params) as any[]
   if (enrich.length === 0) return rows
 
-  const byKey = new Map<string, any>()
+  const byPosting = new Map<string, any>()
   for (const row of enrich) {
     const postingNumber = text(row?.posting_number)
-    const sku = text(row?.sku)
-    const offerId = text(row?.offer_id)
-    if (!postingNumber || (!sku && !offerId)) continue
-    const key = `${postingNumber}|${sku || offerId}`
-    if (!byKey.has(key)) byKey.set(key, row)
+    if (!postingNumber || byPosting.has(postingNumber)) continue
+    byPosting.set(postingNumber, row)
   }
 
   return rows.map((row) => {
     const postingNumber = text(row?.posting_number)
-    const sku = text(row?.sku)
-    const offerId = text(row?.offer_id)
-    const extra = byKey.get(`${postingNumber}|${sku || offerId}`)
+    const extra = byPosting.get(postingNumber)
     if (!extra) return row
     return {
       ...row,
