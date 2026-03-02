@@ -20,7 +20,7 @@ type AppLogType =
   | 'app_uninstall'
   | 'admin_settings'
 
-type GridColsDataset = 'products' | 'sales' | 'returns' | 'stocks'
+type GridColsDataset = string
 
 type GridColHiddenBucket = 'main' | 'add'
 
@@ -38,7 +38,6 @@ export type ApiRawCacheResponseRow = {
   store_client_id?: string | null
 }
 
-const GRID_COLS_DATASETS = new Set<GridColsDataset>(['products', 'sales', 'returns', 'stocks'])
 const GRID_COLS_KEY_PREFIX = 'grid_cols_layout:'
 
 function dbPath() {
@@ -311,6 +310,25 @@ export function ensureDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_product_placements_store_sku ON product_placements(store_client_id, sku);
+
+    CREATE TABLE IF NOT EXISTS dataset_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_client_id TEXT NOT NULL DEFAULT '',
+      dataset TEXT NOT NULL,
+      scope_key TEXT NOT NULL DEFAULT '',
+      period_from TEXT NULL,
+      period_to TEXT NULL,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      source_kind TEXT NOT NULL DEFAULT 'projection',
+      source_endpoints TEXT NULL,
+      rows_json TEXT NOT NULL,
+      rows_count INTEGER NOT NULL DEFAULT 0,
+      fetched_at TEXT NOT NULL,
+      UNIQUE(store_client_id, dataset, scope_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_lookup ON dataset_snapshots(store_client_id, dataset, scope_key);
+    CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_time ON dataset_snapshots(fetched_at DESC);
   `)
 
   const cols = new Set(
@@ -505,6 +523,103 @@ export function dbGetLatestApiRawResponses(storeClientId: string | null | undefi
   return out
 }
 
+export function dbSaveDatasetSnapshot(args: {
+  storeClientId?: string | null
+  dataset: string
+  scopeKey?: string | null
+  periodFrom?: string | null
+  periodTo?: string | null
+  schemaVersion?: number
+  sourceKind?: string
+  sourceEndpoints?: string[]
+  rows: any[]
+  fetchedAt?: string
+}) {
+  const storeClientId = String(args.storeClientId ?? '').trim()
+  const dataset = String(args.dataset ?? '').trim()
+  if (!dataset) throw new Error('Некорректный dataset для локального snapshot')
+
+  const scopeKey = String(args.scopeKey ?? '').trim()
+  const fetchedAt = String(args.fetchedAt ?? '').trim() || new Date().toISOString()
+  const schemaVersion = Number.isFinite(Number(args.schemaVersion)) ? Math.max(1, Math.trunc(Number(args.schemaVersion))) : 1
+  const sourceKind = String(args.sourceKind ?? '').trim() || 'projection'
+  const sourceEndpoints = Array.from(new Set((Array.isArray(args.sourceEndpoints) ? args.sourceEndpoints : [])
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)))
+
+  let rowsJson = '[]'
+  let rowsCount = 0
+  try {
+    const rows = Array.isArray(args.rows) ? args.rows : []
+    rowsJson = JSON.stringify(rows)
+    rowsCount = rows.length
+  } catch {
+    rowsJson = '[]'
+    rowsCount = 0
+  }
+
+  mustDb().prepare(`
+    INSERT INTO dataset_snapshots (
+      store_client_id, dataset, scope_key, period_from, period_to,
+      schema_version, source_kind, source_endpoints,
+      rows_json, rows_count, fetched_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(store_client_id, dataset, scope_key) DO UPDATE SET
+      period_from = excluded.period_from,
+      period_to = excluded.period_to,
+      schema_version = excluded.schema_version,
+      source_kind = excluded.source_kind,
+      source_endpoints = excluded.source_endpoints,
+      rows_json = excluded.rows_json,
+      rows_count = excluded.rows_count,
+      fetched_at = excluded.fetched_at
+  `).run(
+    storeClientId,
+    dataset,
+    scopeKey,
+    args.periodFrom ?? null,
+    args.periodTo ?? null,
+    schemaVersion,
+    sourceKind,
+    sourceEndpoints.length ? JSON.stringify(sourceEndpoints) : null,
+    rowsJson,
+    rowsCount,
+    fetchedAt,
+  )
+}
+
+export function dbGetDatasetSnapshotRows(args: {
+  storeClientId?: string | null
+  dataset: string
+  scopeKey?: string | null
+}): any[] | null {
+  const dataset = String(args.dataset ?? '').trim()
+  if (!dataset) return null
+
+  const scopeKey = String(args.scopeKey ?? '').trim()
+  const storeClientId = String(args.storeClientId ?? '').trim()
+
+  const rows = mustDb().prepare(`
+    SELECT rows_json
+    FROM dataset_snapshots
+    WHERE dataset = ?
+      AND scope_key = ?
+      AND store_client_id IN (?, '')
+    ORDER BY CASE WHEN store_client_id = ? THEN 0 ELSE 1 END, fetched_at DESC, id DESC
+    LIMIT 1
+  `).all(dataset, scopeKey, storeClientId, storeClientId) as Array<{ rows_json?: string }>
+
+  const raw = typeof rows?.[0]?.rows_json === 'string' ? rows[0].rows_json : ''
+  if (!raw) return null
+
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 export function dbGetAdminSettings() {
   const raw = getSettingValue('log_retention_days')
   return {
@@ -527,8 +642,9 @@ export function dbSaveAdminSettings(input: { logRetentionDays: number }) {
 
 
 function normalizeGridColsDataset(value: unknown): GridColsDataset | null {
-  const v = String(value ?? '').trim() as GridColsDataset
-  return GRID_COLS_DATASETS.has(v) ? v : null
+  const v = String(value ?? '').trim()
+  if (!v) return null
+  return v
 }
 
 function normalizeGridColLayoutItems(value: unknown): GridColLayoutItem[] {
