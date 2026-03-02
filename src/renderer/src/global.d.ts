@@ -52,6 +52,7 @@ declare global {
 
       testAuth: () => Promise<{ ok: boolean; storeName?: string | null; error?: string }>
       syncProducts: (salesPeriod?: { from?: string; to?: string } | null) => Promise<{ ok: boolean; itemsCount?: number; pages?: number; placementRowsCount?: number; placementSyncError?: string | null; error?: string }>
+      refreshSales: (period?: { from?: string; to?: string } | null) => Promise<{ ok: boolean; error?: string; rowsCount?: number; rateLimited?: boolean }>
 
       getDatasetRows: (dataset: string, options?: { period?: { from?: string; to?: string } | null }) => Promise<{ ok: boolean; error?: string; dataset: string; rows: GridApiRow[] }>
       getProducts: () => Promise<{ ok: boolean; error?: string; products: GridApiRow[] }>
