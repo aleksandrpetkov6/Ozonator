@@ -1,10 +1,11 @@
-name: Apply patch and open PR
+name: Apply patch to main
 
 on:
   push:
     branches: [main]
     paths:
       - "patches/latest.patch"
+      - ".github/workflows/apply_patch_pr.yml"
   workflow_dispatch:
     inputs:
       patch_path:
@@ -13,31 +14,32 @@ on:
         default: "patches/latest.patch"
         type: string
       base_branch:
-        description: "Base branch to branch off and open PR into"
+        description: "Branch to apply patch into"
         required: true
         default: "main"
         type: string
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   apply_patch:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout base branch
+      - name: Checkout target branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.base_branch || 'main' }}
-          persist-credentials: false
+          persist-credentials: true
 
-      - name: Resolve patch path
-        id: patch_path
+      - name: Resolve inputs
+        id: vars
         shell: bash
         run: |
+          set -euo pipefail
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             PATCH_PATH="${{ inputs.patch_path }}"
             BASE_BRANCH="${{ inputs.base_branch }}"
@@ -53,25 +55,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PATCH_PATH="${{ steps.patch_path.outputs.patch_path }}"
+          PATCH_PATH="${{ steps.vars.outputs.patch_path }}"
           if [ ! -f "$PATCH_PATH" ]; then
             echo "PATCH_NOT_APPLICABLE: patch file not found: $PATCH_PATH"
             exit 1
           fi
           echo "Found patch: $PATCH_PATH"
 
-      - name: Apply patch with idempotency check
+      - name: Apply patch (idempotent)
         id: apply
         shell: bash
         run: |
           set -euo pipefail
-          PATCH_PATH="${{ steps.patch_path.outputs.patch_path }}"
+          PATCH_PATH="${{ steps.vars.outputs.patch_path }}"
 
-          echo "Checking patch applicability: $PATCH_PATH"
           if git apply --check "$PATCH_PATH" 2>_apply_err.txt; then
             git apply "$PATCH_PATH"
             echo "status=APPLIED" >> "$GITHUB_OUTPUT"
-            echo "APPLIED: patch applied successfully"
+            echo "APPLIED: patch applied"
             exit 0
           fi
 
@@ -80,81 +81,41 @@ jobs:
 
           if git apply -R --check "$PATCH_PATH" 2>_reverse_err.txt; then
             echo "status=ALREADY_APPLIED" >> "$GITHUB_OUTPUT"
-            echo "ALREADY_APPLIED: patch is already in target branch (reverse-check passed)"
+            echo "ALREADY_APPLIED: patch is already present in target branch"
             exit 0
           fi
 
-          echo "PATCH_NOT_APPLICABLE: patch cannot be applied to current main"
-          echo "Patch path: $PATCH_PATH"
-          echo "git apply --check error (first lines):"
+          echo "PATCH_NOT_APPLICABLE: patch cannot be applied to current branch"
           head -n 20 _apply_err.txt || true
           echo "status=PATCH_NOT_APPLICABLE" >> "$GITHUB_OUTPUT"
           exit 1
 
-      - name: Stop early if already applied
-        if: steps.apply.outputs.status == 'ALREADY_APPLIED'
-        shell: bash
-        run: |
-          echo "No PR will be created (idempotent exit)."
-
-      - name: Create patch branch and commit
-        if: steps.apply.outputs.status == 'APPLIED'
-        id: branch_meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH="bot/apply-patch-${{ github.run_id }}"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git checkout -b "$BRANCH"
-          git add -A
-          git commit -m "Apply patch: ${{ steps.patch_path.outputs.patch_path }}"
-
-      - name: Push patch branch
+      - name: Commit and push to target branch
         if: steps.apply.outputs.status == 'APPLIED'
         env:
           PR_BOT_TOKEN: ${{ secrets.PR_BOT_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          BRANCH="${{ steps.branch_meta.outputs.branch }}"
+          BASE_BRANCH="${{ steps.vars.outputs.base_branch }}"
 
-          if [ -z "${PR_BOT_TOKEN:-}" ]; then
-            echo "PR_BOT_TOKEN is not configured"
-            exit 1
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "NO_CHANGES_TO_COMMIT"
+            exit 0
           fi
 
-          if [ -z "${BRANCH:-}" ]; then
-            echo "BRANCH is empty (branch_meta output is missing)"
-            exit 1
+          git commit -m "Apply patch: ${{ steps.vars.outputs.patch_path }}"
+
+          if [ -n "${PR_BOT_TOKEN:-}" ]; then
+            git config --local --unset-all http.https://github.com/.extraheader || true
+            git remote set-url origin "https://x-access-token:${PR_BOT_TOKEN}@github.com/${{ github.repository }}.git"
           fi
 
-          # actions/checkout may leave auth in http.extraheader (GITHUB_TOKEN). We must clear it,
-          # otherwise git push can ignore the PAT in origin and push as GitHub App token.
-          git config --local --unset-all http.https://github.com/.extraheader || true
-
-          git remote set-url origin "https://x-access-token:${PR_BOT_TOKEN}@github.com/${{ github.repository }}.git"
-          git push -u origin "$BRANCH"
-
-      - name: Create Pull Request
-        if: steps.apply.outputs.status == 'APPLIED'
-        id: cpr
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.PR_BOT_TOKEN }}
-          branch: ${{ steps.branch_meta.outputs.branch }}
-          base: ${{ steps.patch_path.outputs.base_branch }}
-          title: "Apply patch: ${{ steps.patch_path.outputs.patch_path }}"
-          body: |
-            Auto-generated PR from patch workflow.
-
-            Patch: `${{ steps.patch_path.outputs.patch_path }}`
-            Run: `${{ github.run_id }}`
-          draft: false
-          delete-branch: false
+          git push origin HEAD:"$BASE_BRANCH"
 
       - name: Final summary
         if: always()
@@ -162,7 +123,5 @@ jobs:
         run: |
           echo "=== PATCH WORKFLOW SUMMARY ==="
           echo "Status: ${{ steps.apply.outputs.status || 'N/A' }}"
-          echo "Patch:   ${{ steps.patch_path.outputs.patch_path }}"
-          echo "Base:    ${{ steps.patch_path.outputs.base_branch }}"
-          echo "Branch:  ${{ steps.branch_meta.outputs.branch || 'N/A' }}"
-          echo "PR:      ${{ steps.cpr.outputs.pull-request-url || 'N/A' }}"
+          echo "Patch:   ${{ steps.vars.outputs.patch_path || 'N/A' }}"
+          echo "Base:    ${{ steps.vars.outputs.base_branch || 'N/A' }}"
