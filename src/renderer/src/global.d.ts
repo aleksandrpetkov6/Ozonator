@@ -51,7 +51,7 @@ declare global {
       saveAdminSettings: (payload: { logRetentionDays: number }) => Promise<{ ok: boolean; error?: string; logRetentionDays: number }>
 
       testAuth: () => Promise<{ ok: boolean; storeName?: string | null; error?: string }>
-      syncProducts: () => Promise<{ ok: boolean; itemsCount?: number; pages?: number; placementRowsCount?: number; placementSyncError?: string | null; error?: string }>
+      syncProducts: (salesPeriod?: { from?: string; to?: string } | null) => Promise<{ ok: boolean; itemsCount?: number; pages?: number; placementRowsCount?: number; placementSyncError?: string | null; error?: string }>
 
       getProducts: () => Promise<{ ok: boolean; error?: string; products: GridApiRow[] }>
       getSales: (period?: { from?: string; to?: string }) => Promise<{ ok: boolean; error?: string; rows: GridApiRow[] }>
