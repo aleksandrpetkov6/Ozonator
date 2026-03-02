@@ -1,127 +1,44 @@
 --- a/electron/main/ozon.ts
 +++ b/electron/main/ozon.ts
-@@ -766,30 +766,43 @@
-   return ozonPost(secrets, '/v2/posting/fbo/list', body ?? buildPostingListBody())
- }
- 
--function buildPostingGetBody(postingNumber: string, includeExtendedFields = false) {
-+function buildPostingGetBody(postingNumber: string, withPayload?: Record<string, boolean> | null) {
-   const normalizedPostingNumber = String(postingNumber ?? '').trim()
-   if (!normalizedPostingNumber) throw new Error('Не указан posting_number')
- 
-   const body: any = { posting_number: normalizedPostingNumber }
--
--  if (includeExtendedFields) {
--    body.with = {
--      analytics_data: true,
--      financial_data: true,
--      barcodes: true,
--      related_postings: true,
--    }
-+  const normalizedWith = withPayload && typeof withPayload === 'object'
-+    ? Object.entries(withPayload).reduce<Record<string, boolean>>((acc, [key, enabled]) => {
-+      if (enabled === true) acc[key] = true
-+      return acc
-+    }, {})
-+    : null
-+
-+  if (normalizedWith && Object.keys(normalizedWith).length > 0) {
-+    body.with = normalizedWith
-   }
- 
-   return body
- }
- 
-+const FBS_POSTING_GET_WITH = {
-+  analytics_data: true,
-+  financial_data: true,
-+  barcodes: true,
-+  related_postings: true,
-+} as const
-+
-+const FBO_POSTING_GET_WITH = {
-+  analytics_data: true,
-+  financial_data: true,
-+} as const
-+
- export async function ozonPostingFbsGet(secrets: Secrets, postingNumber: string) {
--  return ozonPost(secrets, '/v3/posting/fbs/get', buildPostingGetBody(postingNumber, true))
-+  return ozonPost(secrets, '/v3/posting/fbs/get', buildPostingGetBody(postingNumber, FBS_POSTING_GET_WITH))
+@@ -789,7 +789,12 @@
  }
  
  export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string) {
 -  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber))
-+  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, FBO_POSTING_GET_WITH))
++  const body = buildPostingGetBody(postingNumber)
++  body.with = {
++    analytics_data: true,
++    financial_data: true,
++  }
++  return ozonPost(secrets, '/v2/posting/fbo/get', body)
  }
  
  export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
 --- a/electron/main/local-datasets.ts
 +++ b/electron/main/local-datasets.ts
-@@ -16,6 +16,7 @@
- ] as const
+@@ -132,6 +132,18 @@
  
- const SALES_LEGACY_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
-+const SALES_POSTING_DETAILS_SCHEMA_VERSION = 2
- 
- export type LocalDatasetName = string
- 
-@@ -112,6 +113,42 @@
-     out.set(key, item?.payload ?? null)
-   }
-   return out
+   const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
+   return { rows, sourceEndpoints: Array.from(sourceEndpoints) }
 +}
 +
-+function getSalesPostingDetailsSnapshotVersion(
-+  cacheByEndpoint: Map<string, any>,
-+  requestedPeriod: SalesPeriod | null | undefined,
-+): number {
-+  const detailsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.details)
-+  if (!detailsSnapshot || typeof detailsSnapshot !== 'object') return 0
-+  const normalizedRequestedPeriod = normalizeSalesPeriod(requestedPeriod)
-+  const detailsPeriod = normalizeSalesPeriod(detailsSnapshot?.period ?? null)
-+  if (!sameSalesPeriod(detailsPeriod, normalizedRequestedPeriod)) return 0
-+  const rawVersion = Number((detailsSnapshot as any)?.schemaVersion)
-+  if (!Number.isFinite(rawVersion)) return 0
-+  return Math.max(0, Math.trunc(rawVersion))
-+}
-+
-+function hasFboSalesPayloads(payloads: Array<{ endpoint: string; payload: any }>) {
-+  return payloads.some((entry) => String(entry?.endpoint ?? '').includes('/posting/fbo/'))
-+}
-+
-+function needsSalesFboDetailBackfill(
-+  storeClientId: string | null | undefined,
-+  requestedPeriod: SalesPeriod | null | undefined,
-+): boolean {
-+  const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
-+  const payloads = buildSalesPayloadsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
-+
-+  if (payloads.length === 0 && cacheByEndpoint.size === 0) {
-+    const legacyPayloads = getLegacySalesPayloadMap(storeClientId)
-+    for (const [endpoint, payload] of legacyPayloads.entries()) {
-+      payloads.push({ endpoint, payload })
-+    }
-+  }
-+
-+  if (!hasFboSalesPayloads(payloads)) return false
-+  return getSalesPostingDetailsSnapshotVersion(cacheByEndpoint, requestedPeriod) < SALES_POSTING_DETAILS_SCHEMA_VERSION
++function needsSalesFboDetailBackfill(storeClientId: string | null | undefined, requestedPeriod: SalesPeriod | null | undefined): boolean {
++  const { rows } = buildSalesRowsFromLocalRawCache(storeClientId, requestedPeriod)
++  return rows.some((row: any) => {
++    if (String(row?.delivery_model ?? '').trim() !== 'FBO') return false
++    if (!String(row?.shipment_date ?? '').trim()) return true
++    if (!String(row?.delivery_cluster ?? '').trim()) return true
++    const status = String(row?.status ?? '').trim()
++    if (status === 'Доставлен' && !String(row?.delivery_date ?? '').trim()) return true
++    return false
++  })
  }
  
- function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefined, requestedPeriod: SalesPeriod | null | undefined) {
-@@ -225,6 +262,7 @@
-     payloads: fboPayloads.map((item) => item.payload),
-   })
-   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.details, {
-+    schemaVersion: SALES_POSTING_DETAILS_SCHEMA_VERSION,
-     period: normalizedRequestedPeriod,
-     items: Array.from(postingDetailsByKey.entries()).map(([key, payload]) => ({ key, payload })),
-   })
-@@ -241,6 +279,22 @@
-   })
- 
+ function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): string {
+@@ -243,6 +255,22 @@
    return { rowsCount: rows.length }
-+}
-+
+ }
+ 
 +export async function getSalesRowsWithApiBackfill(
 +  secrets: Secrets | null | undefined,
 +  requestedPeriod: SalesPeriod | null | undefined,
@@ -136,9 +53,11 @@
 +  }
 +
 +  return getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
- }
- 
++}
++
  export function getLocalDatasetRows(
+   storeClientId: string | null | undefined,
+   datasetRaw: LocalDatasetName,
 --- a/electron/main/index.ts
 +++ b/electron/main/index.ts
 @@ -5,7 +5,7 @@
@@ -150,16 +69,13 @@
  let mainWindow: BrowserWindow | null = null
  let startupShowTimer: NodeJS.Timeout | null = null
  function startupLog(...args: any[]) {
-@@ -197,6 +197,31 @@
+@@ -197,6 +197,19 @@
  const dataset = String(datasetRaw ?? '').trim() || 'products'
  const rows = getLocalDatasetRows(storeClientId, dataset, { period: period ?? null })
  return { storeClientId, dataset, rows }
 +}
 +
 +async function readSalesRowsSafe(period?: SalesPeriod | null) {
-+let storeClientId = getActiveStoreClientIdSafe()
-+let rows = getLocalDatasetRows(storeClientId, 'sales', { period: period ?? null })
-+
 +let secrets: ReturnType<typeof loadSecrets> | null = null
 +try {
 +secrets = loadSecrets()
@@ -167,22 +83,13 @@
 +secrets = null
 +}
 +
-+if (!secrets) return { storeClientId, dataset: 'sales', rows }
-+
-+try {
-+const online = await checkInternet(1200)
-+if (online) {
-+rows = await getSalesRowsWithApiBackfill(secrets, period ?? null)
-+storeClientId = secrets.clientId ?? storeClientId
-+}
-+} catch {
-+}
-+
++const rows = await getSalesRowsWithApiBackfill(secrets, period ?? null)
++const storeClientId = String(secrets?.clientId ?? '').trim() || getActiveStoreClientIdSafe()
 +return { storeClientId, dataset: 'sales', rows }
  }
  
  ipcMain.handle('secrets:status', async () => {
-@@ -435,7 +460,12 @@
+@@ -435,7 +448,12 @@
  })
  ipcMain.handle('data:getDatasetRows', async (_e, args?: { dataset?: string; period?: SalesPeriod | null }) => {
  try {
@@ -196,7 +103,7 @@
  return { ok: true, dataset, rows }
  } catch (e: any) {
  const dataset = String(args?.dataset ?? 'products').trim() || 'products'
-@@ -452,7 +482,7 @@
+@@ -452,7 +470,7 @@
  })
  ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
  try {
