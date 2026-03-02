@@ -1,10 +1,11 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
 import { appendFileSync, mkdirSync } from 'fs'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetLatestApiRawResponses, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbGetStockViewRows, dbReplaceProductPlacementsForStore, dbRecordApiRawResponse, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbReplaceProductPlacementsForStore, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
-import { ozonGetStoreName, ozonPlacementZoneInfo, ozonPostingFboList, ozonPostingFbsList, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
-import { type SalesPayloadEnvelope, type SalesPeriod, fetchSalesEndpointPages, fetchSalesPostingDetails, normalizeSalesRows } from './sales-sync'
+import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
+import { type SalesPeriod } from './sales-sync'
+import { getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 let mainWindow: BrowserWindow | null = null
 let startupShowTimer: NodeJS.Timeout | null = null
 function startupLog(...args: any[]) {
@@ -35,164 +36,6 @@ function chunk<T>(arr: T[], size: number): T[][] {
 const out: T[][] = []
 for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
 return out
-}
-const SALES_CACHE_SNAPSHOT_ENDPOINTS = {
-  fbs: '/__local__/sales-cache/fbs',
-  fbo: '/__local__/sales-cache/fbo',
-  details: '/__local__/sales-cache/posting-details',
-} as const
-const SALES_CACHE_SNAPSHOT_KEYS = [
-  SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs,
-  SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo,
-  SALES_CACHE_SNAPSHOT_ENDPOINTS.details,
-] as const
-const SALES_LEGACY_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
-
-function parseJsonTextSafe(text: string | null | undefined) {
-if (typeof text !== 'string' || !text.trim()) return null
-try {
-return JSON.parse(text)
-} catch {
-return null
-}
-}
-
-function normalizeSalesPeriodCacheValue(value: any): string | null {
-const raw = typeof value === 'string' ? value.trim() : ''
-return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
-}
-
-function normalizeSalesPeriodCache(period: SalesPeriod | null | undefined): { from: string | null; to: string | null } {
-let from = normalizeSalesPeriodCacheValue(period?.from)
-let to = normalizeSalesPeriodCacheValue(period?.to)
-if (!from && to) from = to
-if (from && !to) to = from
-if (from && to && from > to) [from, to] = [to, from]
-return { from, to }
-}
-
-function sameSalesPeriodCache(
-left: { from?: string | null; to?: string | null } | null | undefined,
-right: { from?: string | null; to?: string | null } | null | undefined,
-) {
-return (left?.from ?? null) === (right?.from ?? null) && (left?.to ?? null) === (right?.to ?? null)
-}
-
-function getCachedSalesSnapshotMap(storeClientId: string | null | undefined) {
-const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_CACHE_SNAPSHOT_KEYS as unknown as string[])
-const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_CACHE_SNAPSHOT_KEYS as unknown as string[])
-const out = new Map<string, any>()
-for (const row of rows) {
-if (out.has(row.endpoint)) continue
-const parsed = parseJsonTextSafe(row?.response_body)
-if (parsed) out.set(row.endpoint, parsed)
-}
-return out
-}
-
-function getCachedSalesPayloadMap(storeClientId: string | null | undefined): Map<string, SalesPayloadEnvelope> {
-const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_LEGACY_ENDPOINTS as unknown as string[])
-const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_LEGACY_ENDPOINTS as unknown as string[])
-const out = new Map<string, SalesPayloadEnvelope>()
-for (const row of rows) {
-if (out.has(row.endpoint)) continue
-const parsed = parseJsonTextSafe(row?.response_body)
-if (parsed) out.set(row.endpoint, { endpoint: row.endpoint, payload: parsed })
-}
-return out
-}
-
-function buildSalesPayloadsFromLocalCache(
-cacheByEndpoint: Map<string, any>,
-requestedPeriod: SalesPeriod | null | undefined,
-): SalesPayloadEnvelope[] {
-const normalizedRequestedPeriod = normalizeSalesPeriodCache(requestedPeriod)
-const fbsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs)
-const fboSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo)
-const out: SalesPayloadEnvelope[] = []
-const pushSnapshot = (snapshot: any, fallbackEndpoint: string) => {
-if (!snapshot || typeof snapshot !== 'object') return
-const snapshotPeriod = normalizeSalesPeriodCache(snapshot?.period ?? null)
-if (!sameSalesPeriodCache(snapshotPeriod, normalizedRequestedPeriod)) return
-const payloads = Array.isArray(snapshot?.payloads) ? snapshot.payloads : []
-const sourceEndpoint = String(snapshot?.sourceEndpoint ?? '').trim() || fallbackEndpoint
-for (const payload of payloads) out.push({ endpoint: sourceEndpoint, payload })
-}
-pushSnapshot(fbsSnapshot, '/v3/posting/fbs/list')
-pushSnapshot(fboSnapshot, '/v2/posting/fbo/list')
-return out
-}
-
-function buildSalesPostingDetailsFromLocalCache(
-cacheByEndpoint: Map<string, any>,
-requestedPeriod: SalesPeriod | null | undefined,
-): Map<string, any> {
-const detailsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.details)
-if (!detailsSnapshot || typeof detailsSnapshot !== 'object') return new Map<string, any>()
-const normalizedRequestedPeriod = normalizeSalesPeriodCache(requestedPeriod)
-const detailsPeriod = normalizeSalesPeriodCache(detailsSnapshot?.period ?? null)
-if (!sameSalesPeriodCache(detailsPeriod, normalizedRequestedPeriod)) {
-return new Map<string, any>()
-}
-const out = new Map<string, any>()
-const items = Array.isArray(detailsSnapshot?.items) ? detailsSnapshot.items : []
-for (const item of items) {
-const key = String(item?.key ?? '').trim()
-if (!key) continue
-out.set(key, item?.payload ?? null)
-}
-return out
-}
-
-async function refreshSalesCacheFromApi(
-secrets: ReturnType<typeof loadSecrets>,
-requestedPeriod: SalesPeriod | null | undefined,
-) {
-const normalizedRequestedPeriod = normalizeSalesPeriodCache(requestedPeriod)
-const fbsPayloads = await fetchSalesEndpointPages(
-(body) => ozonPostingFbsList(secrets, body),
-requestedPeriod,
-'/v3/posting/fbs/list',
-)
-const fboPayloads = await fetchSalesEndpointPages(
-(body) => ozonPostingFboList(secrets, body),
-requestedPeriod,
-'/v2/posting/fbo/list',
-)
-const payloads = [...fbsPayloads, ...fboPayloads]
-const postingDetailsByKey = payloads.length > 0
-? await fetchSalesPostingDetails(secrets, payloads)
-: new Map<string, any>()
-const fetchedAt = new Date().toISOString()
-const persistSnapshot = (endpoint: string, responseBody: any) => {
-  dbRecordApiRawResponse({
-    storeClientId: secrets.clientId,
-    method: 'LOCAL',
-    endpoint,
-    requestBody: {
-      mode: 'sales-cache-snapshot',
-      period: normalizedRequestedPeriod,
-    },
-    responseBody,
-    httpStatus: 200,
-    isSuccess: true,
-    fetchedAt,
-  })
-}
-persistSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs, {
-  sourceEndpoint: '/v3/posting/fbs/list',
-  period: normalizedRequestedPeriod,
-  payloads: fbsPayloads.map((item) => item.payload),
-})
-persistSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo, {
-  sourceEndpoint: '/v2/posting/fbo/list',
-  period: normalizedRequestedPeriod,
-  payloads: fboPayloads.map((item) => item.payload),
-})
-persistSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.details, {
-  period: normalizedRequestedPeriod,
-  items: Array.from(postingDetailsByKey.entries()).map(([key, payload]) => ({ key, payload })),
-})
 }
 function createWindow() {
 startupLog('createWindow.begin', { packaged: app.isPackaged, appPath: app.getAppPath(), __dirname })
@@ -341,6 +184,21 @@ resolve(false)
 request.end()
 })
 }
+function getActiveStoreClientIdSafe(): string | null {
+try {
+return loadSecrets().clientId
+} catch {
+return null
+}
+}
+
+function readDatasetRowsSafe(datasetRaw: string, period?: SalesPeriod | null) {
+const storeClientId = getActiveStoreClientIdSafe()
+const dataset = String(datasetRaw ?? '').trim() || 'products'
+const rows = getLocalDatasetRows(storeClientId, dataset, { period: period ?? null })
+return { storeClientId, dataset, rows }
+}
+
 ipcMain.handle('secrets:status', async () => {
 return {
 hasSecrets: hasSecrets(),
@@ -536,9 +394,14 @@ placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, [])
 } catch (placementErr: any) {
 placementSyncError = placementErr?.message ?? String(placementErr)
 }
+const localSnapshots = refreshCoreLocalDatasetSnapshots(secrets.clientId)
+let salesRowsCount = 0
+let salesSyncError: string | null = null
 try {
-await refreshSalesCacheFromApi(secrets, args?.salesPeriod ?? null)
-} catch {
+const salesRefresh = await refreshSalesRawSnapshotFromApi(secrets, args?.salesPeriod ?? null)
+salesRowsCount = Number(salesRefresh?.rowsCount ?? 0)
+} catch (salesErr: any) {
+salesSyncError = salesErr?.message ?? String(salesErr)
 }
 if (!secrets.storeName) {
 try {
@@ -558,46 +421,38 @@ storeName: loadSecrets().storeName ?? null,
 placementRowsCount,
 placementSyncError,
 placementCacheKept,
+localProductsRowsCount: localSnapshots.productsRowsCount,
+localStocksRowsCount: localSnapshots.stocksRowsCount,
+salesRowsCount,
+salesSyncError,
 },
 })
-return { ok: true, itemsCount: syncedCount, pages, placementRowsCount, placementSyncError }
+return { ok: true, itemsCount: syncedCount, pages, placementRowsCount, placementSyncError, salesRowsCount, salesSyncError }
 } catch (e: any) {
 dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
 return { ok: false, error: e?.message ?? String(e) }
 }
 })
+ipcMain.handle('data:getDatasetRows', async (_e, args?: { dataset?: string; period?: SalesPeriod | null }) => {
+try {
+const { dataset, rows } = readDatasetRowsSafe(args?.dataset ?? 'products', args?.period ?? null)
+return { ok: true, dataset, rows }
+} catch (e: any) {
+const dataset = String(args?.dataset ?? 'products').trim() || 'products'
+return { ok: false, error: e?.message ?? String(e), dataset, rows: [] }
+}
+})
 ipcMain.handle('data:getProducts', async () => {
 try {
-let storeClientId: string | null = null
-try {
-storeClientId = loadSecrets().clientId
-} catch {
-storeClientId = null
-}
-const products = dbGetProducts(storeClientId)
-return { ok: true, products }
+const { rows } = readDatasetRowsSafe('products', null)
+return { ok: true, products: rows }
 } catch (e: any) {
 return { ok: false, error: e?.message ?? String(e), products: [] }
 }
 })
 ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
 try {
-let storeClientId: string | null = null
-try {
-storeClientId = loadSecrets().clientId
-} catch {
-storeClientId = null
-}
-const requestedPeriod: SalesPeriod | null = args?.period ?? null
-const products = dbGetProducts(storeClientId)
-const cacheByEndpoint = getCachedSalesSnapshotMap(storeClientId)
-const payloads = buildSalesPayloadsFromLocalCache(cacheByEndpoint, requestedPeriod)
-const postingDetailsByKey = buildSalesPostingDetailsFromLocalCache(cacheByEndpoint, requestedPeriod)
-if (payloads.length === 0 && cacheByEndpoint.size === 0) {
-const legacyPayloads = getCachedSalesPayloadMap(storeClientId)
-for (const payload of legacyPayloads.values()) payloads.push(payload)
-}
-const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
+const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
 return { ok: true, rows }
 } catch (e: any) {
 return { ok: false, error: e?.message ?? String(e), rows: [] }
@@ -605,44 +460,32 @@ return { ok: false, error: e?.message ?? String(e), rows: [] }
 })
 ipcMain.handle('data:getReturns', async () => {
 try {
-let storeClientId: string | null = null
-try {
-storeClientId = loadSecrets().clientId
-} catch {
-storeClientId = null
-}
-const products = dbGetProducts(storeClientId)
-return { ok: true, rows: products }
+const { rows } = readDatasetRowsSafe('returns', null)
+return { ok: true, rows }
 } catch (e: any) {
 return { ok: false, error: e?.message ?? String(e), rows: [] }
 }
 })
 ipcMain.handle('data:getStocks', async () => {
 try {
-let storeClientId: string | null = null
-try {
-storeClientId = loadSecrets().clientId
-} catch {
-storeClientId = null
-}
-const rows = dbGetStockViewRows(storeClientId)
+const { rows } = readDatasetRowsSafe('stocks', null)
 return { ok: true, rows }
 } catch (e: any) {
 return { ok: false, error: e?.message ?? String(e), rows: [] }
 }
 })
-ipcMain.handle('ui:getGridColumns', async (_e, args: { dataset: 'products' | 'sales' | 'returns' | 'stocks' }) => {
+ipcMain.handle('ui:getGridColumns', async (_e, args: { dataset: string }) => {
 try {
 return { ok: true, ...dbGetGridColumns(args?.dataset) }
 } catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), dataset: (args?.dataset ?? 'products') as 'products' | 'sales' | 'returns' | 'stocks', cols: null }
+return { ok: false, error: e?.message ?? String(e), dataset: String(args?.dataset ?? 'products'), cols: null }
 }
 })
-ipcMain.handle('ui:saveGridColumns', async (_e, args: { dataset: 'products' | 'sales' | 'returns' | 'stocks'; cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }> }) => {
+ipcMain.handle('ui:saveGridColumns', async (_e, args: { dataset: string; cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }> }) => {
 try {
 return { ok: true, ...dbSaveGridColumns(args?.dataset, args?.cols) }
 } catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), dataset: (args?.dataset ?? 'products') as 'products' | 'sales' | 'returns' | 'stocks', savedCount: 0 }
+return { ok: false, error: e?.message ?? String(e), dataset: String(args?.dataset ?? 'products'), savedCount: 0 }
 }
 })
 ipcMain.handle('data:getSyncLog', async () => {
