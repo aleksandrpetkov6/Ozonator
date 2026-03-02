@@ -291,30 +291,57 @@ function buildSalesPostingDetailsFromSnapshotMap(
   return out
 }
 
-function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefined, requestedPeriod: SalesPeriod | null | undefined) {
+function buildSalesRowsFromPayloads(
+  storeClientId: string | null | undefined,
+  requestedPeriod: SalesPeriod | null | undefined,
+  payloads: Array<{ endpoint: string; payload: any }>,
+  postingDetailsByKey: Map<string, any>,
+) {
   const products = dbGetProducts(storeClientId ?? null)
-  const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
-  const payloads = buildSalesPayloadsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
-  const postingDetailsByKey = buildSalesPostingDetailsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
   const sourceEndpoints = new Set<string>()
 
-  for (const payload of payloads) sourceEndpoints.add(String(payload.endpoint))
-  if (payloads.length === 0 && cacheByEndpoint.size === 0) {
-    const legacyPayloads = getLegacySalesPayloadMap(storeClientId)
-    for (const [endpoint, payload] of legacyPayloads.entries()) {
-      payloads.push({ endpoint, payload })
-      sourceEndpoints.add(endpoint)
-    }
+  for (const payload of payloads) {
+    const endpoint = String(payload?.endpoint ?? '').trim()
+    if (endpoint) sourceEndpoints.add(endpoint)
   }
 
   const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
   const mergedRows = mergeSalesRowsWithFboLocalDb({
-     rows,
-     storeClientId: storeClientId ?? null,
-     periodKey: buildDatasetScopeKey(requestedPeriod),
-   })
+    rows,
+    storeClientId: storeClientId ?? null,
+    periodKey: buildDatasetScopeKey(requestedPeriod),
+  })
   const strictRows = filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
   return { rows: strictRows, sourceEndpoints: Array.from(sourceEndpoints) }
+}
+
+function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefined, requestedPeriod: SalesPeriod | null | undefined) {
+  const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
+  const payloads = buildSalesPayloadsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
+  const postingDetailsByKey = buildSalesPostingDetailsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
+
+  if (payloads.length === 0 && cacheByEndpoint.size === 0) {
+    const legacyPayloads = getLegacySalesPayloadMap(storeClientId)
+    for (const [endpoint, payload] of legacyPayloads.entries()) {
+      payloads.push({ endpoint, payload })
+    }
+  }
+
+  return buildSalesRowsFromPayloads(storeClientId, requestedPeriod, payloads, postingDetailsByKey)
+}
+
+function readScopedSalesSnapshotRows(
+  storeClientId: string | null | undefined,
+  requestedPeriod: SalesPeriod | null | undefined,
+): any[] | null {
+  const rows = dbGetDatasetSnapshotRows({
+    storeClientId: storeClientId ?? null,
+    dataset: 'sales',
+    scopeKey: buildDatasetScopeKey(requestedPeriod),
+  })
+
+  if (!Array.isArray(rows)) return null
+  return filterSalesRowsStrictByPeriod(rows, requestedPeriod)
 }
 
 function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): string {
@@ -322,20 +349,6 @@ function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): 
   const normalized = normalizeSalesPeriod(requestedPeriod)
   if (!normalized.from && !normalized.to) return ''
   return `${normalized.from ?? ''}|${normalized.to ?? ''}`
-}
-
-function getSalesDatasetSnapshotRows(
-  storeClientId: string | null | undefined,
-  requestedPeriod: SalesPeriod | null | undefined,
-): any[] | null {
-  const scopeKey = buildDatasetScopeKey(requestedPeriod)
-  const fromSnapshot = dbGetDatasetSnapshotRows({
-    storeClientId: storeClientId ?? null,
-    dataset: 'sales',
-    scopeKey,
-  })
-  if (!Array.isArray(fromSnapshot)) return null
-  return filterSalesRowsStrictByPeriod(fromSnapshot, requestedPeriod)
 }
 
 function persistDatasetSnapshot(args: {
@@ -380,7 +393,6 @@ export async function refreshSalesRawSnapshotFromApi(
   requestedPeriod: SalesPeriod | null | undefined,
 ) {
   const normalizedRequestedPeriod = normalizeSalesPeriod(requestedPeriod)
-  const scopeKey = buildDatasetScopeKey(requestedPeriod)
   const fbsPayloads = await fetchSalesEndpointPages(
     (body) => ozonPostingFbsList(secrets, body),
     requestedPeriod,
@@ -406,7 +418,7 @@ export async function refreshSalesRawSnapshotFromApi(
 
   buildAndPersistFboSalesSnapshot({
     storeClientId: secrets.clientId,
-    periodKey: scopeKey,
+    periodKey: buildDatasetScopeKey(requestedPeriod),
     fboPayloads,
     postingDetailsByKey,
     fetchedAt,
@@ -443,20 +455,11 @@ export async function refreshSalesRawSnapshotFromApi(
     items: Array.from(postingDetailsByKey.entries()).map(([key, payload]) => ({ key, payload })),
   })
 
-  const products = dbGetProducts(secrets.clientId)
-  const freshRows = normalizeSalesRows(payloads, products, postingDetailsByKey)
-  const mergedRows = mergeSalesRowsWithFboLocalDb({
-    rows: freshRows,
-    storeClientId: secrets.clientId,
-    periodKey: scopeKey,
-  })
-  const rows = filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
-  const sourceEndpoints = Array.from(new Set(payloads.map((item) => String(item.endpoint ?? '').trim()).filter(Boolean)))
-
+  const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey)
   persistDatasetSnapshot({
     storeClientId: secrets.clientId,
     dataset: 'sales',
-    scopeKey,
+    scopeKey: buildDatasetScopeKey(requestedPeriod),
     period: requestedPeriod,
     rows,
     sourceKind: 'api-live',
@@ -491,14 +494,6 @@ export async function ensureLocalSalesSnapshotFromApiIfMissing(
   requestedPeriod: SalesPeriod | null | undefined,
 ): Promise<{ refreshed: boolean; rowsCount: number }> {
   const storeClientId = secrets?.clientId ?? null
-  const exactSnapshotRows = getSalesDatasetSnapshotRows(storeClientId, requestedPeriod)
-  if (Array.isArray(exactSnapshotRows)) {
-    return {
-      refreshed: false,
-      rowsCount: exactSnapshotRows.length,
-    }
-  }
-
   const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
   const hasLocalCoverage = isRequestedSalesPeriodCoveredByRawCache(cacheByEndpoint, requestedPeriod)
 
@@ -510,12 +505,34 @@ export async function ensureLocalSalesSnapshotFromApiIfMissing(
     }
   }
 
-  const localRows = getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
-  const rows = Array.isArray(localRows) ? localRows : []
+  const snapshotRows = readScopedSalesSnapshotRows(storeClientId, requestedPeriod)
+  if (snapshotRows) {
+    return {
+      refreshed: false,
+      rowsCount: snapshotRows.length,
+    }
+  }
+
+  if (hasLocalCoverage) {
+    const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId, requestedPeriod)
+    persistDatasetSnapshot({
+      storeClientId,
+      dataset: 'sales',
+      scopeKey: buildDatasetScopeKey(requestedPeriod),
+      period: requestedPeriod,
+      rows,
+      sourceKind: 'api-raw-cache',
+      sourceEndpoints,
+    })
+    return {
+      refreshed: false,
+      rowsCount: rows.length,
+    }
+  }
 
   return {
     refreshed: false,
-    rowsCount: rows.length,
+    rowsCount: 0,
   }
 }
 
@@ -528,11 +545,12 @@ export function getLocalDatasetRows(
   const scopeKey = buildDatasetScopeKey(options?.period ?? null)
 
   if (dataset === 'sales') {
-    const exactSnapshotRows = getSalesDatasetSnapshotRows(storeClientId ?? null, options?.period ?? null)
-    if (Array.isArray(exactSnapshotRows)) return exactSnapshotRows
+    const exactSnapshotRows = readScopedSalesSnapshotRows(storeClientId ?? null, options?.period ?? null)
+    if (exactSnapshotRows) return exactSnapshotRows
 
     const cacheByEndpoint = getSalesSnapshotMap(storeClientId ?? null)
-    if (cacheByEndpoint.size > 0) {
+    const hasLocalCoverage = isRequestedSalesPeriodCoveredByRawCache(cacheByEndpoint, options?.period ?? null)
+    if (cacheByEndpoint.size > 0 && hasLocalCoverage) {
       const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, options?.period ?? null)
       persistDatasetSnapshot({
         storeClientId,
@@ -550,18 +568,7 @@ export function getLocalDatasetRows(
   const fromSnapshot = dbGetDatasetSnapshotRows({ storeClientId: storeClientId ?? null, dataset, scopeKey })
   if (Array.isArray(fromSnapshot)) {
     if (dataset === 'sales') {
-      const strictRows = filterSalesRowsStrictByPeriod(fromSnapshot, options?.period ?? null)
-      if (strictRows.length !== fromSnapshot.length) {
-        persistDatasetSnapshot({
-          storeClientId,
-          dataset,
-          scopeKey,
-          period: options?.period ?? null,
-          rows: strictRows,
-          sourceKind: 'api-raw-cache',
-        })
-      }
-      return strictRows
+      return filterSalesRowsStrictByPeriod(fromSnapshot, options?.period ?? null)
     }
     return fromSnapshot
   }
@@ -585,17 +592,7 @@ export function getLocalDatasetRows(
   }
 
   if (dataset === 'sales') {
-    const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, options?.period ?? null)
-    persistDatasetSnapshot({
-      storeClientId,
-      dataset,
-      scopeKey,
-      period: options?.period ?? null,
-      rows,
-      sourceKind: 'api-raw-cache',
-      sourceEndpoints,
-    })
-    return rows
+    return []
   }
 
   return []
