@@ -1,6 +1,7 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
 import { fetchSalesEndpointPages, fetchSalesPostingDetails, normalizeSalesRows, type SalesPeriod } from './sales-sync'
 import { dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
+import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
 import type { Secrets } from './types'
 
 const SALES_CACHE_SNAPSHOT_ENDPOINTS = {
@@ -131,7 +132,12 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
   }
 
   const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
-  return { rows, sourceEndpoints: Array.from(sourceEndpoints) }
+  const mergedRows = mergeSalesRowsWithFboLocalDb({
+    rows,
+    storeClientId: storeClientId ?? null,
+    periodKey: buildDatasetScopeKey(requestedPeriod),
+  })
+  return { rows: mergedRows, sourceEndpoints: Array.from(sourceEndpoints) }
 }
 
 function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): string {
@@ -197,6 +203,14 @@ export async function refreshSalesRawSnapshotFromApi(
     ? await fetchSalesPostingDetails(secrets, payloads)
     : new Map<string, any>()
   const fetchedAt = new Date().toISOString()
+
+  buildAndPersistFboSalesSnapshot({
+    storeClientId: secrets.clientId,
+    periodKey: buildDatasetScopeKey(requestedPeriod),
+    fboPayloads,
+    postingDetailsByKey,
+    fetchedAt,
+  })
 
   const persistRawSnapshot = (endpoint: string, responseBody: any) => {
     dbRecordApiRawResponse({
