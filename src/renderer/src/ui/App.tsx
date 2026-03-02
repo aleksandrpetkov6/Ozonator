@@ -281,7 +281,7 @@ export default function App() {
     setRunning(true)
 
     try {
-      const resp = await window.api.syncProducts()
+      const resp = await window.api.syncProducts(demandPeriod)
       if (!resp.ok) {
         setLastError(resp.error ?? 'Ошибка синхронизации')
       } else {
