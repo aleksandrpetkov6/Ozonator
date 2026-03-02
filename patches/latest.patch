@@ -1,63 +1,69 @@
 --- a/electron/main/ozon.ts
 +++ b/electron/main/ozon.ts
-@@ -789,7 +789,12 @@
+@@ -789,7 +789,7 @@
  }
  
  export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string) {
 -  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber))
-+  const body = buildPostingGetBody(postingNumber)
-+  body.with = {
-+    analytics_data: true,
-+    financial_data: true,
-+  }
-+  return ozonPost(secrets, '/v2/posting/fbo/get', body)
++  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, true))
  }
  
  export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
 --- a/electron/main/local-datasets.ts
 +++ b/electron/main/local-datasets.ts
-@@ -132,6 +132,18 @@
- 
-   const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
-   return { rows, sourceEndpoints: Array.from(sourceEndpoints) }
+@@ -175,6 +175,52 @@
+     productsRowsCount: productsRows.length,
+     stocksRowsCount: stocksRows.length,
+   }
 +}
 +
-+function needsSalesFboDetailBackfill(storeClientId: string | null | undefined, requestedPeriod: SalesPeriod | null | undefined): boolean {
-+  const { rows } = buildSalesRowsFromLocalRawCache(storeClientId, requestedPeriod)
-+  return rows.some((row: any) => {
-+    if (String(row?.delivery_model ?? '').trim() !== 'FBO') return false
-+    if (!String(row?.shipment_date ?? '').trim()) return true
-+    if (!String(row?.delivery_cluster ?? '').trim()) return true
-+    const status = String(row?.status ?? '').trim()
-+    if (status === 'Доставлен' && !String(row?.delivery_date ?? '').trim()) return true
-+    return false
-+  })
- }
- 
- function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): string {
-@@ -243,6 +255,22 @@
-   return { rowsCount: rows.length }
- }
- 
-+export async function getSalesRowsWithApiBackfill(
-+  secrets: Secrets | null | undefined,
++function normalizeHydrationText(value: any): string {
++  if (typeof value === 'string') return value.trim()
++  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
++  return ''
++}
++
++function isDeliveredSalesStatus(value: any): boolean {
++  const raw = normalizeHydrationText(value).toLowerCase()
++  if (!raw) return false
++  return raw.includes('доставлен') || raw.includes('delivered') || raw.includes('received')
++}
++
++function shouldHydrateDeliveredFboRows(rows: any[]): boolean {
++  for (const row of Array.isArray(rows) ? rows : []) {
++    const deliveryModel = normalizeHydrationText((row as any)?.delivery_model).toUpperCase()
++    if (deliveryModel !== 'FBO') continue
++    if (!isDeliveredSalesStatus((row as any)?.status)) continue
++    const missingDeliveryDate = !normalizeHydrationText((row as any)?.delivery_date)
++    const missingDeliveryCluster = !normalizeHydrationText((row as any)?.delivery_cluster)
++    if (missingDeliveryDate || missingDeliveryCluster) return true
++  }
++  return false
++}
++
++export async function getSalesRowsFromLocalOrApi(
++  secrets: Secrets,
 +  requestedPeriod: SalesPeriod | null | undefined,
 +) {
-+  const storeClientId = String(secrets?.clientId ?? '').trim() || null
++  const scopeKey = buildDatasetScopeKey(requestedPeriod)
++  const snapshotRows = dbGetDatasetSnapshotRows({
++    storeClientId: secrets.clientId ?? null,
++    dataset: 'sales',
++    scopeKey,
++  })
 +
-+  if (secrets && needsSalesFboDetailBackfill(storeClientId, requestedPeriod)) {
-+    try {
-+      await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod)
-+    } catch {
-+    }
++  if (snapshotRows === null) {
++    await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod)
++    return getLocalDatasetRows(secrets.clientId ?? null, 'sales', { period: requestedPeriod })
 +  }
 +
-+  return getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
-+}
++  if (!shouldHydrateDeliveredFboRows(snapshotRows)) return snapshotRows
 +
- export function getLocalDatasetRows(
-   storeClientId: string | null | undefined,
-   datasetRaw: LocalDatasetName,
++  await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod)
++  return getLocalDatasetRows(secrets.clientId ?? null, 'sales', { period: requestedPeriod })
+ }
+ 
+ export async function refreshSalesRawSnapshotFromApi(
 --- a/electron/main/index.ts
 +++ b/electron/main/index.ts
 @@ -5,7 +5,7 @@
@@ -65,11 +71,11 @@
  import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
  import { type SalesPeriod } from './sales-sync'
 -import { getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
-+import { getLocalDatasetRows, getSalesRowsWithApiBackfill, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
++import { getLocalDatasetRows, getSalesRowsFromLocalOrApi, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
  let mainWindow: BrowserWindow | null = null
  let startupShowTimer: NodeJS.Timeout | null = null
  function startupLog(...args: any[]) {
-@@ -197,6 +197,19 @@
+@@ -197,6 +197,22 @@
  const dataset = String(datasetRaw ?? '').trim() || 'products'
  const rows = getLocalDatasetRows(storeClientId, dataset, { period: period ?? null })
  return { storeClientId, dataset, rows }
@@ -83,13 +89,16 @@
 +secrets = null
 +}
 +
-+const rows = await getSalesRowsWithApiBackfill(secrets, period ?? null)
-+const storeClientId = String(secrets?.clientId ?? '').trim() || getActiveStoreClientIdSafe()
-+return { storeClientId, dataset: 'sales', rows }
++if (!secrets) {
++return { storeClientId: getActiveStoreClientIdSafe(), dataset: 'sales', rows: getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null }) }
++}
++
++const rows = await getSalesRowsFromLocalOrApi(secrets, period ?? null)
++return { storeClientId: secrets.clientId, dataset: 'sales', rows }
  }
  
  ipcMain.handle('secrets:status', async () => {
-@@ -435,7 +448,12 @@
+@@ -435,7 +451,12 @@
  })
  ipcMain.handle('data:getDatasetRows', async (_e, args?: { dataset?: string; period?: SalesPeriod | null }) => {
  try {
@@ -103,7 +112,7 @@
  return { ok: true, dataset, rows }
  } catch (e: any) {
  const dataset = String(args?.dataset ?? 'products').trim() || 'products'
-@@ -452,7 +470,7 @@
+@@ -452,7 +473,7 @@
  })
  ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
  try {
