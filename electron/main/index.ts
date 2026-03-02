@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
 import { appendFileSync, mkdirSync } from 'fs'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbReplaceProductPlacementsForStore, dbGetGridColumns, dbSaveGridColumns } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbReplaceProductPlacementsForStore, dbGetGridColumns, dbSaveGridColumns, dbRecordApiRawResponse } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
