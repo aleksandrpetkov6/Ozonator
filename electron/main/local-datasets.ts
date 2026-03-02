@@ -227,6 +227,47 @@ function buildSalesPayloadsFromSnapshotMap(
   return out
 }
 
+function getSalesRawCoverageFromSnapshotMap(cacheByEndpoint: Map<string, any>) {
+  let hasPayloads = false
+  let from: string | null = null
+  let to: string | null = null
+
+  for (const endpoint of [SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs, SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo]) {
+    const snapshot = cacheByEndpoint.get(endpoint)
+    if (!snapshot || typeof snapshot !== 'object') continue
+
+    const payloads = Array.isArray(snapshot?.payloads) ? snapshot.payloads : []
+    if (payloads.length > 0) hasPayloads = true
+
+    const period = normalizeSalesPeriod(snapshot?.period ?? null)
+    if (period.from) from = from ? (period.from < from ? period.from : from) : period.from
+    if (period.to) to = to ? (period.to > to ? period.to : to) : period.to
+  }
+
+  return { hasPayloads, from, to }
+}
+
+function isRequestedSalesPeriodCoveredByRawCache(
+  cacheByEndpoint: Map<string, any>,
+  requestedPeriod: SalesPeriod | null | undefined,
+) {
+  const requested = normalizeSalesPeriod(requestedPeriod)
+  const coverage = getSalesRawCoverageFromSnapshotMap(cacheByEndpoint)
+
+  if (!requested.from && !requested.to) return coverage.hasPayloads
+  if (!coverage.hasPayloads) return false
+
+  let from = requested.from
+  let to = requested.to
+  if (!from && to) from = to
+  if (from && !to) to = from
+  if (!from || !to) return false
+  if (from > to) [from, to] = [to, from]
+
+  if (!coverage.from || !coverage.to) return false
+  return from >= coverage.from && to <= coverage.to
+}
+
 function buildSalesPostingDetailsFromSnapshotMap(
   cacheByEndpoint: Map<string, any>,
   requestedPeriod: SalesPeriod | null | undefined,
@@ -424,6 +465,17 @@ export async function ensureLocalSalesSnapshotFromApiIfMissing(
   requestedPeriod: SalesPeriod | null | undefined,
 ): Promise<{ refreshed: boolean; rowsCount: number }> {
   const storeClientId = secrets?.clientId ?? null
+  const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
+  const hasLocalCoverage = isRequestedSalesPeriodCoveredByRawCache(cacheByEndpoint, requestedPeriod)
+
+  if (!hasLocalCoverage && secrets) {
+    const refreshed = await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod)
+    return {
+      refreshed: true,
+      rowsCount: Number(refreshed?.rowsCount ?? 0),
+    }
+  }
+
   const localRows = getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
   const rows = Array.isArray(localRows) ? localRows : []
 
@@ -440,6 +492,24 @@ export function getLocalDatasetRows(
 ): any[] {
   const dataset = String(datasetRaw ?? '').trim() || 'products'
   const scopeKey = buildDatasetScopeKey(options?.period ?? null)
+
+  if (dataset === 'sales') {
+    const cacheByEndpoint = getSalesSnapshotMap(storeClientId ?? null)
+    if (cacheByEndpoint.size > 0) {
+      const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, options?.period ?? null)
+      persistDatasetSnapshot({
+        storeClientId,
+        dataset,
+        scopeKey,
+        period: options?.period ?? null,
+        rows,
+        sourceKind: 'api-raw-cache',
+        sourceEndpoints,
+      })
+      return rows
+    }
+  }
+
   const fromSnapshot = dbGetDatasetSnapshotRows({ storeClientId: storeClientId ?? null, dataset, scopeKey })
   if (Array.isArray(fromSnapshot)) {
     if (dataset === 'sales') {
