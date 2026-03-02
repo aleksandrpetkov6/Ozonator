@@ -789,7 +789,7 @@ export async function ozonPostingFbsGet(secrets: Secrets, postingNumber: string)
 }
 
 export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string) {
-  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber))
+  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, true))
 }
 
 export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {

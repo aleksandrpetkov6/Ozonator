@@ -243,6 +243,51 @@ export async function refreshSalesRawSnapshotFromApi(
   return { rowsCount: rows.length }
 }
 
+function salesRowNeedsFboBackfill(row: any): boolean {
+  if (!row || typeof row !== 'object') return false
+  const model = String(row?.delivery_model ?? '').trim().toUpperCase()
+  if (model !== 'FBO') return false
+
+  const status = String(row?.status ?? '').trim()
+  const shipmentDate = String(row?.shipment_date ?? '').trim()
+  const deliveryCluster = String(row?.delivery_cluster ?? '').trim()
+  const deliveryDate = String(row?.delivery_date ?? '').trim()
+
+  if (!shipmentDate) return true
+  if (!deliveryCluster) return true
+  if (status === 'Доставлен' && !deliveryDate) return true
+  return false
+}
+
+function salesRowsNeedFboBackfill(rows: any[]): boolean {
+  return rows.some((row) => salesRowNeedsFboBackfill(row))
+}
+
+export async function ensureLocalSalesSnapshotFromApiIfMissing(
+  secrets: Secrets | null | undefined,
+  requestedPeriod: SalesPeriod | null | undefined,
+): Promise<{ refreshed: boolean; rowsCount: number }> {
+  const storeClientId = secrets?.clientId ?? null
+  const localRows = getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
+  const rows = Array.isArray(localRows) ? localRows : []
+  const needsRefresh = rows.length === 0 || salesRowsNeedFboBackfill(rows)
+
+  if (!secrets || !needsRefresh) {
+    return { refreshed: false, rowsCount: rows.length }
+  }
+
+  try {
+    await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod)
+    const refreshedRows = getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
+    return {
+      refreshed: true,
+      rowsCount: Array.isArray(refreshedRows) ? refreshedRows.length : 0,
+    }
+  } catch {
+    return { refreshed: false, rowsCount: rows.length }
+  }
+}
+
 export function getLocalDatasetRows(
   storeClientId: string | null | undefined,
   datasetRaw: LocalDatasetName,

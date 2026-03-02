@@ -5,7 +5,7 @@ import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMar
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
-import { getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
+import { ensureLocalSalesSnapshotFromApiIfMissing, getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 let mainWindow: BrowserWindow | null = null
 let startupShowTimer: NodeJS.Timeout | null = null
 function startupLog(...args: any[]) {
@@ -435,7 +435,19 @@ return { ok: false, error: e?.message ?? String(e) }
 })
 ipcMain.handle('data:getDatasetRows', async (_e, args?: { dataset?: string; period?: SalesPeriod | null }) => {
 try {
-const { dataset, rows } = readDatasetRowsSafe(args?.dataset ?? 'products', args?.period ?? null)
+const dataset = String(args?.dataset ?? 'products').trim() || 'products'
+if (dataset === 'sales') {
+let secrets = null
+try {
+secrets = loadSecrets()
+} catch {
+secrets = null
+}
+await ensureLocalSalesSnapshotFromApiIfMissing(secrets, args?.period ?? null)
+const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
+return { ok: true, dataset, rows }
+}
+const { rows } = readDatasetRowsSafe(dataset, args?.period ?? null)
 return { ok: true, dataset, rows }
 } catch (e: any) {
 const dataset = String(args?.dataset ?? 'products').trim() || 'products'
@@ -452,6 +464,13 @@ return { ok: false, error: e?.message ?? String(e), products: [] }
 })
 ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
 try {
+let secrets = null
+try {
+secrets = loadSecrets()
+} catch {
+secrets = null
+}
+await ensureLocalSalesSnapshotFromApiIfMissing(secrets, args?.period ?? null)
 const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
 return { ok: true, rows }
 } catch (e: any) {
