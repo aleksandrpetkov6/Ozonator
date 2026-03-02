@@ -33,9 +33,9 @@ export type GridRow = {
   placement_zone?: string | null
 }
 
-export type DataSet = 'products' | 'sales' | 'returns' | 'stocks'
+export type DataSet = string
 export type HiddenBucket = 'main' | 'add'
-export type GridColId = keyof GridRow | 'archived'
+export type GridColId = string
 
 export type ColDef = SortableColumn<GridRow, GridColId> & {
   id: GridColId
@@ -233,7 +233,7 @@ function compareRowsByDefaultSort(dataset: DataSet, left: GridRow, right: GridRo
     return rightAt - leftAt
   }
 
-  if (dataset === 'products' || dataset === 'stocks') {
+  if (dataset === 'products' || dataset === 'forecast-demand' || dataset === 'stocks') {
     return compareOfferIdsRuFirst(left.offer_id, right.offer_id)
   }
 
@@ -251,6 +251,51 @@ function sortRowsForDefaultView(dataset: DataSet, rows: GridRow[]): GridRow[] {
       return compared || (left.index - right.index)
     })
     .map((entry) => entry.row)
+}
+
+function prettifyColumnTitle(id: string): string {
+  const normalized = String(id ?? '').trim()
+  if (!normalized) return 'Без названия'
+  const words = normalized
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_\-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  if (words.length === 0) return normalized
+  const title = words
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+  return title
+}
+
+function buildDynamicCol(id: string): ColDef {
+  return {
+    id,
+    title: prettifyColumnTitle(id),
+    w: 180,
+    visible: false,
+    hiddenBucket: 'add',
+    sortable: true,
+  }
+}
+
+export function appendDiscoveredCols(current: ColDef[], rows: GridRow[]): ColDef[] {
+  if (!Array.isArray(rows) || rows.length === 0) return current
+  const seen = new Set(current.map((col) => String(col.id)))
+  const discovered: ColDef[] = []
+
+  for (const row of rows.slice(0, 200)) {
+    if (!row || typeof row !== 'object') continue
+    for (const key of Object.keys(row as any)) {
+      const id = String(key ?? '').trim()
+      if (!id || seen.has(id) || id === '__proto__') continue
+      discovered.push(buildDynamicCol(id))
+      seen.add(id)
+    }
+  }
+
+  return discovered.length > 0 ? [...current, ...discovered] : current
 }
 
 export function buildDefaultCols(dataset: DataSet): ColDef[] {
@@ -302,7 +347,7 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
     )
   }
 
-  if (dataset === 'products') {
+  if (dataset === 'products' || dataset === 'forecast-demand') {
     base.push(asMainCol({ id: 'updated_at', title: 'Обновлён', w: 180, visible: false, getSortValue: (row) => toSortTimestamp(row.updated_at) ?? '' }))
   }
 
@@ -347,8 +392,7 @@ export function mergeColsWithDefaults(dataset: DataSet, persistedRaw: unknown): 
   const out: ColDef[] = []
   const used = new Set<string>()
   for (const p of persisted) {
-    const d = defaultsById.get(String(p.id))
-    if (!d) continue
+    const d = defaultsById.get(String(p.id)) ?? buildDynamicCol(String(p.id))
     out.push({ ...d, w: p.w, visible: p.visible, hiddenBucket: p.hiddenBucket })
     used.add(String(d.id))
   }
@@ -377,32 +421,15 @@ export function saveCols(dataset: DataSet, cols: ColDef[]) {
   localStorage.setItem(colsStorageKey(dataset), JSON.stringify(payload))
 }
 
-const DATASET_CACHE: Record<DataSet, GridRow[] | null> = {
-  products: null,
-  sales: null,
-  returns: null,
-  stocks: null,
-}
-
-const DATASET_CACHE_AT: Record<DataSet, number> = {
-  products: 0,
-  sales: 0,
-  returns: 0,
-  stocks: 0,
-}
-
-const DATASET_INFLIGHT: Record<DataSet, Promise<GridRow[] | null> | null> = {
-  products: null,
-  sales: null,
-  returns: null,
-  stocks: null,
-}
+const DATASET_CACHE = new Map<DataSet, GridRow[] | null>()
+const DATASET_CACHE_AT = new Map<DataSet, number>()
+const DATASET_INFLIGHT = new Map<DataSet, Promise<GridRow[] | null> | null>()
 
 const PRODUCTS_CACHE_TTL_MS = 60_000
 const SALES_PERIOD_LS_KEY = 'ozonator_demand_forecast_period_v1'
 
-let salesCacheKey = ''
-let salesInflightKey = ''
+const DATASET_SCOPE_KEY = new Map<DataSet, string>()
+const DATASET_INFLIGHT_SCOPE_KEY = new Map<DataSet, string>()
 
 function normSalesPeriodValue(value: unknown): string {
   const raw = typeof value === 'string' ? value.trim() : ''
@@ -430,58 +457,51 @@ function getSalesPeriodCacheKey(period?: { from?: string; to?: string }): string
 }
 
 export function getCachedRows(dataset: DataSet): GridRow[] {
-  return DATASET_CACHE[dataset] ?? []
+  return DATASET_CACHE.get(dataset) ?? []
 }
 
-export async function fetchRowsCached(dataset: DataSet, force = false): Promise<GridRow[] | null> {
+export async function fetchRowsCached(dataset: DataSet, force = false, period?: { from?: string; to?: string }): Promise<GridRow[] | null> {
   const now = Date.now()
-  const salesPeriod = dataset === 'sales' ? readSalesPeriod() : undefined
-  const salesKey = dataset === 'sales' ? getSalesPeriodCacheKey(salesPeriod) : ''
+  const effectivePeriod = period ?? (dataset === 'sales' ? readSalesPeriod() : undefined)
+  const requestScopeKey = getSalesPeriodCacheKey(effectivePeriod)
+  const cacheRows = DATASET_CACHE.get(dataset) ?? null
+  const cacheAt = DATASET_CACHE_AT.get(dataset) ?? 0
+  const inflight = DATASET_INFLIGHT.get(dataset) ?? null
+  const cachedScopeKey = DATASET_SCOPE_KEY.get(dataset) ?? ''
+  const inflightScopeKey = DATASET_INFLIGHT_SCOPE_KEY.get(dataset) ?? ''
 
-  if (!force && DATASET_CACHE[dataset] && (now - DATASET_CACHE_AT[dataset]) < PRODUCTS_CACHE_TTL_MS) {
-    if (dataset !== 'sales' || salesCacheKey === salesKey) return DATASET_CACHE[dataset]
+  if (!force && cacheRows && (now - cacheAt) < PRODUCTS_CACHE_TTL_MS && cachedScopeKey === requestScopeKey) {
+    return cacheRows
   }
 
-  if (DATASET_INFLIGHT[dataset]) {
-    if (dataset !== 'sales' || salesInflightKey === salesKey) return DATASET_INFLIGHT[dataset]
+  if (inflight && inflightScopeKey === requestScopeKey) {
+    return inflight
   }
 
   let request: Promise<GridRow[] | null> | null = null
 
   request = (async () => {
     try {
-      let list: GridRow[] = []
-      if (dataset === 'products') {
-        const resp = await window.api.getProducts()
-        if (resp.ok) list = (resp.products as any) as GridRow[]
-        else return DATASET_CACHE[dataset]
-      } else if (dataset === 'sales') {
-        const resp = await window.api.getSales(salesPeriod)
-        if (resp.ok) list = sanitizeSalesRows((resp.rows as any) as GridRow[])
-        else return DATASET_CACHE[dataset]
-      } else if (dataset === 'returns') {
-        const resp = await window.api.getReturns()
-        if (resp.ok) list = (resp.rows as any) as GridRow[]
-        else return DATASET_CACHE[dataset]
-      } else {
-        const resp = await window.api.getStocks()
-        if (resp.ok) list = (resp.rows as any) as GridRow[]
-        else return DATASET_CACHE[dataset]
-      }
+      const resp = await window.api.getDatasetRows(dataset, effectivePeriod ? { period: effectivePeriod } : undefined)
+      if (!resp?.ok || !Array.isArray(resp.rows)) return DATASET_CACHE.get(dataset) ?? null
+
+      let list = (resp.rows as any) as GridRow[]
+      if (dataset === 'sales') list = sanitizeSalesRows(list)
+
       const sortedList = sortRowsForDefaultView(dataset, list)
-      DATASET_CACHE[dataset] = sortedList
-      DATASET_CACHE_AT[dataset] = Date.now()
-      if (dataset === 'sales') salesCacheKey = salesKey
+      DATASET_CACHE.set(dataset, sortedList)
+      DATASET_CACHE_AT.set(dataset, Date.now())
+      DATASET_SCOPE_KEY.set(dataset, requestScopeKey)
       return sortedList
     } catch {
-      return DATASET_CACHE[dataset]
+      return DATASET_CACHE.get(dataset) ?? null
     } finally {
-      if (DATASET_INFLIGHT[dataset] === request) DATASET_INFLIGHT[dataset] = null
-      if (dataset === 'sales' && salesInflightKey === salesKey) salesInflightKey = ''
+      if ((DATASET_INFLIGHT.get(dataset) ?? null) === request) DATASET_INFLIGHT.set(dataset, null)
+      if ((DATASET_INFLIGHT_SCOPE_KEY.get(dataset) ?? '') === requestScopeKey) DATASET_INFLIGHT_SCOPE_KEY.delete(dataset)
     }
   })()
 
-  DATASET_INFLIGHT[dataset] = request
-  if (dataset === 'sales') salesInflightKey = salesKey
+  DATASET_INFLIGHT.set(dataset, request)
+  DATASET_INFLIGHT_SCOPE_KEY.set(dataset, requestScopeKey)
   return request
 }
