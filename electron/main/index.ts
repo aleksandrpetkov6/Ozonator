@@ -109,14 +109,11 @@ requestedPeriod: SalesPeriod | null | undefined,
 const normalizedRequestedPeriod = normalizeSalesPeriodCache(requestedPeriod)
 const fbsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs)
 const fboSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo)
-const hasExactPeriodSnapshot = [fbsSnapshot, fboSnapshot].some((snapshot) => (
-  snapshot && sameSalesPeriodCache(normalizeSalesPeriodCache(snapshot?.period ?? null), normalizedRequestedPeriod)
-))
 const out: SalesPayloadEnvelope[] = []
 const pushSnapshot = (snapshot: any, fallbackEndpoint: string) => {
 if (!snapshot || typeof snapshot !== 'object') return
 const snapshotPeriod = normalizeSalesPeriodCache(snapshot?.period ?? null)
-if (hasExactPeriodSnapshot && !sameSalesPeriodCache(snapshotPeriod, normalizedRequestedPeriod)) return
+if (!sameSalesPeriodCache(snapshotPeriod, normalizedRequestedPeriod)) return
 const payloads = Array.isArray(snapshot?.payloads) ? snapshot.payloads : []
 const sourceEndpoint = String(snapshot?.sourceEndpoint ?? '').trim() || fallbackEndpoint
 for (const payload of payloads) out.push({ endpoint: sourceEndpoint, payload })
@@ -133,13 +130,8 @@ requestedPeriod: SalesPeriod | null | undefined,
 const detailsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.details)
 if (!detailsSnapshot || typeof detailsSnapshot !== 'object') return new Map<string, any>()
 const normalizedRequestedPeriod = normalizeSalesPeriodCache(requestedPeriod)
-const fbsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs)
-const fboSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo)
-const hasExactPeriodSnapshot = [fbsSnapshot, fboSnapshot].some((snapshot) => (
-  snapshot && sameSalesPeriodCache(normalizeSalesPeriodCache(snapshot?.period ?? null), normalizedRequestedPeriod)
-))
 const detailsPeriod = normalizeSalesPeriodCache(detailsSnapshot?.period ?? null)
-if (hasExactPeriodSnapshot && !sameSalesPeriodCache(detailsPeriod, normalizedRequestedPeriod)) {
+if (!sameSalesPeriodCache(detailsPeriod, normalizedRequestedPeriod)) {
 return new Map<string, any>()
 }
 const out = new Map<string, any>()
@@ -405,7 +397,7 @@ dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), err
 return { ok: false, error: e?.message ?? String(e) }
 }
 })
-ipcMain.handle('ozon:syncProducts', async () => {
+ipcMain.handle('ozon:syncProducts', async (_e, args?: { salesPeriod?: SalesPeriod | null }) => {
 let storeClientId: string | null = null
 try { storeClientId = loadSecrets().clientId } catch {}
 const logId = dbLogStart('sync_products', storeClientId)
@@ -545,7 +537,7 @@ placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, [])
 placementSyncError = placementErr?.message ?? String(placementErr)
 }
 try {
-await refreshSalesCacheFromApi(secrets, null)
+await refreshSalesCacheFromApi(secrets, args?.salesPeriod ?? null)
 } catch {
 }
 if (!secrets.storeName) {
@@ -601,7 +593,7 @@ const products = dbGetProducts(storeClientId)
 const cacheByEndpoint = getCachedSalesSnapshotMap(storeClientId)
 const payloads = buildSalesPayloadsFromLocalCache(cacheByEndpoint, requestedPeriod)
 const postingDetailsByKey = buildSalesPostingDetailsFromLocalCache(cacheByEndpoint, requestedPeriod)
-if (payloads.length === 0) {
+if (payloads.length === 0 && cacheByEndpoint.size === 0) {
 const legacyPayloads = getCachedSalesPayloadMap(storeClientId)
 for (const payload of legacyPayloads.values()) payloads.push(payload)
 }
