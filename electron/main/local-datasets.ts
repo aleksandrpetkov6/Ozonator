@@ -240,8 +240,10 @@ function getSalesRawCoverageFromSnapshotMap(cacheByEndpoint: Map<string, any>) {
     if (payloads.length > 0) hasPayloads = true
 
     const period = normalizeSalesPeriod(snapshot?.period ?? null)
-    if (period.from) from = from ? (period.from < from ? period.from : from) : period.from
-    if (period.to) to = to ? (period.to > to ? period.to : to) : period.to
+    const periodFrom = period.from
+    const periodTo = period.to
+    if (periodFrom && (!from || periodFrom < from)) from = periodFrom
+    if (periodTo && (!to || periodTo > to)) to = periodTo
   }
 
   return { hasPayloads, from, to }
