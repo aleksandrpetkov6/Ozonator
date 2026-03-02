@@ -31,8 +31,17 @@ function formatPeriodBoundary(value: string, boundary: 'startOfDay' | 'endOfDay'
   return formatted || ''
 }
 
+function getDefaultSalesPeriod(days = DEFAULT_UI_DATE_RANGE_DAYS): SalesPeriod {
+  const safeDays = Math.max(1, Math.trunc(Number(days) || DEFAULT_UI_DATE_RANGE_DAYS))
+  // Для продаж трактуем задачу буквально: «текущая дата - N дней».
+  // Чтобы интервал включал и текущую дату, просим общий helper построить окно на N+1 календарных дней.
+  return getDefaultDateRange(safeDays + 1)
+}
+
 function readSalesPeriod(): SalesPeriod {
-  return readDateRangeWithDefault(SALES_PERIOD_LS_KEY, DEFAULT_UI_DATE_RANGE_DAYS)
+  // Для вкладки «Продажи» стартовый диапазон всегда должен быть плавающим:
+  // текущая дата минус 30 дней, а не ранее сохранённый пользовательский интервал.
+  return getDefaultSalesPeriod(DEFAULT_UI_DATE_RANGE_DAYS)
 }
 
 function readDemandForecastPeriod(): DemandForecastPeriod {
@@ -148,7 +157,7 @@ export default function App() {
   }, [])
 
   const applySalesPreset = useCallback((days: number) => {
-    setSalesPeriod(getDefaultDateRange(days))
+    setSalesPeriod(getDefaultSalesPeriod(days))
   }, [])
 
   const applyDemandPreset = useCallback((days: number) => {
@@ -157,7 +166,7 @@ export default function App() {
 
   const salesPresetDays = useMemo(() => {
     for (const days of DEMAND_PERIOD_PRESETS) {
-      const preset = getDefaultDateRange(days)
+      const preset = getDefaultSalesPeriod(days)
       if (preset.from === salesPeriod.from && preset.to === salesPeriod.to) return days
     }
     return null
