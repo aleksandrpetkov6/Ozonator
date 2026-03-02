@@ -87,6 +87,7 @@ export default function App() {
   const [productsTotal, setProductsTotal] = useState(0)
   const [productsFiltered, setProductsFiltered] = useState(0)
   const [demandPeriod, setDemandPeriod] = useState<DemandForecastPeriod>(() => readDemandForecastPeriod())
+  const [salesRefreshTick, setSalesRefreshTick] = useState(0)
 
   const [adminLoading, setAdminLoading] = useState(true)
   const [adminSaving, setAdminSaving] = useState(false)
@@ -289,6 +290,7 @@ export default function App() {
           try { localStorage.setItem(AUTO_SYNC_ENABLED_LS_KEY, '1') } catch {}
         }
         setLastError(null)
+        setSalesRefreshTick((prev) => prev + 1)
         window.dispatchEvent(new Event('ozon:products-updated'))
         window.dispatchEvent(new Event('ozon:logs-updated'))
         window.dispatchEvent(new Event('ozon:store-updated'))
@@ -655,7 +657,7 @@ export default function App() {
 
           {isSales && (
             <div style={{ height: '100%' }}>
-              <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
+              <ProductsPageMemo key={`sales:${demandPeriod.from || "-"}:${demandPeriod.to || "-"}:${salesRefreshTick}`} dataset="sales" query={productsQuery} period={demandPeriod} onStats={onProductStats} />
             </div>
           )}
 
