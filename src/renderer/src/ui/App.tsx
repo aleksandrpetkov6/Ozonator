@@ -11,11 +11,10 @@ import { useGlobalTableEnhancements } from './utils/tableEnhancements'
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
 const DEMAND_FORECAST_PERIOD_LS_KEY = UI_DATE_RANGE_LS_KEY
-const SALES_PERIOD_LS_KEY = 'ozonator_sales_period_v1'
 const AUTO_SYNC_ENABLED_LS_KEY = 'ozonator_auto_sync_enabled'
 
-type SalesPeriod = UiDateRange
 type DemandForecastPeriod = UiDateRange
+type SalesPeriod = UiDateRange
 
 const DEMAND_PERIOD_PRESETS = [DEFAULT_UI_DATE_RANGE_DAYS, 90, 180, 365] as const
 
@@ -29,19 +28,6 @@ function toShortRuDate(value: string): string {
 function formatPeriodBoundary(value: string, boundary: 'startOfDay' | 'endOfDay'): string {
   const formatted = formatDateTimeRu(value, { dateOnlyBoundary: boundary })
   return formatted || ''
-}
-
-function getDefaultSalesPeriod(days = DEFAULT_UI_DATE_RANGE_DAYS): SalesPeriod {
-  const safeDays = Math.max(1, Math.trunc(Number(days) || DEFAULT_UI_DATE_RANGE_DAYS))
-  // Для продаж трактуем задачу буквально: «текущая дата - N дней».
-  // Чтобы интервал включал и текущую дату, просим общий helper построить окно на N+1 календарных дней.
-  return getDefaultDateRange(safeDays + 1)
-}
-
-function readSalesPeriod(): SalesPeriod {
-  // Для вкладки «Продажи» стартовый диапазон всегда должен быть плавающим:
-  // текущая дата минус 30 дней, а не ранее сохранённый пользовательский интервал.
-  return getDefaultSalesPeriod(DEFAULT_UI_DATE_RANGE_DAYS)
 }
 
 function readDemandForecastPeriod(): DemandForecastPeriod {
@@ -101,8 +87,8 @@ export default function App() {
   const [productsQuery, setProductsQuery] = useState('')
   const [productsTotal, setProductsTotal] = useState(0)
   const [productsFiltered, setProductsFiltered] = useState(0)
-  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>(() => readSalesPeriod())
   const [demandPeriod, setDemandPeriod] = useState<DemandForecastPeriod>(() => readDemandForecastPeriod())
+  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>(() => getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS))
   const [salesRefreshTick, setSalesRefreshTick] = useState(0)
 
   const [adminLoading, setAdminLoading] = useState(true)
@@ -132,89 +118,66 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(SALES_PERIOD_LS_KEY, JSON.stringify(salesPeriod))
-    } catch {
-      // ignore
-    }
-  }, [salesPeriod])
-
-  useEffect(() => {
-    try {
       localStorage.setItem(DEMAND_FORECAST_PERIOD_LS_KEY, JSON.stringify(demandPeriod))
     } catch {
       // ignore
     }
   }, [demandPeriod])
 
-  const setSalesPeriodField = useCallback((field: keyof SalesPeriod, value: string) => {
-    const normalized = sanitizeDateInput(value)
-    setSalesPeriod((prev) => ({ ...prev, [field]: normalized }))
-  }, [])
-
   const setDemandPeriodField = useCallback((field: keyof DemandForecastPeriod, value: string) => {
     const normalized = sanitizeDateInput(value)
     setDemandPeriod((prev) => ({ ...prev, [field]: normalized }))
   }, [])
 
-  const applySalesPreset = useCallback((days: number) => {
-    setSalesPeriod(getDefaultSalesPeriod(days))
+  const setSalesPeriodField = useCallback((field: keyof SalesPeriod, value: string) => {
+    const normalized = sanitizeDateInput(value)
+    setSalesPeriod((prev) => ({ ...prev, [field]: normalized }))
   }, [])
 
-  const applyDemandPreset = useCallback((days: number) => {
-    setDemandPeriod(getDefaultDateRange(days))
-  }, [])
+  const activePeriod = isSales ? salesPeriod : demandPeriod
 
-  const salesPresetDays = useMemo(() => {
-    for (const days of DEMAND_PERIOD_PRESETS) {
-      const preset = getDefaultSalesPeriod(days)
-      if (preset.from === salesPeriod.from && preset.to === salesPeriod.to) return days
+  const setActivePeriodField = useCallback((field: keyof UiDateRange, value: string) => {
+    if (isSales) {
+      setSalesPeriodField(field, value)
+      return
     }
-    return null
-  }, [salesPeriod.from, salesPeriod.to])
+    setDemandPeriodField(field, value)
+  }, [isSales, setDemandPeriodField, setSalesPeriodField])
 
-  const demandPresetDays = useMemo(() => {
+  const applyActivePreset = useCallback((days: number) => {
+    const next = getDefaultDateRange(days)
+    if (isSales) {
+      setSalesPeriod(next)
+      return
+    }
+    setDemandPeriod(next)
+  }, [isSales])
+
+  const activePresetDays = useMemo(() => {
     for (const days of DEMAND_PERIOD_PRESETS) {
       const preset = getDefaultDateRange(days)
-      if (preset.from === demandPeriod.from && preset.to === demandPeriod.to) return days
+      if (preset.from === activePeriod.from && preset.to === activePeriod.to) return days
     }
     return null
-  }, [demandPeriod.from, demandPeriod.to])
-
-  const salesDateTriggerLabel = useMemo(() => {
-    const from = toShortRuDate(salesPeriod.from)
-    const to = toShortRuDate(salesPeriod.to)
-    if (from && to) return `${from}—${to}`
-    if (from) return `с ${from}`
-    if (to) return `по ${to}`
-    return 'Указать промежуток'
-  }, [salesPeriod.from, salesPeriod.to])
-
-  const salesDateTriggerTitle = useMemo(() => {
-    const from = formatPeriodBoundary(salesPeriod.from, 'startOfDay')
-    const to = formatPeriodBoundary(salesPeriod.to, 'endOfDay')
-    if (from && to) return `${from} — ${to}`
-    if (from) return `с ${from}`
-    if (to) return `по ${to}`
-    return 'Указать промежуток'
-  }, [salesPeriod.from, salesPeriod.to])
+  }, [activePeriod.from, activePeriod.to])
 
   const dateTriggerLabel = useMemo(() => {
-    const from = toShortRuDate(demandPeriod.from)
-    const to = toShortRuDate(demandPeriod.to)
+    const from = toShortRuDate(activePeriod.from)
+    const to = toShortRuDate(activePeriod.to)
     if (from && to) return `${from}—${to}`
     if (from) return `с ${from}`
     if (to) return `по ${to}`
     return 'Указать промежуток'
-  }, [demandPeriod.from, demandPeriod.to])
+  }, [activePeriod.from, activePeriod.to])
 
   const dateTriggerTitle = useMemo(() => {
-    const from = formatPeriodBoundary(demandPeriod.from, 'startOfDay')
-    const to = formatPeriodBoundary(demandPeriod.to, 'endOfDay')
+    const from = formatPeriodBoundary(activePeriod.from, 'startOfDay')
+    const to = formatPeriodBoundary(activePeriod.to, 'endOfDay')
     if (from && to) return `${from} — ${to}`
     if (from) return `с ${from}`
     if (to) return `по ${to}`
     return 'Указать промежуток'
-  }, [demandPeriod.from, demandPeriod.to])
+  }, [activePeriod.from, activePeriod.to])
 
   useEffect(() => {
     setDatePresetOpen(false)
@@ -381,7 +344,7 @@ export default function App() {
       clearInterval(id)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoSyncEnabled, online, salesPeriod.from, salesPeriod.to])
+  }, [autoSyncEnabled, online])
 
   const saveAdmin = useCallback(async () => {
     const parsed = parseLogLifeDays(adminLogLifeDraft)
@@ -432,11 +395,11 @@ export default function App() {
                   type="button"
                   className={`topbarDateTrigger${datePresetOpen ? ' open' : ''}`}
                   onClick={() => setDatePresetOpen((v) => !v)}
-                  title={salesDateTriggerTitle}
+                  title={dateTriggerTitle}
                   aria-haspopup="dialog"
                   aria-expanded={datePresetOpen}
                 >
-                  <span className="topbarDateTriggerText">{salesDateTriggerLabel}</span>
+                  <span className="topbarDateTriggerText">{dateTriggerLabel}</span>
                   <span className="topbarDateTriggerIcon" aria-hidden>📅</span>
                 </button>
 
@@ -448,8 +411,8 @@ export default function App() {
                         <input
                           type="date"
                           className="topbarDatePopoverInput"
-                          value={salesPeriod.from}
-                          onChange={(e) => setSalesPeriodField('from', e.target.value)}
+                          value={activePeriod.from}
+                          onChange={(e) => setActivePeriodField('from', e.target.value)}
                         />
                       </label>
                       <label className="topbarDatePopoverField">
@@ -457,8 +420,8 @@ export default function App() {
                         <input
                           type="date"
                           className="topbarDatePopoverInput"
-                          value={salesPeriod.to}
-                          onChange={(e) => setSalesPeriodField('to', e.target.value)}
+                          value={activePeriod.to}
+                          onChange={(e) => setActivePeriodField('to', e.target.value)}
                         />
                       </label>
                     </div>
@@ -469,9 +432,9 @@ export default function App() {
                           key={days}
                           type="button"
                           role="menuitem"
-                          className={`topbarDatePresetBtn${salesPresetDays === days ? ' active' : ''}`}
+                          className={`topbarDatePresetBtn${activePresetDays === days ? ' active' : ''}`}
                           onClick={() => {
-                            applySalesPreset(days)
+                            applyActivePreset(days)
                             setDatePresetOpen(false)
                           }}
                         >
@@ -514,8 +477,8 @@ export default function App() {
                         <input
                           type="date"
                           className="topbarDatePopoverInput"
-                          value={demandPeriod.from}
-                          onChange={(e) => setDemandPeriodField('from', e.target.value)}
+                          value={activePeriod.from}
+                          onChange={(e) => setActivePeriodField('from', e.target.value)}
                         />
                       </label>
                       <label className="topbarDatePopoverField">
@@ -523,8 +486,8 @@ export default function App() {
                         <input
                           type="date"
                           className="topbarDatePopoverInput"
-                          value={demandPeriod.to}
-                          onChange={(e) => setDemandPeriodField('to', e.target.value)}
+                          value={activePeriod.to}
+                          onChange={(e) => setActivePeriodField('to', e.target.value)}
                         />
                       </label>
                     </div>
@@ -535,9 +498,9 @@ export default function App() {
                           key={days}
                           type="button"
                           role="menuitem"
-                          className={`topbarDatePresetBtn${demandPresetDays === days ? ' active' : ''}`}
+                          className={`topbarDatePresetBtn${activePresetDays === days ? ' active' : ''}`}
                           onClick={() => {
-                            applyDemandPreset(days)
+                            applyActivePreset(days)
                             setDatePresetOpen(false)
                           }}
                         >
@@ -580,8 +543,8 @@ export default function App() {
                         <input
                           type="date"
                           className="topbarDatePopoverInput"
-                          value={demandPeriod.from}
-                          onChange={(e) => setDemandPeriodField('from', e.target.value)}
+                          value={activePeriod.from}
+                          onChange={(e) => setActivePeriodField('from', e.target.value)}
                         />
                       </label>
                       <label className="topbarDatePopoverField">
@@ -589,8 +552,8 @@ export default function App() {
                         <input
                           type="date"
                           className="topbarDatePopoverInput"
-                          value={demandPeriod.to}
-                          onChange={(e) => setDemandPeriodField('to', e.target.value)}
+                          value={activePeriod.to}
+                          onChange={(e) => setActivePeriodField('to', e.target.value)}
                         />
                       </label>
                     </div>
@@ -601,9 +564,9 @@ export default function App() {
                           key={days}
                           type="button"
                           role="menuitem"
-                          className={`topbarDatePresetBtn${demandPresetDays === days ? ' active' : ''}`}
+                          className={`topbarDatePresetBtn${activePresetDays === days ? ' active' : ''}`}
                           onClick={() => {
-                            applyDemandPreset(days)
+                            applyActivePreset(days)
                             setDatePresetOpen(false)
                           }}
                         >
