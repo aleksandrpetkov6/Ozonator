@@ -202,17 +202,28 @@ function buildSalesPayloadsFromSnapshotMap(
   const normalizedRequestedPeriod = normalizeSalesPeriod(requestedPeriod)
   const out: Array<{ endpoint: string; payload: any }> = []
 
-  const pushSnapshot = (snapshot: any, fallbackEndpoint: string) => {
-    if (!snapshot || typeof snapshot !== 'object') return
+  const pushSnapshot = (snapshot: any, fallbackEndpoint: string, allowAnyPeriod = false) => {
+    if (!snapshot || typeof snapshot !== 'object') return false
     const snapshotPeriod = normalizeSalesPeriod(snapshot?.period ?? null)
-    if (!sameSalesPeriod(snapshotPeriod, normalizedRequestedPeriod)) return
+    if (!allowAnyPeriod && !sameSalesPeriod(snapshotPeriod, normalizedRequestedPeriod)) return false
     const payloads = Array.isArray(snapshot?.payloads) ? snapshot.payloads : []
     const sourceEndpoint = String(snapshot?.sourceEndpoint ?? '').trim() || fallbackEndpoint
     for (const payload of payloads) out.push({ endpoint: sourceEndpoint, payload })
+    return payloads.length > 0
   }
 
-  pushSnapshot(cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs), '/v3/posting/fbs/list')
-  pushSnapshot(cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo), '/v2/posting/fbo/list')
+  const fbsSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs)
+  const fboSnapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo)
+  const hasExact = [
+    pushSnapshot(fbsSnapshot, '/v3/posting/fbs/list'),
+    pushSnapshot(fboSnapshot, '/v2/posting/fbo/list'),
+  ].some(Boolean)
+
+  if (!hasExact) {
+    pushSnapshot(fbsSnapshot, '/v3/posting/fbs/list', true)
+    pushSnapshot(fboSnapshot, '/v2/posting/fbo/list', true)
+  }
+
   return out
 }
 
@@ -224,7 +235,8 @@ function buildSalesPostingDetailsFromSnapshotMap(
   if (!detailsSnapshot || typeof detailsSnapshot !== 'object') return new Map<string, any>()
   const normalizedRequestedPeriod = normalizeSalesPeriod(requestedPeriod)
   const detailsPeriod = normalizeSalesPeriod(detailsSnapshot?.period ?? null)
-  if (!sameSalesPeriod(detailsPeriod, normalizedRequestedPeriod)) return new Map<string, any>()
+  const useSnapshot = sameSalesPeriod(detailsPeriod, normalizedRequestedPeriod) || Boolean(detailsSnapshot?.items)
+  if (!useSnapshot) return new Map<string, any>()
 
   const out = new Map<string, any>()
   const items = Array.isArray(detailsSnapshot?.items) ? detailsSnapshot.items : []
@@ -414,21 +426,10 @@ export async function ensureLocalSalesSnapshotFromApiIfMissing(
   const storeClientId = secrets?.clientId ?? null
   const localRows = getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
   const rows = Array.isArray(localRows) ? localRows : []
-  const needsRefresh = rows.length === 0 || salesRowsNeedFboBackfill(rows)
 
-  if (!secrets || !needsRefresh) {
-    return { refreshed: false, rowsCount: rows.length }
-  }
-
-  try {
-    await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod)
-    const refreshedRows = getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
-    return {
-      refreshed: true,
-      rowsCount: Array.isArray(refreshedRows) ? refreshedRows.length : 0,
-    }
-  } catch {
-    return { refreshed: false, rowsCount: rows.length }
+  return {
+    refreshed: false,
+    rowsCount: rows.length,
   }
 }
 
