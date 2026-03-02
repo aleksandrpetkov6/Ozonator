@@ -13,12 +13,13 @@ contextBridge.exposeInMainWorld('api', {
   testAuth: () => ipcRenderer.invoke('ozon:testAuth'),
   syncProducts: (salesPeriod?: { from?: string; to?: string } | null) => ipcRenderer.invoke('ozon:syncProducts', { salesPeriod: salesPeriod ?? null }),
 
+  getDatasetRows: (dataset: string, options?: { period?: { from?: string; to?: string } | null }) => ipcRenderer.invoke('data:getDatasetRows', { dataset, period: options?.period ?? null }),
   getProducts: () => ipcRenderer.invoke('data:getProducts'),
   getSales: (period?: { from?: string; to?: string }) => ipcRenderer.invoke('data:getSales', { period: period ?? null }),
   getReturns: () => ipcRenderer.invoke('data:getReturns'),
   getStocks: () => ipcRenderer.invoke('data:getStocks'),
-  getGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks') => ipcRenderer.invoke('ui:getGridColumns', { dataset }),
-  saveGridColumns: (dataset: 'products' | 'sales' | 'returns' | 'stocks', cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }>) => ipcRenderer.invoke('ui:saveGridColumns', { dataset, cols }),
+  getGridColumns: (dataset: string) => ipcRenderer.invoke('ui:getGridColumns', { dataset }),
+  saveGridColumns: (dataset: string, cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }>) => ipcRenderer.invoke('ui:saveGridColumns', { dataset, cols }),
   getSyncLog: () => ipcRenderer.invoke('data:getSyncLog'),
   clearLogs: () => ipcRenderer.invoke('data:clearLogs'),
 })
