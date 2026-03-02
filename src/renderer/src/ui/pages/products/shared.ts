@@ -1,4 +1,5 @@
 import { type SortableColumn } from '../../utils/tableSort'
+import { DEFAULT_UI_DATE_RANGE_DAYS, getDefaultDateRange } from '../../utils/dateRangeDefaults'
 
 export type GridRow = {
   offer_id: string
@@ -426,7 +427,6 @@ const DATASET_CACHE_AT = new Map<DataSet, number>()
 const DATASET_INFLIGHT = new Map<DataSet, Promise<GridRow[] | null> | null>()
 
 const PRODUCTS_CACHE_TTL_MS = 60_000
-const SALES_PERIOD_LS_KEY = 'ozonator_demand_forecast_period_v1'
 
 const DATASET_SCOPE_KEY = new Map<DataSet, string>()
 const DATASET_INFLIGHT_SCOPE_KEY = new Map<DataSet, string>()
@@ -437,17 +437,9 @@ function normSalesPeriodValue(value: unknown): string {
 }
 
 function readSalesPeriod(): { from?: string; to?: string } | undefined {
-  try {
-    const raw = localStorage.getItem(SALES_PERIOD_LS_KEY)
-    if (!raw) return undefined
-    const parsed = JSON.parse(raw) as { from?: unknown; to?: unknown }
-    const from = normSalesPeriodValue(parsed?.from)
-    const to = normSalesPeriodValue(parsed?.to)
-    if (!from && !to) return undefined
-    return { from, to }
-  } catch {
-    return undefined
-  }
+  // Для «Продаж» запасной путь без явного period тоже должен брать
+  // плавающий диапазон: текущая дата минус 30 дней.
+  return getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS + 1)
 }
 
 function getSalesPeriodCacheKey(period?: { from?: string; to?: string }): string {
