@@ -433,6 +433,26 @@ dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), err
 return { ok: false, error: e?.message ?? String(e) }
 }
 })
+ipcMain.handle('data:refreshSales', async (_e, args?: { period?: SalesPeriod | null }) => {
+try {
+const secrets = loadSecrets()
+const refreshed = await refreshSalesRawSnapshotFromApi(secrets, args?.period ?? null)
+return { ok: true, rowsCount: Number(refreshed?.rowsCount ?? 0), rateLimited: false }
+} catch (e: any) {
+const message = e?.message ?? String(e)
+const isRateLimited = /HTTP\s*429/.test(message)
+if (isRateLimited) {
+try {
+const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
+if (Array.isArray(rows) && rows.length > 0) {
+return { ok: true, rowsCount: rows.length, rateLimited: true }
+}
+} catch {
+}
+}
+return { ok: false, error: message, rowsCount: 0, rateLimited: isRateLimited }
+}
+})
 ipcMain.handle('data:getDatasetRows', async (_e, args?: { dataset?: string; period?: SalesPeriod | null }) => {
 try {
 const dataset = String(args?.dataset ?? 'products').trim() || 'products'
