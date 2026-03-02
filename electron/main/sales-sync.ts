@@ -308,7 +308,15 @@ function normalizeTextList(values: any[]): string[] {
   return out
 }
 
-function buildRelatedPostingsText(posting: any, fallbackPostings: string[] = []): string {
+function pickFirstPresentFromSources(paths: string[], ...sources: any[]) {
+  for (const source of sources) {
+    const value = pickFirstPresent(source, paths)
+    if (value !== undefined && value !== null && value !== '') return value
+  }
+  return undefined
+}
+
+function buildRelatedPostingsText(posting: any, fallbackPostings: string[] = [], secondaryPosting: any = null): string {
   const candidates = normalizeTextList([
     safeGetByPath(posting, 'related_postings.related_posting_numbers', undefined),
     safeGetByPath(posting, 'result.related_postings.related_posting_numbers', undefined),
@@ -317,6 +325,13 @@ function buildRelatedPostingsText(posting: any, fallbackPostings: string[] = [])
     safeGetByPath(posting, 'related_posting_numbers', undefined),
     safeGetByPath(posting, 'related_postings', undefined),
     safeGetByPath(posting, 'parent_posting_number', undefined),
+    safeGetByPath(secondaryPosting, 'related_postings.related_posting_numbers', undefined),
+    safeGetByPath(secondaryPosting, 'result.related_postings.related_posting_numbers', undefined),
+    safeGetByPath(secondaryPosting, 'related_postings.related_postings', undefined),
+    safeGetByPath(secondaryPosting, 'related_postings_numbers', undefined),
+    safeGetByPath(secondaryPosting, 'related_posting_numbers', undefined),
+    safeGetByPath(secondaryPosting, 'related_postings', undefined),
+    safeGetByPath(secondaryPosting, 'parent_posting_number', undefined),
     fallbackPostings,
   ])
   return candidates.join(', ')
@@ -395,26 +410,26 @@ function buildDeliveryModelValue(posting: any, detailPosting: any, endpoint: str
   )
 }
 
-function buildSalesStatusDetailsValue(posting: any, endpoint: string): string {
+function buildSalesStatusDetailsValue(posting: any, endpoint: string, secondaryPosting: any = null): string {
   const parts: string[] = []
   if (normalizeSalesEndpointName(endpoint) === 'FBO') {
-    const nextState = translateSalesCodeValue(pickFirstPresent(posting, ['new_state', 'result.new_state']), 'detail')
+    const nextState = translateSalesCodeValue(pickFirstPresentFromSources(['new_state', 'result.new_state'], posting, secondaryPosting), 'detail')
     pushUniqueSalesPart(parts, nextState)
-    pushLabeledSalesPart(parts, 'Дата изменения', pickFirstPresent(posting, ['changed_state_date', 'result.changed_state_date']))
+    pushLabeledSalesPart(parts, 'Дата изменения', pickFirstPresentFromSources(['changed_state_date', 'result.changed_state_date'], posting, secondaryPosting))
     return parts.join(' | ')
   }
-  const substatus = translateSalesCodeValue(pickFirstPresent(posting, ['substatus', 'result.substatus']), 'detail')
+  const substatus = translateSalesCodeValue(pickFirstPresentFromSources(['substatus', 'result.substatus'], posting, secondaryPosting), 'detail')
   pushUniqueSalesPart(parts, substatus)
-  const previousSubstatus = translateSalesCodeValue(pickFirstPresent(posting, ['previous_substatus', 'result.previous_substatus']), 'detail')
+  const previousSubstatus = translateSalesCodeValue(pickFirstPresentFromSources(['previous_substatus', 'result.previous_substatus'], posting, secondaryPosting), 'detail')
   if (previousSubstatus && previousSubstatus !== substatus) {
     pushLabeledSalesPart(parts, 'Предыдущий', previousSubstatus)
   }
   return parts.join(' | ')
 }
 
-function buildSalesCarrierStatusDetailsValue(posting: any): string {
+function buildSalesCarrierStatusDetailsValue(posting: any, secondaryPosting: any = null): string {
   const parts: string[] = []
-  pushUniqueSalesPart(parts, translateSalesCodeValue(pickFirstPresent(posting, ['provider_status', 'result.provider_status']), 'provider'))
+  pushUniqueSalesPart(parts, translateSalesCodeValue(pickFirstPresentFromSources(['provider_status', 'result.provider_status'], posting, secondaryPosting), 'provider'))
   return parts.join(' | ')
 }
 
@@ -571,10 +586,23 @@ function resolvePostingDeliveryDate(detailPosting: any, posting: any): string {
   return getFallbackDeliveryDateValue(detailPosting) || getFallbackDeliveryDateValue(posting)
 }
 
-function shouldFetchSalesPostingDetails(posting: any): boolean {
+function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO' | ''): boolean {
+  if (!posting || typeof posting !== 'object') return false
+  if (endpointKind === 'FBO') {
+    const hasRichFields = Boolean(
+      buildRelatedPostingsText(posting)
+      || normalizeDateValue(pickFirstPresent(posting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date']))
+      || normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
+      || normalizeTextValue(pickFirstPresent(posting, ['new_state', 'result.new_state', 'provider_status', 'result.provider_status']))
+    )
+    if (!hasRichFields) return true
+  }
   if (getFactDeliveryDateValue(posting)) return false
   if (hasDeliveryDateSignal(posting)) return true
   if (hasDeliveredStatusSignal(posting)) return true
+  if (!buildRelatedPostingsText(posting)) return true
+  if (!normalizeDateValue(pickFirstPresent(posting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date']))) return true
+  if (!normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))) return true
   return false
 }
 
@@ -589,7 +617,7 @@ export async function fetchSalesPostingDetails(
     if (endpointKind !== 'FBS' && endpointKind !== 'FBO') continue
     for (const posting of extractPostingsFromPayload(envelope.payload)) {
       const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
-      if (!postingNumber || !shouldFetchSalesPostingDetails(posting)) continue
+      if (!postingNumber || !shouldFetchSalesPostingDetails(posting, endpointKind)) continue
       const requestKey = getSalesPostingDetailsKey(endpointKind, postingNumber)
       if (seen.has(requestKey)) continue
       seen.add(requestKey)
@@ -656,14 +684,14 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
       const fallbackRelated = endpointKind === 'FBO' && orderKey
         ? Array.from(fboOrderPostingMap.get(orderKey) ?? []).filter((value) => value !== postingNumber)
         : []
-      const related = buildRelatedPostingsText(posting, fallbackRelated)
-      const shipmentDate = normalizeDateValue(pickFirstPresent(posting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date']))
-      const status = translateSalesCodeValue(pickFirstPresent(posting, ['status', 'state', 'result.status', 'result.state']), 'status')
-      const statusDetails = buildSalesStatusDetailsValue(posting, envelope.endpoint)
-      const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(posting)
       const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
+      const related = buildRelatedPostingsText(detailPosting, fallbackRelated, posting)
+      const shipmentDate = normalizeDateValue(pickFirstPresentFromSources(['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date'], detailPosting, posting))
+      const status = translateSalesCodeValue(pickFirstPresentFromSources(['status', 'state', 'result.status', 'result.state'], detailPosting, posting), 'status')
+      const statusDetails = buildSalesStatusDetailsValue(detailPosting, envelope.endpoint, posting)
+      const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(detailPosting, posting)
       const deliveredAt = resolvePostingDeliveryDate(detailPosting, posting)
-      const deliveryCluster = normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
+      const deliveryCluster = normalizeTextValue(pickFirstPresentFromSources(['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to'], detailPosting, posting))
       const deliverySchema = buildDeliveryModelValue(posting, detailPosting, envelope.endpoint)
       if (!postingNumber) continue
       for (const item of items) {
