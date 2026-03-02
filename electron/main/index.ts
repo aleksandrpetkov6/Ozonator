@@ -46,6 +46,7 @@ const SALES_CACHE_SNAPSHOT_KEYS = [
   SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo,
   SALES_CACHE_SNAPSHOT_ENDPOINTS.details,
 ] as const
+const SALES_LEGACY_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
 
 function parseJsonTextSafe(text: string | null | undefined) {
 if (typeof text !== 'string' || !text.trim()) return null
@@ -85,6 +86,18 @@ for (const row of rows) {
 if (out.has(row.endpoint)) continue
 const parsed = parseJsonTextSafe(row?.response_body)
 if (parsed) out.set(row.endpoint, parsed)
+}
+return out
+}
+
+function getCachedSalesPayloadMap(storeClientId: string | null | undefined): Map<string, SalesPayloadEnvelope> {
+const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_LEGACY_ENDPOINTS as unknown as string[])
+const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_LEGACY_ENDPOINTS as unknown as string[])
+const out = new Map<string, SalesPayloadEnvelope>()
+for (const row of rows) {
+if (out.has(row.endpoint)) continue
+const parsed = parseJsonTextSafe(row?.response_body)
+if (parsed) out.set(row.endpoint, { endpoint: row.endpoint, payload: parsed })
 }
 return out
 }
@@ -531,6 +544,10 @@ placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, [])
 } catch (placementErr: any) {
 placementSyncError = placementErr?.message ?? String(placementErr)
 }
+try {
+await refreshSalesCacheFromApi(secrets, null)
+} catch {
+}
 if (!secrets.storeName) {
 try {
 const name = await ozonGetStoreName(secrets)
@@ -574,25 +591,20 @@ return { ok: false, error: e?.message ?? String(e), products: [] }
 ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
 try {
 let storeClientId: string | null = null
-let secrets: ReturnType<typeof loadSecrets> | null = null
 try {
-secrets = loadSecrets()
-storeClientId = secrets.clientId
+storeClientId = loadSecrets().clientId
 } catch {
-secrets = null
 storeClientId = null
 }
 const requestedPeriod: SalesPeriod | null = args?.period ?? null
-if (secrets?.clientId && secrets?.apiKey) {
-try {
-await refreshSalesCacheFromApi(secrets, requestedPeriod)
-} catch {
-}
-}
 const products = dbGetProducts(storeClientId)
 const cacheByEndpoint = getCachedSalesSnapshotMap(storeClientId)
 const payloads = buildSalesPayloadsFromLocalCache(cacheByEndpoint, requestedPeriod)
 const postingDetailsByKey = buildSalesPostingDetailsFromLocalCache(cacheByEndpoint, requestedPeriod)
+if (payloads.length === 0) {
+const legacyPayloads = getCachedSalesPayloadMap(storeClientId)
+for (const payload of legacyPayloads.values()) payloads.push(payload)
+}
 const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
 return { ok: true, rows }
 } catch (e: any) {
