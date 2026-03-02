@@ -130,6 +130,47 @@ function sameSalesPeriod(
   return (left?.from ?? null) === (right?.from ?? null) && (left?.to ?? null) === (right?.to ?? null)
 }
 
+function extractSalesRowPeriodDay(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (!raw) return ''
+
+  const isoHead = raw.slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(isoHead)) return isoHead
+
+  const ruMatch = raw.match(/^(\d{2})\.(\d{2})\.(\d{2}|\d{4})/)
+  if (ruMatch) {
+    const day = ruMatch[1]
+    const month = ruMatch[2]
+    const yearRaw = ruMatch[3]
+    const year = yearRaw.length === 2 ? `20${yearRaw}` : yearRaw
+    return `${year}-${month}-${day}`
+  }
+
+  const parsed = new Date(raw)
+  if (Number.isNaN(parsed.getTime())) return ''
+  return parsed.toISOString().slice(0, 10)
+}
+
+function filterSalesRowsStrictByPeriod(
+  rows: any[],
+  requestedPeriod: SalesPeriod | null | undefined,
+): any[] {
+  const normalized = normalizeSalesPeriod(requestedPeriod)
+  let from = normalized.from
+  let to = normalized.to
+
+  if (!from && !to) return Array.isArray(rows) ? rows : []
+  if (!from && to) from = to
+  if (from && !to) to = from
+  if (!from || !to) return Array.isArray(rows) ? rows : []
+  if (from > to) [from, to] = [to, from]
+
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const day = extractSalesRowPeriodDay(row?.in_process_at)
+    return Boolean(day && day >= from! && day <= to!)
+  })
+}
+
 function getSalesSnapshotMap(storeClientId: string | null | undefined) {
   const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_CACHE_SNAPSHOT_KEYS as unknown as string[])
   const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_CACHE_SNAPSHOT_KEYS as unknown as string[])
@@ -213,14 +254,16 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
 
   const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
   const mergedRows = mergeSalesRowsWithFboLocalDb({
-    rows,
-    storeClientId: storeClientId ?? null,
-    periodKey: buildDatasetScopeKey(requestedPeriod),
-  })
-  return { rows: mergedRows, sourceEndpoints: Array.from(sourceEndpoints) }
+     rows,
+     storeClientId: storeClientId ?? null,
+     periodKey: buildDatasetScopeKey(requestedPeriod),
+   })
+  const strictRows = filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
+  return { rows: strictRows, sourceEndpoints: Array.from(sourceEndpoints) }
 }
 
 function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): string {
+
   const normalized = normalizeSalesPeriod(requestedPeriod)
   if (!normalized.from && !normalized.to) return ''
   return `${normalized.from ?? ''}|${normalized.to ?? ''}`
@@ -397,7 +440,23 @@ export function getLocalDatasetRows(
   const dataset = String(datasetRaw ?? '').trim() || 'products'
   const scopeKey = buildDatasetScopeKey(options?.period ?? null)
   const fromSnapshot = dbGetDatasetSnapshotRows({ storeClientId: storeClientId ?? null, dataset, scopeKey })
-  if (Array.isArray(fromSnapshot)) return fromSnapshot
+  if (Array.isArray(fromSnapshot)) {
+    if (dataset === 'sales') {
+      const strictRows = filterSalesRowsStrictByPeriod(fromSnapshot, options?.period ?? null)
+      if (strictRows.length !== fromSnapshot.length) {
+        persistDatasetSnapshot({
+          storeClientId,
+          dataset,
+          scopeKey,
+          period: options?.period ?? null,
+          rows: strictRows,
+          sourceKind: 'api-raw-cache',
+        })
+      }
+      return strictRows
+    }
+    return fromSnapshot
+  }
 
   if (dataset === 'products') {
     const rows = dbGetProducts(storeClientId ?? null)
