@@ -303,6 +303,20 @@ export default function App() {
     setRunning(true)
 
     try {
+      const isSalesRefresh = isSales
+      if (isSalesRefresh) {
+        const resp = await window.api.refreshSales(salesPeriod)
+        if (!resp.ok) {
+          setLastError(resp.error ?? 'Ошибка обновления продаж')
+          return
+        }
+        setLastError(null)
+        setSalesRefreshTick((prev) => prev + 1)
+        window.dispatchEvent(new Event('ozon:products-updated'))
+        window.dispatchEvent(new Event('ozon:logs-updated'))
+        return
+      }
+
       const resp = await window.api.syncProducts(salesPeriod)
       if (!resp.ok) {
         setLastError(resp.error ?? 'Ошибка синхронизации')
