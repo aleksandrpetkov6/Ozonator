@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import type { SalesPayloadEnvelope } from '../sales-sync'
-import { extractPostingsFromPayload, getSalesPostingDetailsKey } from '../sales-sync'
+import { collectSalesStateEvents, extractPostingsFromPayload, getSalesPostingDetailsKey } from '../sales-sync'
 import { ensurePersistentStorageReady, getPersistentDbPath } from './paths'
 
 let fboDb: Database.Database | null = null
@@ -220,7 +220,7 @@ function shipmentDateOf(detail: any, posting: any): string {
   const changed = changedStateDateOf(detail, posting)
   if (FBO_SHIPMENT_STATE_SET.has(state) && changed) return changed
 
-  return dateText(pickFromSources(['shipment_date', 'shipment_date_actual', 'shipped_at', 'delivering_date'], detail, posting))
+  return ''
 }
 
 function hasDeliveredStateOf(...sources: any[]): boolean {
@@ -241,13 +241,13 @@ function hasDeliveredStateOf(...sources: any[]): boolean {
 }
 
 function deliveryDateOf(detail: any, posting: any): string {
+  if (!hasDeliveredStateOf(detail, posting)) return ''
+
   const exact = dateText(pickFromSources([
     'fact_delivery_date',
     'result.fact_delivery_date',
   ], detail, posting))
   if (exact) return exact
-
-  if (!hasDeliveredStateOf(detail, posting)) return ''
 
   return dateText(pickFromSources([
     'result.customer_deliver_date',
@@ -256,8 +256,6 @@ function deliveryDateOf(detail: any, posting: any): string {
     'delivered_at',
     'delivered_date',
     'result.delivered_date',
-    'delivery_date',
-    'result.delivery_date',
   ], detail, posting))
 }
 
@@ -311,6 +309,7 @@ export function buildAndPersistFboSalesSnapshot(args: {
       const shipmentDate = shipmentDateOf(detail, posting)
       const state = normalizedStateOf(detail, posting)
       const changedStateDate = changedStateDateOf(detail, posting)
+      const stateEvents = collectSalesStateEvents(detail, posting)
 
       postingRows.set(postingNumber, {
         store_client_id: storeClientId,
@@ -324,7 +323,20 @@ export function buildAndPersistFboSalesSnapshot(args: {
         updated_at: fetchedAt,
       })
 
-      if (postingNumber && state && changedStateDate) {
+      if (postingNumber && stateEvents.length > 0) {
+        for (const event of stateEvents) {
+          const eventKey = `${event.state}|${event.changed_state_date}`
+          eventRows.set(`${postingNumber}|${eventKey}`, {
+            store_client_id: storeClientId,
+            period_key: periodKey,
+            posting_number: postingNumber,
+            event_key: eventKey,
+            state: event.state,
+            changed_state_date: event.changed_state_date,
+            updated_at: fetchedAt,
+          })
+        }
+      } else if (postingNumber && state && changedStateDate) {
         const eventKey = `${state}|${changedStateDate}`
         eventRows.set(`${postingNumber}|${eventKey}`, {
           store_client_id: storeClientId,
@@ -470,7 +482,7 @@ export function mergeSalesRowsWithFboLocalDb(args: {
         || FBO_DELIVERED_STATES.has(rowStatus)
       )
     )
-    const deliveryDate = deliveryDateFromRow || (isDelivered ? deliveryDateFromExtra : '')
+    const deliveryDate = isDelivered ? (deliveryDateFromRow || deliveryDateFromExtra) : ''
 
     return {
       ...row,
