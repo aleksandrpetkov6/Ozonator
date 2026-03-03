@@ -1,21 +1,95 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
-import { appendFileSync, mkdirSync } from 'fs'
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbReplaceProductPlacementsForStore, dbGetGridColumns, dbSaveGridColumns, dbRecordApiRawResponse } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
 import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
+import { getPersistentRootDir } from './storage/paths'
 let mainWindow: BrowserWindow | null = null
 let startupShowTimer: NodeJS.Timeout | null = null
 let backgroundSyncTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let syncProductsInFlight: Promise<any> | null = null
 const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
+const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
+const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
+let installerShutdownInFlight: Promise<void> | null = null
 
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
 app.quit()
+}
+
+function delay(ms: number) {
+return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function getInstallerMarkerDir() {
+try {
+const dir = getPersistentRootDir()
+mkdirSync(dir, { recursive: true })
+return dir
+} catch {
+const dir = join(app.getPath('appData'), 'Clothes Hub', 'OzonatorPersistent')
+mkdirSync(dir, { recursive: true })
+return dir
+}
+}
+
+function getInstallerReadyMarkerPath() {
+return join(getInstallerMarkerDir(), 'installer-ready.marker')
+}
+
+function clearInstallerReadyMarker() {
+try { rmSync(getInstallerReadyMarkerPath(), { force: true }) } catch {}
+}
+
+function writeInstallerReadyMarker() {
+try { writeFileSync(getInstallerReadyMarkerPath(), '1', 'utf8') } catch {}
+}
+
+async function flushRendererDraftsForInstallerExit() {
+if (!mainWindow || mainWindow.isDestroyed()) return
+try {
+await mainWindow.webContents.executeJavaScript("try { window.dispatchEvent(new Event('ozon:prepare-install-exit')) } catch {}", true)
+} catch {}
+}
+
+async function requestInstallerShutdown(reason: string) {
+if (installerShutdownInFlight) return await installerShutdownInFlight
+const job = (async () => {
+startupLog('installer-shutdown.request', { reason, pid: process.pid })
+isQuitting = true
+if (backgroundSyncTimer) {
+clearInterval(backgroundSyncTimer)
+backgroundSyncTimer = null
+}
+try {
+await flushRendererDraftsForInstallerExit()
+await delay(250)
+} catch {}
+try {
+if (mainWindow && !mainWindow.isDestroyed()) {
+try { mainWindow.hide() } catch {}
+try { mainWindow.close() } catch {}
+}
+} catch {}
+await delay(150)
+writeInstallerReadyMarker()
+await delay(150)
+try { app.quit() } catch {}
+setTimeout(() => {
+try { app.exit(0) } catch {}
+}, 1800)
+})()
+installerShutdownInFlight = job
+try {
+await job
+} finally {
+if (installerShutdownInFlight === job) installerShutdownInFlight = null
+}
 }
 function startupLog(...args: any[]) {
 try {
@@ -41,6 +115,15 @@ try { mainWindow.maximize() } catch {}
 startupLog('safeShowMainWindow.error', e?.message ?? String(e))
 }
 }
+app.on('second-instance', (_event, commandLine) => {
+startupLog('app.second-instance', { commandLine })
+if (Array.isArray(commandLine) && commandLine.some((arg) => String(arg).trim() === INSTALLER_CLOSE_REQUEST_FLAG)) {
+void requestInstallerShutdown('installer-second-instance')
+return
+}
+safeShowMainWindow('second-instance')
+})
+
 function chunk<T>(arr: T[], size: number): T[][] {
 const out: T[][] = []
 for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
@@ -126,6 +209,16 @@ mainWindow.loadFile(rendererFile).catch((e) => startupLog('loadFile.error', e?.m
 }
 nativeTheme.themeSource = 'light'
 }
+if (hasInstallerCloseRequestFlag && singleInstanceLock) {
+app.whenReady().then(() => {
+startupLog('installer-close-helper.no-running-instance', { pid: process.pid })
+clearInstallerReadyMarker()
+writeInstallerReadyMarker()
+setTimeout(() => {
+try { app.exit(0) } catch {}
+}, 150)
+})
+} else {
 app.whenReady().then(() => {
 try {
 startupLog('app.whenReady')
@@ -150,12 +243,9 @@ fetchedAt: evt.fetchedAt,
 })
 dbIngestLifecycleMarkers({ appVersion: app.getVersion() })
 startupLog('dbIngestLifecycleMarkers.ok', { version: app.getVersion() })
+clearInstallerReadyMarker()
 createWindow()
 ensureBackgroundSyncLoop()
-app.on('second-instance', () => {
-startupLog('app.second-instance')
-safeShowMainWindow('second-instance')
-})
 app.on('before-quit', () => {
 isQuitting = true
 if (backgroundSyncTimer) {
@@ -186,6 +276,7 @@ mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).c
 } catch {}
 }
 })
+}
 process.on('uncaughtException', (e: any) => {
 startupLog('process.uncaughtException', e?.stack ?? e?.message ?? String(e))
 })
