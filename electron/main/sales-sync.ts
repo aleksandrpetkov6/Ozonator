@@ -316,6 +316,93 @@ function pickFirstPresentFromSources(paths: string[], ...sources: any[]) {
   return undefined
 }
 
+export type SalesPostingStateEvent = {
+  state: string
+  changed_state_date: string
+}
+
+const SALES_STATE_CHANGED_EVENT_TYPE = 'type_state_changed'
+const FBO_SHIPMENT_STATE = 'posting_transferring_to_delivery'
+
+function buildSalesStateEventCandidate(source: any): SalesPostingStateEvent | null {
+  if (!source || typeof source !== 'object') return null
+
+  const explicitNewState = pickFirstPresent(source, ['new_state'])
+  const eventType = normalizeSalesLookupKey(pickFirstPresent(source, ['type', 'event_type']))
+  const isExplicitStateEvent = explicitNewState !== undefined || eventType === SALES_STATE_CHANGED_EVENT_TYPE
+  if (!isExplicitStateEvent) return null
+
+  const state = normalizeSalesLookupKey(
+    explicitNewState ?? (eventType === SALES_STATE_CHANGED_EVENT_TYPE
+      ? pickFirstPresent(source, ['state', 'status'])
+      : undefined),
+  )
+  const changedStateDate = normalizeDateValue(
+    pickFirstPresent(source, ['changed_state_date'])
+      ?? (eventType === SALES_STATE_CHANGED_EVENT_TYPE
+        ? pickFirstPresent(source, ['date', 'created_at'])
+        : undefined),
+  )
+
+  if (!state || !changedStateDate) return null
+  return { state, changed_state_date: changedStateDate }
+}
+
+export function collectSalesStateEvents(...sources: any[]): SalesPostingStateEvent[] {
+  const out: SalesPostingStateEvent[] = []
+  const seen = new Set<string>()
+  const visited = new Set<any>()
+
+  const walk = (value: any) => {
+    if (!value || typeof value !== 'object') return
+    if (visited.has(value)) return
+    visited.add(value)
+
+    const candidate = buildSalesStateEventCandidate(value)
+    if (candidate) {
+      const key = `${candidate.state}|${candidate.changed_state_date}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        out.push(candidate)
+      }
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item)
+      return
+    }
+
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      if (!nested || typeof nested !== 'object') continue
+      walk(nested)
+    }
+  }
+
+  for (const source of sources) walk(source)
+
+  out.sort((left, right) => left.changed_state_date.localeCompare(right.changed_state_date))
+  return out
+}
+
+export function resolveFboShipmentDateFromSources(...sources: any[]): string {
+  const transferEvent = collectSalesStateEvents(...sources)
+    .filter((event) => event.state === FBO_SHIPMENT_STATE)
+    .map((event) => event.changed_state_date)
+    .sort((left, right) => right.localeCompare(left))[0] ?? ''
+  if (transferEvent) return transferEvent
+
+  return normalizeDateValue(pickFirstPresentFromSources([
+    'delivering_date',
+    'shipment_date',
+    'shipment_date_actual',
+    'shipped_at',
+    'result.delivering_date',
+    'result.shipment_date',
+    'result.shipment_date_actual',
+    'result.shipped_at',
+  ], ...sources))
+}
+
 function buildRelatedPostingsText(posting: any, fallbackPostings: string[] = [], secondaryPosting: any = null): string {
   const candidates = normalizeTextList([
     safeGetByPath(posting, 'related_postings.related_posting_numbers', undefined),
@@ -413,7 +500,11 @@ function buildDeliveryModelValue(posting: any, detailPosting: any, endpoint: str
 function buildSalesStatusDetailsValue(posting: any, endpoint: string, secondaryPosting: any = null): string {
   const parts: string[] = []
   if (normalizeSalesEndpointName(endpoint) === 'FBO') {
-    const nextState = translateSalesCodeValue(pickFirstPresentFromSources(['new_state', 'result.new_state'], posting, secondaryPosting), 'detail')
+    const nextStateRaw = pickFirstPresentFromSources(['new_state', 'result.new_state'], posting, secondaryPosting)
+    const nextStateKey = normalizeSalesLookupKey(nextStateRaw)
+    const nextState = nextStateKey === FBO_SHIPMENT_STATE
+      ? 'Передан в доставку'
+      : translateSalesCodeValue(nextStateRaw, 'detail')
     pushUniqueSalesPart(parts, nextState)
     pushLabeledSalesPart(parts, 'Дата изменения', pickFirstPresentFromSources(['changed_state_date', 'result.changed_state_date'], posting, secondaryPosting))
     return parts.join(' | ')
@@ -589,13 +680,20 @@ function resolvePostingDeliveryDate(detailPosting: any, posting: any): string {
 function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO' | ''): boolean {
   if (!posting || typeof posting !== 'object') return false
   if (endpointKind === 'FBO') {
-    const hasRichFields = Boolean(
-      buildRelatedPostingsText(posting)
-      || normalizeDateValue(pickFirstPresent(posting, ['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date']))
-      || normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))
-      || normalizeTextValue(pickFirstPresent(posting, ['new_state', 'result.new_state', 'provider_status', 'result.provider_status']))
-    )
-    if (!hasRichFields) return true
+    const hasRelated = Boolean(buildRelatedPostingsText(posting))
+    const hasShipmentDate = Boolean(resolveFboShipmentDateFromSources(posting))
+    const hasDeliveryCluster = Boolean(normalizeTextValue(pickFirstPresent(posting, [
+      'financial_data.cluster_to',
+      'result.financial_data.cluster_to',
+      'cluster_to',
+      'result.cluster_to',
+    ])))
+    const needsDeliveryBackfill = (getFactDeliveryDateValue(posting) || hasDeliveryDateSignal(posting) || hasDeliveredStatusSignal(posting))
+      ? !Boolean(resolvePostingDeliveryDate(posting, posting))
+      : false
+
+    if (!hasRelated || !hasShipmentDate || !hasDeliveryCluster || needsDeliveryBackfill) return true
+    return false
   }
   if (getFactDeliveryDateValue(posting)) return false
   if (hasDeliveryDateSignal(posting)) return true
@@ -686,7 +784,9 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
         : []
       const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
       const related = buildRelatedPostingsText(detailPosting, fallbackRelated, posting)
-      const shipmentDate = normalizeDateValue(pickFirstPresentFromSources(['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date'], detailPosting, posting))
+      const shipmentDate = endpointKind === 'FBO'
+        ? resolveFboShipmentDateFromSources(detailPosting, posting)
+        : normalizeDateValue(pickFirstPresentFromSources(['delivering_date', 'shipment_date', 'shipment_date_actual', 'shipped_at', 'changed_state_date'], detailPosting, posting))
       const status = translateSalesCodeValue(pickFirstPresentFromSources(['status', 'state', 'result.status', 'result.state'], detailPosting, posting), 'status')
       const statusDetails = buildSalesStatusDetailsValue(detailPosting, envelope.endpoint, posting)
       const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(detailPosting, posting)
