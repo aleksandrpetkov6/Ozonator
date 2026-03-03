@@ -11,7 +11,6 @@ import { useGlobalTableEnhancements } from './utils/tableEnhancements'
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
 const DEMAND_FORECAST_PERIOD_LS_KEY = UI_DATE_RANGE_LS_KEY
-const AUTO_SYNC_ENABLED_LS_KEY = 'ozonator_auto_sync_enabled'
 
 type DemandForecastPeriod = UiDateRange
 type SalesPeriod = UiDateRange
@@ -73,9 +72,6 @@ export default function App() {
   const online = useOnline()
 
   const [running, setRunning] = useState(false)
-  const [autoSyncEnabled, setAutoSyncEnabled] = useState<boolean>(() => {
-    try { return localStorage.getItem(AUTO_SYNC_ENABLED_LS_KEY) === '1' } catch { return false }
-  })
   const runningRef = useRef(false)
   useEffect(() => {
     runningRef.current = running
@@ -285,7 +281,7 @@ export default function App() {
     return 'ok'
   }, [online, running, lastError])
 
-  async function syncNow(reason: 'manual' | 'auto' = 'manual') {
+  const syncNow = useCallback(async (reason: 'manual' | 'auto' = 'manual') => {
     if (runningRef.current) return
 
     setLastError(null)
@@ -321,10 +317,6 @@ export default function App() {
       if (!resp.ok) {
         setLastError(resp.error ?? 'Ошибка синхронизации')
       } else {
-        if (reason === 'manual' && !autoSyncEnabled) {
-          setAutoSyncEnabled(true)
-          try { localStorage.setItem(AUTO_SYNC_ENABLED_LS_KEY, '1') } catch {}
-        }
         setLastError(null)
         setSalesRefreshTick((prev) => prev + 1)
         window.dispatchEvent(new Event('ozon:products-updated'))
@@ -334,15 +326,15 @@ export default function App() {
     } finally {
       setRunning(false)
     }
-  }
+  }, [isSales, online, salesPeriod])
 
   useEffect(() => {
-    if (!online || !autoSyncEnabled) return
+    if (!online) return
 
     let cancelled = false
 
     async function runAuto() {
-      if (cancelled || document.hidden) return
+      if (cancelled) return
       try {
         const st = await window.api.secretsStatus()
         if (cancelled || !st.hasSecrets) return
@@ -352,13 +344,16 @@ export default function App() {
       }
     }
 
-    const id = setInterval(runAuto, 60 * 60 * 1000)
+    void runAuto()
+    const id = setInterval(() => {
+      void runAuto()
+    }, 60 * 1000)
+
     return () => {
       cancelled = true
       clearInterval(id)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoSyncEnabled, online])
+  }, [online, syncNow])
 
   const saveAdmin = useCallback(async () => {
     const parsed = parseLogLifeDays(adminLogLifeDraft)
