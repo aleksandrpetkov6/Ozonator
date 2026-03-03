@@ -434,13 +434,16 @@ if (syncProductsInFlight === job) syncProductsInFlight = null
 async function runBackgroundSyncTick(reason: string) {
 if (isQuitting) return
 if (!mainWindow || mainWindow.isDestroyed()) return
-if (mainWindow.isVisible()) return
 if (!hasSecrets()) return
 const online = await checkInternet()
 if (!online) return
 const resp = await performProductsSync({ salesPeriod: null })
 if (resp?.ok) {
-startupLog('background-sync.ok', { reason, itemsCount: Number(resp?.itemsCount ?? 0) })
+startupLog('background-sync.ok', {
+reason,
+itemsCount: Number(resp?.itemsCount ?? 0),
+windowVisible: mainWindow.isVisible(),
+})
 emitRendererDataUpdatedEvents()
 } else if (resp?.error) {
 startupLog('background-sync.error', { reason, error: String(resp.error) })
