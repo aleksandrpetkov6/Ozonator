@@ -542,26 +542,63 @@ export function getLocalDatasetRows(
   options?: { period?: SalesPeriod | null },
 ): any[] {
   const dataset = String(datasetRaw ?? '').trim() || 'products'
-  const scopeKey = buildDatasetScopeKey(options?.period ?? null)
+  const requestedPeriod = options?.period ?? null
+  const scopeKey = buildDatasetScopeKey(requestedPeriod)
 
   if (dataset === 'sales') {
-    const exactSnapshotRows = readScopedSalesSnapshotRows(storeClientId ?? null, options?.period ?? null)
+    const exactSnapshotRows = readScopedSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
     if (exactSnapshotRows) return exactSnapshotRows
 
+    if (scopeKey) {
+      const broadSnapshotRows = readScopedSalesSnapshotRows(storeClientId ?? null, null)
+      if (broadSnapshotRows && broadSnapshotRows.length > 0) {
+        const scopedRows = filterSalesRowsStrictByPeriod(broadSnapshotRows, requestedPeriod)
+        if (scopedRows.length > 0) {
+          persistDatasetSnapshot({
+            storeClientId,
+            dataset,
+            scopeKey,
+            period: requestedPeriod,
+            rows: scopedRows,
+            sourceKind: 'dataset-snapshot-fallback',
+            sourceEndpoints: [],
+          })
+          return scopedRows
+        }
+      }
+    }
+
     const cacheByEndpoint = getSalesSnapshotMap(storeClientId ?? null)
-    const hasLocalCoverage = isRequestedSalesPeriodCoveredByRawCache(cacheByEndpoint, options?.period ?? null)
+    const hasLocalCoverage = isRequestedSalesPeriodCoveredByRawCache(cacheByEndpoint, requestedPeriod)
     if (cacheByEndpoint.size > 0 && hasLocalCoverage) {
-      const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, options?.period ?? null)
+      const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, requestedPeriod)
       persistDatasetSnapshot({
         storeClientId,
         dataset,
         scopeKey,
-        period: options?.period ?? null,
+        period: requestedPeriod,
         rows,
         sourceKind: 'api-raw-cache',
         sourceEndpoints,
       })
       return rows
+    }
+
+    if (cacheByEndpoint.size > 0 && scopeKey) {
+      const { rows: broadRows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, null)
+      const scopedRows = filterSalesRowsStrictByPeriod(broadRows, requestedPeriod)
+      if (scopedRows.length > 0) {
+        persistDatasetSnapshot({
+          storeClientId,
+          dataset,
+          scopeKey,
+          period: requestedPeriod,
+          rows: scopedRows,
+          sourceKind: 'api-raw-cache-fallback',
+          sourceEndpoints,
+        })
+        return scopedRows
+      }
     }
   }
 
