@@ -675,7 +675,9 @@ function buildSalesStatusDetailsValue(posting: any, endpoint: string, secondaryP
   }
   const mainStatusRaw = pickFirstPresentFromSources(['status', 'state', 'result.status', 'result.state'], posting, secondaryPosting)
   const substatusRaw = pickFirstPresentFromSources(['substatus', 'result.substatus'], posting, secondaryPosting)
+  const hasActualShipment = hasActualShipmentDateSignal(posting, secondaryPosting)
   if (shouldSuppressShipmentProgressDetail(mainStatusRaw, substatusRaw)) return ''
+  if (!hasActualShipment && isSalesShipmentFactKey(substatusRaw)) return ''
   const substatus = translateSalesCodeValue(substatusRaw, 'detail')
   pushUniqueSalesPart(parts, substatus)
   return parts.join(' | ')
@@ -685,7 +687,9 @@ function buildSalesCarrierStatusDetailsValue(posting: any, secondaryPosting: any
   const parts: string[] = []
   const mainStatusRaw = pickFirstPresentFromSources(['status', 'state', 'result.status', 'result.state'], posting, secondaryPosting)
   const providerStatusRaw = pickFirstPresentFromSources(['provider_status', 'result.provider_status'], posting, secondaryPosting)
+  const hasActualShipment = hasActualShipmentDateSignal(posting, secondaryPosting)
   if (shouldSuppressShipmentProgressDetail(mainStatusRaw, providerStatusRaw)) return ''
+  if (!hasActualShipment && isSalesShipmentFactKey(providerStatusRaw)) return ''
   pushUniqueSalesPart(parts, translateSalesCodeValue(providerStatusRaw, 'provider'))
   return parts.join(' | ')
 }
@@ -804,32 +808,46 @@ function getCustomerDeliveryDateValue(source: any): string {
   ]))
 }
 
+function getActualShipmentDateValue(source: any): string {
+  return normalizeDateValue(pickFirstPresent(source, [
+    'result.shipment_date_actual',
+    'shipment_date_actual',
+    'result.shipped_at',
+    'shipped_at',
+    'result.shipped_date',
+    'shipped_date',
+  ]))
+}
+
+function hasActualShipmentDateSignal(...sources: any[]): boolean {
+  if (sources.some((source) => Boolean(getActualShipmentDateValue(source)))) return true
+  return Boolean(resolveSalesEventDateByStates(SALES_SHIPMENT_EVENT_PRIMARY_STATES, SALES_SHIPMENT_EVENT_FALLBACK_STATES, ...sources))
+}
+
+function resolveFbsShipmentDateFromSources(...sources: any[]): string {
+  const direct = pickFirstPresentFromSources([
+    'result.shipment_date_actual',
+    'shipment_date_actual',
+    'result.shipped_at',
+    'shipped_at',
+    'result.shipped_date',
+    'shipped_date',
+  ], ...sources)
+  const normalizedDirect = normalizeDateValue(direct)
+  if (normalizedDirect) return normalizedDirect
+  return resolveSalesEventDateByStates(SALES_SHIPMENT_EVENT_PRIMARY_STATES, SALES_SHIPMENT_EVENT_FALLBACK_STATES, ...sources)
+}
+
 function getShipmentDateValue(detailPosting: any, posting: any, endpointKind: 'FBS' | 'FBO' | ''): string {
   if (endpointKind === 'FBO') {
     return resolveFboShipmentDateFromSources(detailPosting, posting)
   }
 
   if (endpointKind === 'FBS') {
-    const direct = normalizeDateValue(pickFirstPresentFromSources([
-      'result.shipment_date_actual',
-      'shipment_date_actual',
-      'result.shipped_at',
-      'shipped_at',
-      'result.shipment_date',
-      'shipment_date',
-    ], detailPosting, posting))
-    if (direct) return direct
-    return resolveSalesEventDateByStates(SALES_SHIPMENT_EVENT_PRIMARY_STATES, SALES_SHIPMENT_EVENT_FALLBACK_STATES, detailPosting, posting)
+    return resolveFbsShipmentDateFromSources(detailPosting, posting)
   }
 
-  return normalizeDateValue(pickFirstPresentFromSources([
-    'result.shipment_date_actual',
-    'shipment_date_actual',
-    'result.shipped_at',
-    'shipped_at',
-    'result.shipment_date',
-    'shipment_date',
-  ], detailPosting, posting))
+  return resolveFbsShipmentDateFromSources(detailPosting, posting)
 }
 
 const SALES_DELIVERED_STATUS_KEYS = new Set([
@@ -962,6 +980,99 @@ export async function fetchSalesPostingDetails(
   return out
 }
 
+function rowSupportsShipmentBackfill(row: SalesRow): boolean {
+  const statusText = [row.status, row.status_details, row.carrier_status_details]
+    .map((value) => String(value ?? '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' | ')
+  if (!statusText) return false
+  if (/(ожидает|готов к отгрузке|создан|в обработке|принят|зарегистрирован|упаковк)/.test(statusText)) return false
+  return /(переда|передан|отправ|забирает|в пути|доставля|доставлен|получен|возвращ)/.test(statusText)
+}
+
+function backfillShipmentDatesFromRelatedGroups(rows: SalesRow[]): SalesRow[] {
+  if (rows.length === 0) return rows
+
+  const rowIndexesByPosting = new Map<string, number[]>()
+  const adjacency = new Map<string, Set<string>>()
+
+  const ensureNode = (postingNumber: string) => {
+    if (!adjacency.has(postingNumber)) adjacency.set(postingNumber, new Set())
+  }
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    const postingNumber = String(row?.posting_number ?? '').trim()
+    if (!postingNumber) continue
+    const model = String(row?.delivery_model ?? '').trim().toUpperCase()
+    if (model !== 'FBS' && model !== 'RFBS') continue
+    const bucket = rowIndexesByPosting.get(postingNumber) ?? []
+    bucket.push(index)
+    rowIndexesByPosting.set(postingNumber, bucket)
+    ensureNode(postingNumber)
+  }
+
+  for (const row of rows) {
+    const postingNumber = String(row?.posting_number ?? '').trim()
+    if (!postingNumber || !adjacency.has(postingNumber)) continue
+    const related = String(row?.related_postings ?? '').split(',').map((part) => part.trim()).filter(Boolean)
+    for (const relatedPosting of related) {
+      if (!adjacency.has(relatedPosting)) continue
+      adjacency.get(postingNumber)?.add(relatedPosting)
+      adjacency.get(relatedPosting)?.add(postingNumber)
+    }
+  }
+
+  const visited = new Set<string>()
+  const nextRows = rows.slice()
+
+  for (const postingNumber of adjacency.keys()) {
+    if (visited.has(postingNumber)) continue
+
+    const stack = [postingNumber]
+    const component: string[] = []
+    while (stack.length > 0) {
+      const current = stack.pop() ?? ''
+      if (!current || visited.has(current)) continue
+      visited.add(current)
+      component.push(current)
+      for (const linked of adjacency.get(current) ?? []) {
+        if (!visited.has(linked)) stack.push(linked)
+      }
+    }
+
+    if (component.length < 2) continue
+
+    const knownDates = component
+      .flatMap((key) => rowIndexesByPosting.get(key) ?? [])
+      .map((index) => String(nextRows[index]?.shipment_date ?? '').trim())
+      .filter(Boolean)
+      .sort((left, right) => {
+        const leftTs = toComparableSalesTimestamp(left)
+        const rightTs = toComparableSalesTimestamp(right)
+        if (leftTs != null && rightTs != null) return leftTs - rightTs
+        if (leftTs != null) return -1
+        if (rightTs != null) return 1
+        return left.localeCompare(right)
+      })
+
+    const backfillValue = knownDates[0] ?? ''
+    if (!backfillValue) continue
+
+    for (const key of component) {
+      for (const index of rowIndexesByPosting.get(key) ?? []) {
+        const row = nextRows[index]
+        const currentShipmentDate = String(row?.shipment_date ?? '').trim()
+        if (currentShipmentDate) continue
+        if (!rowSupportsShipmentBackfill(row)) continue
+        nextRows[index] = { ...row, shipment_date: backfillValue }
+      }
+    }
+  }
+
+  return nextRows
+}
+
 export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: GridApiRow[], postingDetailsByKey?: Map<string, any>): SalesRow[] {
   const productsByOfferId = new Map<string, GridApiRow>()
   const productsBySku = new Map<string, GridApiRow>()
@@ -1040,7 +1151,7 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
       }
     }
   }
-  return Array.from(dedup.values()).sort((a, b) => {
+  return backfillShipmentDatesFromRelatedGroups(Array.from(dedup.values())).sort((a, b) => {
     const aAccepted = String(a?.in_process_at ?? '')
     const bAccepted = String(b?.in_process_at ?? '')
     if (aAccepted !== bAccepted) return bAccepted.localeCompare(aAccepted)
