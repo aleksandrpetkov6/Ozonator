@@ -1,10 +1,57 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
+const SETTINGS_DRAFT_LS_KEY = 'ozonator_settings_ui_draft'
+
+type SettingsDraft = {
+  clientId?: string
+  apiKey?: string
+}
+
+function readSettingsDraft(): SettingsDraft {
+  try {
+    const raw = localStorage.getItem(SETTINGS_DRAFT_LS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    return {
+      clientId: typeof (parsed as SettingsDraft).clientId === 'string' ? (parsed as SettingsDraft).clientId : undefined,
+      apiKey: typeof (parsed as SettingsDraft).apiKey === 'string' ? (parsed as SettingsDraft).apiKey : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+function writeSettingsDraft(draft: SettingsDraft) {
+  try {
+    const clientId = String(draft.clientId ?? '')
+    const apiKey = String(draft.apiKey ?? '')
+    if (!clientId.trim() && !apiKey.trim()) {
+      localStorage.removeItem(SETTINGS_DRAFT_LS_KEY)
+      return
+    }
+    localStorage.setItem(SETTINGS_DRAFT_LS_KEY, JSON.stringify({
+      clientId,
+      apiKey,
+    }))
+  } catch {
+    // ignore
+  }
+}
+
+function clearSettingsDraft() {
+  try {
+    localStorage.removeItem(SETTINGS_DRAFT_LS_KEY)
+  } catch {
+    // ignore
+  }
+}
 
 export default function SettingsPage() {
-  const [clientId, setClientId] = useState('')
-  const [apiKey, setApiKey] = useState('')
+  const bootDraft = useMemo(() => readSettingsDraft(), [])
+  const [clientId, setClientId] = useState(() => bootDraft.clientId ?? '')
+  const [apiKey, setApiKey] = useState(() => bootDraft.apiKey ?? '')
   const [storeName, setStoreName] = useState<string>('')
 
   const [status, setStatus] = useState<string>('')
@@ -14,8 +61,8 @@ export default function SettingsPage() {
     try {
       const resp = await window.api.loadSecrets()
       if (resp.ok) {
-        setClientId(resp.secrets.clientId ?? '')
-        setApiKey(resp.secrets.apiKey ?? '')
+        setClientId((prev) => prev.trim() ? prev : (resp.secrets.clientId ?? ''))
+        setApiKey((prev) => prev.trim() ? prev : (resp.secrets.apiKey ?? ''))
         {
           const name = (resp.secrets as any).storeName
           const cleaned = typeof name === 'string' && name.trim() ? name.trim() : ''
@@ -41,6 +88,16 @@ export default function SettingsPage() {
     load()
   }, [])
 
+  useEffect(() => {
+    writeSettingsDraft({ clientId, apiKey })
+  }, [clientId, apiKey])
+
+  useEffect(() => {
+    const flushDraft = () => writeSettingsDraft({ clientId, apiKey })
+    window.addEventListener('ozon:prepare-install-exit', flushDraft)
+    return () => window.removeEventListener('ozon:prepare-install-exit', flushDraft)
+  }, [clientId, apiKey])
+
   async function onSaveAndTest() {
     setStatus('')
     setErr('')
@@ -59,6 +116,8 @@ export default function SettingsPage() {
             // ignore
           }
         }
+
+        clearSettingsDraft()
 
         // обновим поля из локального хранилища (на случай, если storeName подтянулся и сохранился)
         load()
@@ -84,6 +143,7 @@ export default function SettingsPage() {
       setApiKey('')
       setStoreName('')
       setStatus('Ключи удалены.')
+      clearSettingsDraft()
       try {
         localStorage.removeItem(STORE_NAME_LS_KEY)
       } catch {
