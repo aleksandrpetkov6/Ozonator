@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbReplaceProductPlacementsForStore, dbGetGridColumns, dbSaveGridColumns, dbRecordApiRawResponse } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
@@ -129,8 +129,22 @@ const out: T[][] = []
 for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
 return out
 }
+
+function resolveWindowIconPath() {
+const candidates = [
+join(app.getAppPath(), 'build', 'icon.png'),
+join(process.cwd(), 'build', 'icon.png'),
+]
+for (const candidate of candidates) {
+try {
+if (existsSync(candidate)) return candidate
+} catch {}
+}
+return undefined
+}
 function createWindow() {
 startupLog('createWindow.begin', { packaged: app.isPackaged, appPath: app.getAppPath(), __dirname })
+const windowIcon = resolveWindowIconPath()
 mainWindow = new BrowserWindow({
 width: 1200,
 height: 760,
@@ -138,9 +152,11 @@ minWidth: 980,
 minHeight: 620,
 title: 'Озонатор',
 show: false,
-backgroundColor: '#F5F5F7',
+backgroundColor: '#FEFEFE',
 autoHideMenuBar: true,
-titleBarOverlay: { color: '#F5F5F7', symbolColor: '#1d1d1f', height: 34 },
+titleBarStyle: 'hidden',
+titleBarOverlay: { color: '#FEFEFE', symbolColor: '#1d1d1f', height: 42 },
+...(windowIcon ? { icon: windowIcon } : {}),
 webPreferences: {
 preload: join(__dirname, '../preload/index.js'),
 contextIsolation: true,
