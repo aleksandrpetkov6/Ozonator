@@ -18,8 +18,63 @@ const SALES_CACHE_SNAPSHOT_KEYS = [
 ] as const
 
 const SALES_LEGACY_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
+const DEFAULT_UI_SALES_DAYS = 30
+const SALES_DEFAULT_ROLLING_SCOPE_KEY = '__sales_default_30d__'
+const MOSCOW_TIME_ZONE = 'Europe/Moscow'
 
 export type LocalDatasetName = string
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function getTodayDateInputForTimeZone(timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+
+  const year = parts.find((part) => part.type === 'year')?.value ?? ''
+  const month = parts.find((part) => part.type === 'month')?.value ?? ''
+  const day = parts.find((part) => part.type === 'day')?.value ?? ''
+  const candidate = `${year}-${month}-${day}`
+  if (/^\d{4}-\d{2}-\d{2}$/.test(candidate)) return candidate
+
+  const fallback = new Date()
+  return `${fallback.getFullYear()}-${padDatePart(fallback.getMonth() + 1)}-${padDatePart(fallback.getDate())}`
+}
+
+function dateInputToUtcDate(value: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+  const [yearRaw, monthRaw, dayRaw] = value.split('-')
+  const year = Number(yearRaw)
+  const month = Number(monthRaw)
+  const day = Number(dayRaw)
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
+  return new Date(Date.UTC(year, month - 1, day))
+}
+
+function toDateInputValue(date: Date): string {
+  return `${date.getUTCFullYear()}-${padDatePart(date.getUTCMonth() + 1)}-${padDatePart(date.getUTCDate())}`
+}
+
+export function getDefaultRollingSalesPeriod(days = DEFAULT_UI_SALES_DAYS): { from: string; to: string } {
+  const safeDays = Math.max(1, Math.trunc(Number(days) || DEFAULT_UI_SALES_DAYS))
+  const todayRaw = getTodayDateInputForTimeZone(MOSCOW_TIME_ZONE)
+  const end = dateInputToUtcDate(todayRaw) ?? new Date()
+  const start = new Date(end.getTime())
+  start.setUTCDate(start.getUTCDate() - safeDays)
+  return {
+    from: toDateInputValue(start),
+    to: toDateInputValue(end),
+  }
+}
+
+function isDefaultRollingSalesPeriod(period: SalesPeriod | null | undefined): boolean {
+  return sameSalesPeriod(normalizeSalesPeriod(period), getDefaultRollingSalesPeriod())
+}
 
 function normalizeTextValue(value: any): string {
   if (typeof value === 'string') return value.trim()
@@ -327,6 +382,20 @@ function readScopedSalesSnapshotRows(
   return filterSalesRowsStrictByPeriod(rows, requestedPeriod)
 }
 
+function readRollingSalesSnapshotRows(
+  storeClientId: string | null | undefined,
+  requestedPeriod: SalesPeriod | null | undefined,
+): any[] | null {
+  const rows = dbGetDatasetSnapshotRows({
+    storeClientId: storeClientId ?? null,
+    dataset: 'sales',
+    scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+  })
+
+  if (!Array.isArray(rows)) return null
+  return filterSalesRowsStrictByPeriod(rows, requestedPeriod)
+}
+
 function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): string {
 
   const normalized = normalizeSalesPeriod(requestedPeriod)
@@ -449,6 +518,18 @@ export async function refreshSalesRawSnapshotFromApi(
     sourceEndpoints,
   })
 
+  if (isDefaultRollingSalesPeriod(requestedPeriod)) {
+    persistDatasetSnapshot({
+      storeClientId: secrets.clientId,
+      dataset: 'sales',
+      scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+      period: requestedPeriod,
+      rows,
+      sourceKind: 'api-live-default-window',
+      sourceEndpoints,
+    })
+  }
+
   return { rowsCount: rows.length }
 }
 
@@ -532,22 +613,19 @@ export function getLocalDatasetRows(
     const exactSnapshotRows = readScopedSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
     if (exactSnapshotRows) return exactSnapshotRows
 
-    if (scopeKey) {
-      const broadSnapshotRows = readScopedSalesSnapshotRows(storeClientId ?? null, null)
-      if (broadSnapshotRows && broadSnapshotRows.length > 0) {
-        const scopedRows = filterSalesRowsStrictByPeriod(broadSnapshotRows, requestedPeriod)
-        if (scopedRows.length > 0) {
-          persistDatasetSnapshot({
-            storeClientId,
-            dataset,
-            scopeKey,
-            period: requestedPeriod,
-            rows: scopedRows,
-            sourceKind: 'dataset-snapshot-fallback',
-            sourceEndpoints: [],
-          })
-          return scopedRows
-        }
+    if (scopeKey && isDefaultRollingSalesPeriod(requestedPeriod)) {
+      const rollingRows = readRollingSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
+      if (rollingRows && rollingRows.length > 0) {
+        persistDatasetSnapshot({
+          storeClientId,
+          dataset,
+          scopeKey,
+          period: requestedPeriod,
+          rows: rollingRows,
+          sourceKind: 'dataset-snapshot-default-window',
+          sourceEndpoints: [],
+        })
+        return rollingRows
       }
     }
 
@@ -567,21 +645,8 @@ export function getLocalDatasetRows(
       return rows
     }
 
-    if (cacheByEndpoint.size > 0 && scopeKey) {
-      const { rows: broadRows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, null)
-      const scopedRows = filterSalesRowsStrictByPeriod(broadRows, requestedPeriod)
-      if (scopedRows.length > 0) {
-        persistDatasetSnapshot({
-          storeClientId,
-          dataset,
-          scopeKey,
-          period: requestedPeriod,
-          rows: scopedRows,
-          sourceKind: 'api-raw-cache-fallback',
-          sourceEndpoints,
-        })
-        return scopedRows
-      }
+    if (scopeKey) {
+      return []
     }
   }
 
