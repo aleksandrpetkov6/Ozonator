@@ -8,6 +8,14 @@ import { type SalesPeriod } from './sales-sync'
 import { ensureLocalSalesSnapshotFromApiIfMissing, getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 let mainWindow: BrowserWindow | null = null
 let startupShowTimer: NodeJS.Timeout | null = null
+let backgroundSyncTimer: NodeJS.Timeout | null = null
+let isQuitting = false
+let syncProductsInFlight: Promise<any> | null = null
+
+const singleInstanceLock = app.requestSingleInstanceLock()
+if (!singleInstanceLock) {
+app.quit()
+}
 function startupLog(...args: any[]) {
 try {
 const dir = app?.isReady?.() ? app.getPath('userData') : app.getPath('temp')
@@ -53,6 +61,7 @@ webPreferences: {
 preload: join(__dirname, '../preload/index.js'),
 contextIsolation: true,
 nodeIntegration: false,
+backgroundThrottling: false,
 },
 })
 if (startupShowTimer) {
@@ -88,6 +97,13 @@ safeShowMainWindow('render-process-gone')
 })
 mainWindow.on('unresponsive', () => {
 startupLog('event.window-unresponsive')
+})
+mainWindow.on('close', (event) => {
+if (isQuitting) return
+event.preventDefault()
+startupLog('event.window-close-hide')
+try { mainWindow?.hide() } catch {}
+void runBackgroundSyncTick('window-close')
 })
 mainWindow.on('closed', () => {
 startupLog('event.window-closed')
@@ -134,6 +150,18 @@ fetchedAt: evt.fetchedAt,
 dbIngestLifecycleMarkers({ appVersion: app.getVersion() })
 startupLog('dbIngestLifecycleMarkers.ok', { version: app.getVersion() })
 createWindow()
+ensureBackgroundSyncLoop()
+app.on('second-instance', () => {
+startupLog('app.second-instance')
+safeShowMainWindow('second-instance')
+})
+app.on('before-quit', () => {
+isQuitting = true
+if (backgroundSyncTimer) {
+clearInterval(backgroundSyncTimer)
+backgroundSyncTimer = null
+}
+})
 app.on('activate', () => {
 startupLog('app.activate', { windows: BrowserWindow.getAllWindows().length })
 if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -199,63 +227,25 @@ const rows = getLocalDatasetRows(storeClientId, dataset, { period: period ?? nul
 return { storeClientId, dataset, rows }
 }
 
-ipcMain.handle('secrets:status', async () => {
-return {
-hasSecrets: hasSecrets(),
-encryptionAvailable: safeStorage.isEncryptionAvailable(),
-}
-})
-ipcMain.handle('secrets:save', async (_e, secrets: { clientId: string; apiKey: string }) => {
-saveSecrets({ clientId: String(secrets.clientId).trim(), apiKey: String(secrets.apiKey).trim() })
-return { ok: true }
-})
-ipcMain.handle('secrets:load', async () => {
-const s = loadSecrets()
-return { ok: true, secrets: { clientId: s.clientId, apiKey: s.apiKey, storeName: s.storeName ?? null } }
-})
-ipcMain.handle('secrets:delete', async () => {
-deleteSecrets()
-return { ok: true }
-})
-ipcMain.handle('net:check', async () => {
-return { online: await checkInternet() }
-})
-ipcMain.handle('admin:getSettings', async () => {
+
+
+function emitRendererDataUpdatedEvents() {
+if (!mainWindow || mainWindow.isDestroyed()) return
+const script = `
 try {
-return { ok: true, ...dbGetAdminSettings() }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), logRetentionDays: 30 }
-}
-})
-ipcMain.handle('admin:saveSettings', async (_e, payload: { logRetentionDays?: number }) => {
+window.dispatchEvent(new Event('ozon:products-updated'))
+window.dispatchEvent(new Event('ozon:logs-updated'))
+window.dispatchEvent(new Event('ozon:store-updated'))
+} catch {}
+`
 try {
-const saved = dbSaveAdminSettings({ logRetentionDays: Number(payload?.logRetentionDays) })
-return { ok: true, ...saved }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e) }
+void mainWindow.webContents.executeJavaScript(script, true)
+} catch {}
 }
-})
-ipcMain.handle('ozon:testAuth', async () => {
-let storeClientId: string | null = null
-try { storeClientId = loadSecrets().clientId } catch {}
-const logId = dbLogStart('check_auth', storeClientId)
-try {
-const secrets = loadSecrets()
-await ozonTestAuth(secrets)
-try {
-const name = await ozonGetStoreName(secrets)
-if (name) updateStoreName(name)
-} catch {
-}
-dbLogFinish(logId, { status: 'success', storeClientId: secrets.clientId })
-const refreshed = loadSecrets()
-return { ok: true, storeName: refreshed.storeName ?? null }
-} catch (e: any) {
-dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
-return { ok: false, error: e?.message ?? String(e) }
-}
-})
-ipcMain.handle('ozon:syncProducts', async (_e, args?: { salesPeriod?: SalesPeriod | null }) => {
+
+async function performProductsSync(args?: { salesPeriod?: SalesPeriod | null }) {
+if (syncProductsInFlight) return await syncProductsInFlight
+const job = (async () => {
 let storeClientId: string | null = null
 try { storeClientId = loadSecrets().clientId } catch {}
 const logId = dbLogStart('sync_products', storeClientId)
@@ -432,6 +422,101 @@ return { ok: true, itemsCount: syncedCount, pages, placementRowsCount, placement
 dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
 return { ok: false, error: e?.message ?? String(e) }
 }
+})()
+syncProductsInFlight = job
+try {
+return await job
+} finally {
+if (syncProductsInFlight === job) syncProductsInFlight = null
+}
+}
+
+async function runBackgroundSyncTick(reason: string) {
+if (isQuitting) return
+if (!mainWindow || mainWindow.isDestroyed()) return
+if (mainWindow.isVisible()) return
+if (!hasSecrets()) return
+const online = await checkInternet()
+if (!online) return
+const resp = await performProductsSync({ salesPeriod: null })
+if (resp?.ok) {
+startupLog('background-sync.ok', { reason, itemsCount: Number(resp?.itemsCount ?? 0) })
+emitRendererDataUpdatedEvents()
+} else if (resp?.error) {
+startupLog('background-sync.error', { reason, error: String(resp.error) })
+}
+}
+
+function ensureBackgroundSyncLoop() {
+if (backgroundSyncTimer) {
+clearInterval(backgroundSyncTimer)
+backgroundSyncTimer = null
+}
+backgroundSyncTimer = setInterval(() => {
+void runBackgroundSyncTick('interval')
+}, 60 * 1000)
+}
+
+ipcMain.handle('secrets:status', async () => {
+return {
+hasSecrets: hasSecrets(),
+encryptionAvailable: safeStorage.isEncryptionAvailable(),
+}
+})
+ipcMain.handle('secrets:save', async (_e, secrets: { clientId: string; apiKey: string }) => {
+saveSecrets({ clientId: String(secrets.clientId).trim(), apiKey: String(secrets.apiKey).trim() })
+return { ok: true }
+})
+ipcMain.handle('secrets:load', async () => {
+const s = loadSecrets()
+return { ok: true, secrets: { clientId: s.clientId, apiKey: s.apiKey, storeName: s.storeName ?? null } }
+})
+ipcMain.handle('secrets:delete', async () => {
+deleteSecrets()
+return { ok: true }
+})
+ipcMain.handle('net:check', async () => {
+return { online: await checkInternet() }
+})
+ipcMain.handle('admin:getSettings', async () => {
+try {
+return { ok: true, ...dbGetAdminSettings() }
+} catch (e: any) {
+return { ok: false, error: e?.message ?? String(e), logRetentionDays: 30 }
+}
+})
+ipcMain.handle('admin:saveSettings', async (_e, payload: { logRetentionDays?: number }) => {
+try {
+const saved = dbSaveAdminSettings({ logRetentionDays: Number(payload?.logRetentionDays) })
+return { ok: true, ...saved }
+} catch (e: any) {
+return { ok: false, error: e?.message ?? String(e) }
+}
+})
+ipcMain.handle('ozon:testAuth', async () => {
+let storeClientId: string | null = null
+try { storeClientId = loadSecrets().clientId } catch {}
+const logId = dbLogStart('check_auth', storeClientId)
+try {
+const secrets = loadSecrets()
+await ozonTestAuth(secrets)
+try {
+const name = await ozonGetStoreName(secrets)
+if (name) updateStoreName(name)
+} catch {
+}
+dbLogFinish(logId, { status: 'success', storeClientId: secrets.clientId })
+const refreshed = loadSecrets()
+return { ok: true, storeName: refreshed.storeName ?? null }
+} catch (e: any) {
+dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
+return { ok: false, error: e?.message ?? String(e) }
+}
+})
+ipcMain.handle('ozon:syncProducts', async (_e, args?: { salesPeriod?: SalesPeriod | null }) => {
+const resp = await performProductsSync(args)
+if (resp?.ok) emitRendererDataUpdatedEvents()
+return resp
 })
 ipcMain.handle('data:refreshSales', async (_e, args?: { period?: SalesPeriod | null }) => {
 try {
