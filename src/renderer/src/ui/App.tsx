@@ -56,6 +56,24 @@ function useOnline() {
   return online
 }
 
+function usePageVisible() {
+  const [pageVisible, setPageVisible] = useState<boolean>(() => {
+    if (typeof document === 'undefined') return true
+    return document.visibilityState === 'visible'
+  })
+
+  useEffect(() => {
+    function handleVisibilityChange() {
+      setPageVisible(document.visibilityState === 'visible')
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [])
+
+  return pageVisible
+}
+
 function parseLogLifeDays(value: string): number | null {
   const trimmed = String(value ?? '').trim()
   if (!trimmed) return null
@@ -70,6 +88,7 @@ export default function App() {
   useGlobalTableEnhancements()
   const location = useLocation()
   const online = useOnline()
+  const pageVisible = usePageVisible()
 
   const [running, setRunning] = useState(false)
   const runningRef = useRef(false)
@@ -329,7 +348,7 @@ export default function App() {
   }, [isSales, online, salesPeriod])
 
   useEffect(() => {
-    if (!online) return
+    if (!online || !pageVisible) return
 
     let cancelled = false
 
@@ -353,7 +372,7 @@ export default function App() {
       cancelled = true
       clearInterval(id)
     }
-  }, [online, syncNow])
+  }, [online, pageVisible, syncNow])
 
   const saveAdmin = useCallback(async () => {
     const parsed = parseLogLifeDays(adminLogLifeDraft)
