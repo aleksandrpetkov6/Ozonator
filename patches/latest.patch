@@ -1,148 +1,57 @@
 --- a/electron/main/sales-sync.ts
 +++ b/electron/main/sales-sync.ts
-@@ -329,6 +329,51 @@
-   'posting_driver_pick_up',
- ] as const
- const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_STATES)
-+const FBO_SHIPMENT_FALLBACK_STATES = [
-+  'posting_delivering',
-+  'delivering',
-+] as const
-+const FBO_SHIPMENT_FALLBACK_STATE_SET = new Set<string>(FBO_SHIPMENT_FALLBACK_STATES)
-+
-+const SALES_SHIPMENT_PROGRESS_STATE_KEYS = new Set<string>([
-+  'handed_over_to_delivery',
-+  'sent_to_delivery',
-+  'sent_by_seller',
-+  'driver_pickup',
-+  'in_transit',
-+  'transit',
-+  'on_the_way',
-+  'on_route',
-+  'delivering',
-+  'posting_sent_by_seller',
-+  'posting_transferring_to_delivery',
-+  'posting_transfered_to_courier_service',
-+  'posting_transferred_to_courier_service',
-+  'posting_driver_pick_up',
-+  'posting_in_carriage',
-+  'posting_sent_to_city',
-+  'posting_on_way_to_city',
-+  'posting_on_way_to_pickup_point',
-+  'posting_delivering',
-+])
-+
-+const SALES_TRANSIT_STATUS_DETAIL_KEYS = new Set<string>([
-+  'handed_over_to_delivery',
-+  'sent_to_delivery',
-+  'sent_by_seller',
-+  'driver_pickup',
-+  'in_transit',
-+  'transit',
-+  'on_the_way',
-+  'on_route',
-+  'delivering',
-+  'delivered',
-+  'delivered_to_customer',
-+])
-+
-+function splitRelatedPostingNumbers(value: any): string[] {
-+  return normalizeTextList([value])
-+}
- 
- function buildSalesStateEventCandidate(source: any): SalesPostingStateEvent | null {
-   if (!source || typeof source !== 'object') return null
-@@ -390,13 +435,58 @@
-   return out
- }
- 
--export function resolveFboShipmentDateFromSources(...sources: any[]): string {
-+function getLatestSalesStateEventDate(stateSet: ReadonlySet<string>, ...sources: any[]): string {
-   return collectSalesStateEvents(...sources)
--    .filter((event) => FBO_SHIPMENT_STATE_SET.has(event.state))
-+    .filter((event) => stateSet.has(event.state))
-     .map((event) => event.changed_state_date)
-     .sort((left, right) => right.localeCompare(left))[0] ?? ''
- }
- 
-+function getChangedStateDateForCurrentSalesState(stateSet: ReadonlySet<string>, ...sources: any[]): string {
-+  const state = normalizeSalesLookupKey(pickFirstPresentFromSources([
-+    'new_state',
-+    'result.new_state',
-+    'provider_status',
-+    'result.provider_status',
-+    'substatus',
-+    'result.substatus',
-+    'status',
-+    'result.status',
-+    'state',
-+    'result.state',
-+  ], ...sources))
-+  if (!state || !stateSet.has(state)) return ''
-+  return normalizeDateValue(pickFirstPresentFromSources([
-+    'changed_state_date',
-+    'result.changed_state_date',
-+  ], ...sources))
-+}
-+
-+function getDirectShipmentDateFromSources(...sources: any[]): string {
-+  return normalizeDateValue(pickFirstPresentFromSources([
-+    'shipment_date_actual',
-+    'result.shipment_date_actual',
-+    'shipped_at',
-+    'result.shipped_at',
-+  ], ...sources))
-+}
-+
-+export function resolveFboShipmentDateFromSources(...sources: any[]): string {
-+  const exactEventDate = getLatestSalesStateEventDate(FBO_SHIPMENT_STATE_SET, ...sources)
-+  if (exactEventDate) return exactEventDate
-+
-+  const exactCurrentStateDate = getChangedStateDateForCurrentSalesState(FBO_SHIPMENT_STATE_SET, ...sources)
-+  if (exactCurrentStateDate) return exactCurrentStateDate
-+
-+  const deliveringEventDate = getLatestSalesStateEventDate(FBO_SHIPMENT_FALLBACK_STATE_SET, ...sources)
-+  if (deliveringEventDate) return deliveringEventDate
-+
-+  const deliveringCurrentStateDate = getChangedStateDateForCurrentSalesState(FBO_SHIPMENT_FALLBACK_STATE_SET, ...sources)
-+  if (deliveringCurrentStateDate) return deliveringCurrentStateDate
-+
-+  return getDirectShipmentDateFromSources(...sources)
-+}
-+
- function buildRelatedPostingsText(posting: any, fallbackPostings: string[] = [], secondaryPosting: any = null): string {
-   const candidates = normalizeTextList([
-     safeGetByPath(posting, 'related_postings.related_posting_numbers', undefined),
-@@ -508,9 +598,12 @@
+@@ -675,7 +675,9 @@
+   }
+   const mainStatusRaw = pickFirstPresentFromSources(['status', 'state', 'result.status', 'result.state'], posting, secondaryPosting)
+   const substatusRaw = pickFirstPresentFromSources(['substatus', 'result.substatus'], posting, secondaryPosting)
++  const hasActualShipment = hasActualShipmentDateSignal(posting, secondaryPosting)
+   if (shouldSuppressShipmentProgressDetail(mainStatusRaw, substatusRaw)) return ''
++  if (!hasActualShipment && isSalesShipmentFactKey(substatusRaw)) return ''
+   const substatus = translateSalesCodeValue(substatusRaw, 'detail')
+   pushUniqueSalesPart(parts, substatus)
    return parts.join(' | ')
- }
- 
--function buildSalesCarrierStatusDetailsValue(posting: any, secondaryPosting: any = null): string {
-+function buildSalesCarrierStatusDetailsValue(posting: any, secondaryPosting: any = null, shipmentDate = ''): string {
+@@ -685,7 +687,9 @@
    const parts: string[] = []
--  pushUniqueSalesPart(parts, translateSalesCodeValue(pickFirstPresentFromSources(['provider_status', 'result.provider_status'], posting, secondaryPosting), 'provider'))
-+  const providerStatusRaw = pickFirstPresentFromSources(['provider_status', 'result.provider_status'], posting, secondaryPosting)
-+  const providerStatusKey = normalizeSalesLookupKey(providerStatusRaw)
-+  if (!shipmentDate && providerStatusKey && SALES_TRANSIT_STATUS_DETAIL_KEYS.has(providerStatusKey)) return ''
-+  pushUniqueSalesPart(parts, translateSalesCodeValue(providerStatusRaw, 'provider'))
+   const mainStatusRaw = pickFirstPresentFromSources(['status', 'state', 'result.status', 'result.state'], posting, secondaryPosting)
+   const providerStatusRaw = pickFirstPresentFromSources(['provider_status', 'result.provider_status'], posting, secondaryPosting)
++  const hasActualShipment = hasActualShipmentDateSignal(posting, secondaryPosting)
+   if (shouldSuppressShipmentProgressDetail(mainStatusRaw, providerStatusRaw)) return ''
++  if (!hasActualShipment && isSalesShipmentFactKey(providerStatusRaw)) return ''
+   pushUniqueSalesPart(parts, translateSalesCodeValue(providerStatusRaw, 'provider'))
    return parts.join(' | ')
  }
- 
-@@ -621,31 +714,41 @@
+@@ -804,32 +808,46 @@
    ]))
  }
  
-+function getDeliveredEventDateValue(...sources: any[]): string {
-+  return getLatestSalesStateEventDate(SALES_DELIVERED_STATUS_KEYS, ...sources)
++function getActualShipmentDateValue(source: any): string {
++  return normalizeDateValue(pickFirstPresent(source, [
++    'result.shipment_date_actual',
++    'shipment_date_actual',
++    'result.shipped_at',
++    'shipped_at',
++    'result.shipped_date',
++    'shipped_date',
++  ]))
 +}
 +
-+function isSalesDateStrictlyAfter(candidate: string, reference: string): boolean {
-+  if (!candidate) return false
-+  if (!reference) return true
-+  const candidateTime = Date.parse(candidate)
-+  const referenceTime = Date.parse(reference)
-+  if (Number.isFinite(candidateTime) && Number.isFinite(referenceTime)) return candidateTime > referenceTime
-+  return candidate > reference
++function hasActualShipmentDateSignal(...sources: any[]): boolean {
++  if (sources.some((source) => Boolean(getActualShipmentDateValue(source)))) return true
++  return Boolean(resolveSalesEventDateByStates(SALES_SHIPMENT_EVENT_PRIMARY_STATES, SALES_SHIPMENT_EVENT_FALLBACK_STATES, ...sources))
++}
++
++function resolveFbsShipmentDateFromSources(...sources: any[]): string {
++  const direct = pickFirstPresentFromSources([
++    'result.shipment_date_actual',
++    'shipment_date_actual',
++    'result.shipped_at',
++    'shipped_at',
++    'result.shipped_date',
++    'shipped_date',
++  ], ...sources)
++  const normalizedDirect = normalizeDateValue(direct)
++  if (normalizedDirect) return normalizedDirect
++  return resolveSalesEventDateByStates(SALES_SHIPMENT_EVENT_PRIMARY_STATES, SALES_SHIPMENT_EVENT_FALLBACK_STATES, ...sources)
 +}
 +
  function getShipmentDateValue(detailPosting: any, posting: any, endpointKind: 'FBS' | 'FBO' | ''): string {
@@ -150,182 +59,138 @@
      return resolveFboShipmentDateFromSources(detailPosting, posting)
    }
  
-+  const exactShipmentDate = normalizeDateValue(pickFirstPresentFromSources([
-+    'shipment_date_actual',
-+    'result.shipment_date_actual',
-+    'shipped_at',
-+    'result.shipped_at',
-+  ], detailPosting, posting))
-+  if (exactShipmentDate) return exactShipmentDate
-+
    if (endpointKind === 'FBS') {
--    const deliveryModel = buildDeliveryModelValue(posting, detailPosting, '/v3/posting/fbs/get')
--    if (deliveryModel === 'rFBS') {
--      return normalizeDateValue(pickFirstPresentFromSources([
--        'delivering_date',
--        'shipment_date_actual',
--        'shipped_at',
--      ], detailPosting, posting))
--    }
-+    const progressEventDate = getLatestSalesStateEventDate(SALES_SHIPMENT_PROGRESS_STATE_KEYS, detailPosting, posting)
-+    if (progressEventDate) return progressEventDate
- 
--    return normalizeDateValue(pickFirstPresentFromSources([
+-    const direct = normalizeDateValue(pickFirstPresentFromSources([
+-      'result.shipment_date_actual',
 -      'shipment_date_actual',
+-      'result.shipped_at',
 -      'shipped_at',
+-      'result.shipment_date',
+-      'shipment_date',
 -    ], detailPosting, posting))
-+    const transitStateDate = getChangedStateDateForCurrentSalesState(SALES_SHIPMENT_PROGRESS_STATE_KEYS, detailPosting, posting)
-+    if (transitStateDate) return transitStateDate
+-    if (direct) return direct
+-    return resolveSalesEventDateByStates(SALES_SHIPMENT_EVENT_PRIMARY_STATES, SALES_SHIPMENT_EVENT_FALLBACK_STATES, detailPosting, posting)
++    return resolveFbsShipmentDateFromSources(detailPosting, posting)
    }
  
 -  return normalizeDateValue(pickFirstPresentFromSources([
+-    'result.shipment_date_actual',
 -    'shipment_date_actual',
+-    'result.shipped_at',
 -    'shipped_at',
+-    'result.shipment_date',
+-    'shipment_date',
 -  ], detailPosting, posting))
-+  return ''
++  return resolveFbsShipmentDateFromSources(detailPosting, posting)
  }
  
  const SALES_DELIVERED_STATUS_KEYS = new Set([
-@@ -676,19 +779,34 @@
- ]
- 
- function hasDeliveryDateSignal(posting: any): boolean {
--  return Boolean(normalizeDateValue(pickFirstPresent(posting, SALES_DELIVERY_FALLBACK_PATHS)))
-+  return Boolean(
-+    normalizeDateValue(pickFirstPresent(posting, SALES_DELIVERY_FALLBACK_PATHS))
-+    || getFallbackDeliveredDateValue(posting)
-+    || getDeliveredEventDateValue(posting),
-+  )
- }
- 
--function getFallbackDeliveryDateValue(source: any): string {
--  return normalizeDateValue(pickFirstPresent(source, SALES_DELIVERY_FALLBACK_PATHS)) || getFallbackDeliveredDateValue(source)
-+function getCustomerDeliveryDateValue(source: any): string {
-+  return normalizeDateValue(pickFirstPresent(source, SALES_DELIVERY_FALLBACK_PATHS))
- }
- 
--function resolvePostingDeliveryDate(detailPosting: any, posting: any): string {
-+function resolvePostingDeliveryDate(detailPosting: any, posting: any, shipmentDate = ''): string {
-   const delivered = hasDeliveredStatusSignal(detailPosting) || hasDeliveredStatusSignal(posting)
-   if (!delivered) return ''
-+
-   const exact = getFactDeliveryDateValue(detailPosting) || getFactDeliveryDateValue(posting)
--  if (exact) return exact
--  return getFallbackDeliveryDateValue(detailPosting) || getFallbackDeliveryDateValue(posting)
-+  if (exact && isSalesDateStrictlyAfter(exact, shipmentDate)) return exact
-+
-+  const deliveredEventDate = getDeliveredEventDateValue(detailPosting, posting)
-+  if (deliveredEventDate && isSalesDateStrictlyAfter(deliveredEventDate, shipmentDate)) return deliveredEventDate
-+
-+  const fallbackDelivered = getFallbackDeliveredDateValue(detailPosting) || getFallbackDeliveredDateValue(posting)
-+  if (fallbackDelivered && isSalesDateStrictlyAfter(fallbackDelivered, shipmentDate)) return fallbackDelivered
-+
-+  const customerDeliveryDate = getCustomerDeliveryDateValue(detailPosting) || getCustomerDeliveryDateValue(posting)
-+  if (customerDeliveryDate && isSalesDateStrictlyAfter(customerDeliveryDate, shipmentDate)) return customerDeliveryDate
-+
-+  return ''
- }
- 
- function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO' | ''): boolean {
-@@ -758,6 +876,81 @@
+@@ -962,6 +980,99 @@
    return out
  }
  
-+function backfillSalesShipmentDatesFromRelatedRows(rows: SalesRow[]): SalesRow[] {
++function rowSupportsShipmentBackfill(row: SalesRow): boolean {
++  const statusText = [row.status, row.status_details, row.carrier_status_details]
++    .map((value) => String(value ?? '').trim().toLowerCase())
++    .filter(Boolean)
++    .join(' | ')
++  if (!statusText) return false
++  if (/(ожидает|готов к отгрузке|создан|в обработке|принят|зарегистрирован|упаковк)/.test(statusText)) return false
++  return /(переда|передан|отправ|забирает|в пути|доставля|доставлен|получен|возвращ)/.test(statusText)
++}
++
++function backfillShipmentDatesFromRelatedGroups(rows: SalesRow[]): SalesRow[] {
 +  if (rows.length === 0) return rows
 +
++  const rowIndexesByPosting = new Map<string, number[]>()
 +  const adjacency = new Map<string, Set<string>>()
-+  const connect = (left: string, right: string) => {
-+    if (!left || !right || left === right) return
-+    let leftSet = adjacency.get(left)
-+    if (!leftSet) {
-+      leftSet = new Set<string>()
-+      adjacency.set(left, leftSet)
-+    }
-+    let rightSet = adjacency.get(right)
-+    if (!rightSet) {
-+      rightSet = new Set<string>()
-+      adjacency.set(right, rightSet)
-+    }
-+    leftSet.add(right)
-+    rightSet.add(left)
++
++  const ensureNode = (postingNumber: string) => {
++    if (!adjacency.has(postingNumber)) adjacency.set(postingNumber, new Set())
 +  }
 +
-+  const shipmentDateByPosting = new Map<string, string>()
++  for (let index = 0; index < rows.length; index += 1) {
++    const row = rows[index]
++    const postingNumber = String(row?.posting_number ?? '').trim()
++    if (!postingNumber) continue
++    const model = String(row?.delivery_model ?? '').trim().toUpperCase()
++    if (model !== 'FBS' && model !== 'RFBS') continue
++    const bucket = rowIndexesByPosting.get(postingNumber) ?? []
++    bucket.push(index)
++    rowIndexesByPosting.set(postingNumber, bucket)
++    ensureNode(postingNumber)
++  }
 +
 +  for (const row of rows) {
-+    const postingNumber = normalizeTextValue(row.posting_number)
-+    if (!postingNumber) continue
-+    if (!adjacency.has(postingNumber)) adjacency.set(postingNumber, new Set<string>())
-+
-+    const currentShipmentDate = normalizeDateValue(row.shipment_date)
-+    if (currentShipmentDate) {
-+      const previousShipmentDate = shipmentDateByPosting.get(postingNumber)
-+      if (!previousShipmentDate || currentShipmentDate < previousShipmentDate) shipmentDateByPosting.set(postingNumber, currentShipmentDate)
-+    }
-+
-+    for (const relatedPostingNumber of splitRelatedPostingNumbers(row.related_postings)) {
-+      connect(postingNumber, relatedPostingNumber)
++    const postingNumber = String(row?.posting_number ?? '').trim()
++    if (!postingNumber || !adjacency.has(postingNumber)) continue
++    const related = String(row?.related_postings ?? '').split(',').map((part) => part.trim()).filter(Boolean)
++    for (const relatedPosting of related) {
++      if (!adjacency.has(relatedPosting)) continue
++      adjacency.get(postingNumber)?.add(relatedPosting)
++      adjacency.get(relatedPosting)?.add(postingNumber)
 +    }
 +  }
 +
-+  const componentShipmentDate = new Map<string, string>()
 +  const visited = new Set<string>()
++  const nextRows = rows.slice()
 +
 +  for (const postingNumber of adjacency.keys()) {
 +    if (visited.has(postingNumber)) continue
-+    const queue = [postingNumber]
-+    const component: string[] = []
-+    let bestShipmentDate = ''
 +
-+    while (queue.length > 0) {
-+      const current = queue.shift() ?? ''
++    const stack = [postingNumber]
++    const component: string[] = []
++    while (stack.length > 0) {
++      const current = stack.pop() ?? ''
 +      if (!current || visited.has(current)) continue
 +      visited.add(current)
 +      component.push(current)
-+
-+      const currentShipmentDate = shipmentDateByPosting.get(current) ?? ''
-+      if (currentShipmentDate && (!bestShipmentDate || currentShipmentDate < bestShipmentDate)) bestShipmentDate = currentShipmentDate
-+
-+      for (const next of adjacency.get(current) ?? []) {
-+        if (!visited.has(next)) queue.push(next)
++      for (const linked of adjacency.get(current) ?? []) {
++        if (!visited.has(linked)) stack.push(linked)
 +      }
 +    }
 +
-+    if (!bestShipmentDate || component.length < 2) continue
-+    for (const current of component) componentShipmentDate.set(current, bestShipmentDate)
++    if (component.length < 2) continue
++
++    const knownDates = component
++      .flatMap((key) => rowIndexesByPosting.get(key) ?? [])
++      .map((index) => String(nextRows[index]?.shipment_date ?? '').trim())
++      .filter(Boolean)
++      .sort((left, right) => {
++        const leftTs = toComparableSalesTimestamp(left)
++        const rightTs = toComparableSalesTimestamp(right)
++        if (leftTs != null && rightTs != null) return leftTs - rightTs
++        if (leftTs != null) return -1
++        if (rightTs != null) return 1
++        return left.localeCompare(right)
++      })
++
++    const backfillValue = knownDates[0] ?? ''
++    if (!backfillValue) continue
++
++    for (const key of component) {
++      for (const index of rowIndexesByPosting.get(key) ?? []) {
++        const row = nextRows[index]
++        const currentShipmentDate = String(row?.shipment_date ?? '').trim()
++        if (currentShipmentDate) continue
++        if (!rowSupportsShipmentBackfill(row)) continue
++        nextRows[index] = { ...row, shipment_date: backfillValue }
++      }
++    }
 +  }
 +
-+  return rows.map((row) => {
-+    if (normalizeDateValue(row.shipment_date)) return row
-+    const postingNumber = normalizeTextValue(row.posting_number)
-+    if (!postingNumber) return row
-+    const nextShipmentDate = componentShipmentDate.get(postingNumber) ?? ''
-+    if (!nextShipmentDate) return row
-+    return { ...row, shipment_date: nextShipmentDate }
-+  })
++  return nextRows
 +}
 +
  export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: GridApiRow[], postingDetailsByKey?: Map<string, any>): SalesRow[] {
    const productsByOfferId = new Map<string, GridApiRow>()
    const productsBySku = new Map<string, GridApiRow>()
-@@ -801,8 +994,8 @@
-       const shipmentDate = getShipmentDateValue(detailPosting, posting, endpointKind)
-       const status = translateSalesCodeValue(pickFirstPresentFromSources(['status', 'state', 'result.status', 'result.state'], detailPosting, posting), 'status')
-       const statusDetails = buildSalesStatusDetailsValue(detailPosting, envelope.endpoint, posting)
--      const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(detailPosting, posting)
--      const deliveredAt = resolvePostingDeliveryDate(detailPosting, posting)
-+      const carrierStatusDetails = buildSalesCarrierStatusDetailsValue(detailPosting, posting, shipmentDate)
-+      const deliveredAt = resolvePostingDeliveryDate(detailPosting, posting, shipmentDate)
-       const deliveryCluster = normalizeTextValue(pickFirstPresentFromSources(['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to'], detailPosting, posting))
-       const deliverySchema = buildDeliveryModelValue(posting, detailPosting, envelope.endpoint)
-       if (!postingNumber) continue
-@@ -836,7 +1029,7 @@
+@@ -1040,7 +1151,7 @@
        }
      }
    }
 -  return Array.from(dedup.values()).sort((a, b) => {
-+  return backfillSalesShipmentDatesFromRelatedRows(Array.from(dedup.values())).sort((a, b) => {
++  return backfillShipmentDatesFromRelatedGroups(Array.from(dedup.values())).sort((a, b) => {
      const aAccepted = String(a?.in_process_at ?? '')
      const bAccepted = String(b?.in_process_at ?? '')
      if (aAccepted !== bAccepted) return bAccepted.localeCompare(aAccepted)
