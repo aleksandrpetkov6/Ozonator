@@ -11,6 +11,7 @@ let startupShowTimer: NodeJS.Timeout | null = null
 let backgroundSyncTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let syncProductsInFlight: Promise<any> | null = null
+const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
 
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
@@ -241,6 +242,50 @@ window.dispatchEvent(new Event('ozon:store-updated'))
 try {
 void mainWindow.webContents.executeJavaScript(script, true)
 } catch {}
+}
+
+function getSalesWarmupScopeKey(period?: SalesPeriod | null) {
+const from = typeof period?.from === 'string' ? period.from.trim() : ''
+const to = typeof period?.to === 'string' ? period.to.trim() : ''
+return `${from}|${to}`
+}
+
+function warmupSalesSnapshotInBackground(period?: SalesPeriod | null, reason = 'sales-read') {
+const scopeKey = getSalesWarmupScopeKey(period)
+if (salesSnapshotWarmupInFlight.has(scopeKey)) return
+
+const job = (async () => {
+if (isQuitting) return
+if (!hasSecrets()) return
+
+const online = await checkInternet()
+if (!online) return
+
+let secrets = null
+try {
+secrets = loadSecrets()
+} catch {
+secrets = null
+}
+if (!secrets) return
+
+try {
+const warmed = await ensureLocalSalesSnapshotFromApiIfMissing(secrets, period ?? null)
+if (warmed?.refreshed) {
+startupLog('sales-snapshot-warmup.refreshed', { reason, scopeKey, rowsCount: Number(warmed?.rowsCount ?? 0) })
+emitRendererDataUpdatedEvents()
+}
+} catch (e: any) {
+startupLog('sales-snapshot-warmup.error', { reason, scopeKey, error: e?.message ?? String(e) })
+}
+})()
+
+salesSnapshotWarmupInFlight.set(scopeKey, job)
+void job.finally(() => {
+if ((salesSnapshotWarmupInFlight.get(scopeKey) ?? null) === job) {
+salesSnapshotWarmupInFlight.delete(scopeKey)
+}
+})
 }
 
 async function performProductsSync(args?: { salesPeriod?: SalesPeriod | null }) {
@@ -545,14 +590,9 @@ ipcMain.handle('data:getDatasetRows', async (_e, args?: { dataset?: string; peri
 try {
 const dataset = String(args?.dataset ?? 'products').trim() || 'products'
 if (dataset === 'sales') {
-let secrets = null
-try {
-secrets = loadSecrets()
-} catch {
-secrets = null
-}
-await ensureLocalSalesSnapshotFromApiIfMissing(secrets, args?.period ?? null)
-const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
+const period = args?.period ?? null
+const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period })
+void warmupSalesSnapshotInBackground(period, 'data:getDatasetRows')
 return { ok: true, dataset, rows }
 }
 const { rows } = readDatasetRowsSafe(dataset, args?.period ?? null)
@@ -572,14 +612,9 @@ return { ok: false, error: e?.message ?? String(e), products: [] }
 })
 ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
 try {
-let secrets = null
-try {
-secrets = loadSecrets()
-} catch {
-secrets = null
-}
-await ensureLocalSalesSnapshotFromApiIfMissing(secrets, args?.period ?? null)
-const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
+const period = args?.period ?? null
+const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period })
+void warmupSalesSnapshotInBackground(period, 'data:getSales')
 return { ok: true, rows }
 } catch (e: any) {
 return { ok: false, error: e?.message ?? String(e), rows: [] }
