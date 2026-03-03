@@ -56,24 +56,6 @@ function useOnline() {
   return online
 }
 
-function usePageVisible() {
-  const [pageVisible, setPageVisible] = useState<boolean>(() => {
-    if (typeof document === 'undefined') return true
-    return document.visibilityState === 'visible'
-  })
-
-  useEffect(() => {
-    function handleVisibilityChange() {
-      setPageVisible(document.visibilityState === 'visible')
-    }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [])
-
-  return pageVisible
-}
-
 function parseLogLifeDays(value: string): number | null {
   const trimmed = String(value ?? '').trim()
   if (!trimmed) return null
@@ -88,7 +70,6 @@ export default function App() {
   useGlobalTableEnhancements()
   const location = useLocation()
   const online = useOnline()
-  const pageVisible = usePageVisible()
 
   const [running, setRunning] = useState(false)
   const runningRef = useRef(false)
@@ -348,31 +329,16 @@ export default function App() {
   }, [isSales, online, salesPeriod])
 
   useEffect(() => {
-    if (!online || !pageVisible) return
+    if (!online) return
 
-    let cancelled = false
-
-    async function runAuto() {
-      if (cancelled) return
-      try {
-        const st = await window.api.secretsStatus()
-        if (cancelled || !st.hasSecrets) return
-        await syncNow('auto')
-      } catch {
-        // ignore
-      }
+    try {
+      window.dispatchEvent(new Event('ozon:products-updated'))
+      window.dispatchEvent(new Event('ozon:logs-updated'))
+      window.dispatchEvent(new Event('ozon:store-updated'))
+    } catch {
+      // ignore
     }
-
-    void runAuto()
-    const id = setInterval(() => {
-      void runAuto()
-    }, 60 * 1000)
-
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [online, pageVisible, syncNow])
+  }, [online])
 
   const saveAdmin = useCallback(async () => {
     const parsed = parseLogLifeDays(adminLogLifeDraft)
