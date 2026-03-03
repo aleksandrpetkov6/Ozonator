@@ -86,6 +86,7 @@ export default function App() {
   const [demandPeriod, setDemandPeriod] = useState<DemandForecastPeriod>(() => readDemandForecastPeriod())
   const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>(() => getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS))
   const [salesRefreshTick, setSalesRefreshTick] = useState(0)
+  const didOnlineBootstrapRef = useRef(false)
 
   const [adminLoading, setAdminLoading] = useState(true)
   const [adminSaving, setAdminSaving] = useState(false)
@@ -329,6 +330,11 @@ export default function App() {
   }, [isSales, online, salesPeriod])
 
   useEffect(() => {
+    if (!didOnlineBootstrapRef.current) {
+      didOnlineBootstrapRef.current = true
+      return
+    }
+
     if (!online) return
 
     try {
