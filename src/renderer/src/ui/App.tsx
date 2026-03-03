@@ -472,6 +472,15 @@ export default function App() {
       <div className="topbar">
         <div className="topbarInner">
           <div className="topbarLeft">
+            <div className="windowBrand" aria-label="Озонатор">
+              <img
+                className="windowBrandImage"
+                src="/brand/ozonator-title-logo.png"
+                alt="Озонатор"
+                draggable={false}
+              />
+            </div>
+
             <NavLink
               end
               to="/"
