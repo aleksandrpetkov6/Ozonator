@@ -109,6 +109,37 @@ function changedStateDateOf(...sources: any[]): string {
   return dateText(pickFromSources(['changed_state_date', 'result.changed_state_date'], ...sources))
 }
 
+function shipmentEventDateFromSource(source: any): string {
+  if (!source || typeof source !== 'object') return ''
+
+  const queue: any[] = [source]
+  const seen = new Set<any>()
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current || typeof current !== 'object') continue
+    if (seen.has(current)) continue
+    seen.add(current)
+
+    const state = text(pick(current, ['new_state', 'state', 'status', 'result.new_state', 'result.state', 'result.status'])).toLowerCase()
+    const changedStateDate = dateText(pick(current, ['changed_state_date', 'result.changed_state_date']))
+    if (state === 'posting_transferring_to_delivery' && changedStateDate) return changedStateDate
+
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        if (item && typeof item === 'object') queue.push(item)
+      }
+      continue
+    }
+
+    for (const value of Object.values(current)) {
+      if (value && typeof value === 'object') queue.push(value)
+    }
+  }
+
+  return ''
+}
+
 function itemsOf(source: any): any[] {
   if (Array.isArray(source?.products)) return source.products
   if (Array.isArray(source?.items)) return source.items
@@ -155,9 +186,13 @@ function relatedOf(detail: any, posting: any, fallback: string[]): string {
 }
 
 function shipmentDateOf(detail: any, posting: any): string {
+  const exactEventDate = shipmentEventDateFromSource(detail) || shipmentEventDateFromSource(posting)
+  if (exactEventDate) return exactEventDate
+
   const state = normalizedStateOf(detail, posting)
   const changed = changedStateDateOf(detail, posting)
   if (state === 'posting_transferring_to_delivery' && changed) return changed
+
   return dateText(pickFromSources(['shipment_date', 'shipment_date_actual', 'shipped_at', 'delivering_date'], detail, posting))
 }
 
@@ -364,13 +399,15 @@ export function mergeSalesRowsWithFboLocalDb(args: {
     const extra = byPosting.get(postingNumber)
     if (!extra) return row
 
-    const shipmentDate = text(row?.shipment_date) || text(extra?.shipment_date)
-    const shipmentDateProxy = shipmentDate || text(row?.in_process_at)
+    const shipmentDateFromExtra = text(extra?.shipment_date)
+    const shipmentDateFromRow = text(row?.shipment_date)
+    const acceptedAt = text(row?.in_process_at)
+    const shipmentDate = shipmentDateFromExtra || (shipmentDateFromRow && shipmentDateFromRow !== acceptedAt ? shipmentDateFromRow : '')
 
     return {
       ...row,
       related_postings: text(row?.related_postings) || text(extra?.related_postings),
-      shipment_date: shipmentDateProxy,
+      shipment_date: shipmentDate,
       delivery_date: text(row?.delivery_date) || text(extra?.delivery_date),
       delivery_cluster: text(row?.delivery_cluster) || text(extra?.delivery_cluster),
       delivery_model: text(row?.delivery_model) || 'FBO',
