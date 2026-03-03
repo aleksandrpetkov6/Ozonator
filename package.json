@@ -47,7 +47,8 @@
       "target": [
         "nsis"
       ],
-      "executableName": "Озонатор"
+      "executableName": "Озонатор",
+      "icon": "build/icon.ico"
     },
     "asarUnpack": [
       "**/*.node"
@@ -58,7 +59,10 @@
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "Озонатор",
-      "include": "build/installer.nsh"
+      "include": "build/installer.nsh",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
     },
     "artifactName": "Озонатор.${ext}"
   }
