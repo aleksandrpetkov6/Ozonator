@@ -322,27 +322,40 @@ export type SalesPostingStateEvent = {
 
 const SALES_STATE_CHANGED_EVENT_TYPE = 'type_state_changed'
 const FBO_SHIPMENT_STATE = 'posting_transferring_to_delivery'
-const FBO_SHIPMENT_PRIMARY_STATES = [
+const FBO_SHIPMENT_STATES = [
   FBO_SHIPMENT_STATE,
   'posting_transfered_to_courier_service',
   'posting_transferred_to_courier_service',
   'posting_driver_pick_up',
 ] as const
-const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_PRIMARY_STATES)
+const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_STATES)
 const FBO_SHIPMENT_FALLBACK_STATES = [
   'posting_delivering',
   'delivering',
 ] as const
-function pickLatestSalesEventDateByStates(events: SalesPostingStateEvent[], states: readonly string[]): string {
-  for (const state of states) {
-    const latest = events
-      .filter((event) => event.state === state)
-      .map((event) => event.changed_state_date)
-      .sort((left, right) => right.localeCompare(left))[0] ?? ''
-    if (latest) return latest
-  }
-  return ''
-}
+const FBO_SHIPMENT_FALLBACK_STATE_SET = new Set<string>(FBO_SHIPMENT_FALLBACK_STATES)
+
+const SALES_SHIPMENT_PROGRESS_STATE_KEYS = new Set<string>([
+  'handed_over_to_delivery',
+  'sent_to_delivery',
+  'sent_by_seller',
+  'driver_pickup',
+  'in_transit',
+  'transit',
+  'on_the_way',
+  'on_route',
+  'delivering',
+  'posting_sent_by_seller',
+  'posting_transferring_to_delivery',
+  'posting_transfered_to_courier_service',
+  'posting_transferred_to_courier_service',
+  'posting_driver_pick_up',
+  'posting_in_carriage',
+  'posting_sent_to_city',
+  'posting_on_way_to_city',
+  'posting_on_way_to_pickup_point',
+  'posting_delivering',
+])
 
 function buildSalesStateEventCandidate(source: any): SalesPostingStateEvent | null {
   if (!source || typeof source !== 'object') return null
@@ -404,12 +417,60 @@ export function collectSalesStateEvents(...sources: any[]): SalesPostingStateEve
   return out
 }
 
+function getLatestSalesStateEventDate(stateSet: ReadonlySet<string>, ...sources: any[]): string {
+  return collectSalesStateEvents(...sources)
+    .filter((event) => stateSet.has(event.state))
+    .map((event) => event.changed_state_date)
+    .sort((left, right) => right.localeCompare(left))[0] ?? ''
+}
+
+function getChangedStateDateForCurrentSalesState(stateSet: ReadonlySet<string>, ...sources: any[]): string {
+  const state = normalizeSalesLookupKey(pickFirstPresentFromSources([
+    'new_state',
+    'result.new_state',
+    'provider_status',
+    'result.provider_status',
+    'substatus',
+    'result.substatus',
+    'status',
+    'result.status',
+    'state',
+    'result.state',
+  ], ...sources))
+  if (!state || !stateSet.has(state)) return ''
+  return normalizeDateValue(pickFirstPresentFromSources([
+    'changed_state_date',
+    'result.changed_state_date',
+  ], ...sources))
+}
+
+function getDirectShipmentDateFromSources(...sources: any[]): string {
+  return normalizeDateValue(pickFirstPresentFromSources([
+    'shipment_date_actual',
+    'result.shipment_date_actual',
+    'shipped_at',
+    'result.shipped_at',
+    'shipment_date',
+    'result.shipment_date',
+    'delivering_date',
+    'result.delivering_date',
+  ], ...sources))
+}
+
 export function resolveFboShipmentDateFromSources(...sources: any[]): string {
-  const events = collectSalesStateEvents(...sources)
-  return (
-    pickLatestSalesEventDateByStates(events, FBO_SHIPMENT_PRIMARY_STATES)
-    || pickLatestSalesEventDateByStates(events, FBO_SHIPMENT_FALLBACK_STATES)
-  )
+  const exactEventDate = getLatestSalesStateEventDate(FBO_SHIPMENT_STATE_SET, ...sources)
+  if (exactEventDate) return exactEventDate
+
+  const exactCurrentStateDate = getChangedStateDateForCurrentSalesState(FBO_SHIPMENT_STATE_SET, ...sources)
+  if (exactCurrentStateDate) return exactCurrentStateDate
+
+  const deliveringEventDate = getLatestSalesStateEventDate(FBO_SHIPMENT_FALLBACK_STATE_SET, ...sources)
+  if (deliveringEventDate) return deliveringEventDate
+
+  const deliveringCurrentStateDate = getChangedStateDateForCurrentSalesState(FBO_SHIPMENT_FALLBACK_STATE_SET, ...sources)
+  if (deliveringCurrentStateDate) return deliveringCurrentStateDate
+
+  return getDirectShipmentDateFromSources(...sources)
 }
 
 function buildRelatedPostingsText(posting: any, fallbackPostings: string[] = [], secondaryPosting: any = null): string {
@@ -641,26 +702,35 @@ function getShipmentDateValue(detailPosting: any, posting: any, endpointKind: 'F
     return resolveFboShipmentDateFromSources(detailPosting, posting)
   }
 
+  const exactShipmentDate = normalizeDateValue(pickFirstPresentFromSources([
+    'shipment_date_actual',
+    'result.shipment_date_actual',
+    'shipped_at',
+    'result.shipped_at',
+    'shipment_date',
+    'result.shipment_date',
+  ], detailPosting, posting))
+  if (exactShipmentDate) return exactShipmentDate
+
   if (endpointKind === 'FBS') {
+    const transitStateDate = getChangedStateDateForCurrentSalesState(SALES_SHIPMENT_PROGRESS_STATE_KEYS, detailPosting, posting)
+    if (transitStateDate) return transitStateDate
+
     const deliveryModel = buildDeliveryModelValue(posting, detailPosting, '/v3/posting/fbs/get')
     if (deliveryModel === 'rFBS') {
       return normalizeDateValue(pickFirstPresentFromSources([
         'delivering_date',
-        'shipment_date_actual',
-        'shipped_at',
+        'result.delivering_date',
       ], detailPosting, posting))
     }
 
     return normalizeDateValue(pickFirstPresentFromSources([
-      'shipment_date_actual',
-      'shipped_at',
+      'delivering_date',
+      'result.delivering_date',
     ], detailPosting, posting))
   }
 
-  return normalizeDateValue(pickFirstPresentFromSources([
-    'shipment_date_actual',
-    'shipped_at',
-  ], detailPosting, posting))
+  return exactShipmentDate
 }
 
 const SALES_DELIVERED_STATUS_KEYS = new Set([
