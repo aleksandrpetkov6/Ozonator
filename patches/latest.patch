@@ -1,117 +1,198 @@
-diff --git a/electron/main/index.ts b/electron/main/index.ts
-index 61551b5..71cf28e 100644
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -5,7 +5,7 @@ import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMar
- import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
- import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
- import { type SalesPeriod } from './sales-sync'
--import { getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
-+import { ensureLocalSalesSnapshotFromApiIfMissing, getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
- let mainWindow: BrowserWindow | null = null
- let startupShowTimer: NodeJS.Timeout | null = null
- function startupLog(...args: any[]) {
-@@ -435,7 +435,19 @@ return { ok: false, error: e?.message ?? String(e) }
- })
- ipcMain.handle('data:getDatasetRows', async (_e, args?: { dataset?: string; period?: SalesPeriod | null }) => {
- try {
--const { dataset, rows } = readDatasetRowsSafe(args?.dataset ?? 'products', args?.period ?? null)
-+const dataset = String(args?.dataset ?? 'products').trim() || 'products'
-+if (dataset === 'sales') {
-+let secrets = null
-+try {
-+secrets = loadSecrets()
-+} catch {
-+secrets = null
-+}
-+await ensureLocalSalesSnapshotFromApiIfMissing(secrets, args?.period ?? null)
-+const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
-+return { ok: true, dataset, rows }
-+}
-+const { rows } = readDatasetRowsSafe(dataset, args?.period ?? null)
- return { ok: true, dataset, rows }
- } catch (e: any) {
- const dataset = String(args?.dataset ?? 'products').trim() || 'products'
-@@ -452,6 +464,13 @@ return { ok: false, error: e?.message ?? String(e), products: [] }
- })
- ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
- try {
-+let secrets = null
-+try {
-+secrets = loadSecrets()
-+} catch {
-+secrets = null
-+}
-+await ensureLocalSalesSnapshotFromApiIfMissing(secrets, args?.period ?? null)
- const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
- return { ok: true, rows }
- } catch (e: any) {
-diff --git a/electron/main/local-datasets.ts b/electron/main/local-datasets.ts
-index 3d70b3a..88abca7 100644
 --- a/electron/main/local-datasets.ts
 +++ b/electron/main/local-datasets.ts
-@@ -243,6 +243,51 @@ export async function refreshSalesRawSnapshotFromApi(
-   return { rowsCount: rows.length }
+@@ -1,5 +1,5 @@
+ import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
+-import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, type SalesPeriod } from './sales-sync'
++import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
+ import { dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
+ import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
+ import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
+@@ -53,27 +53,10 @@
+     'cluster_to',
+     'result.cluster_to',
+   ]))
+-  const shipment = normalizeTextValue(pickFirstPresent(detail, [
+-    'shipment_date',
+-    'shipment_date_actual',
+-    'delivering_date',
+-    'shipped_at',
+-    'changed_state_date',
+-    'result.shipment_date',
+-    'result.shipment_date_actual',
+-    'result.delivering_date',
+-    'result.shipped_at',
+-    'result.changed_state_date',
+-  ]))
+-  const delivery = normalizeTextValue(pickFirstPresent(detail, [
+-    'fact_delivery_date',
+-    'delivery_date',
+-    'delivered_date',
+-    'result.fact_delivery_date',
+-    'result.delivery_date',
+-    'result.delivered_date',
+-  ]))
+-  return Boolean(cluster && (shipment || delivery))
++  if (!cluster) return false
++
++  const shipment = normalizeTextValue(resolveFboShipmentDateFromSources(detail))
++  return Boolean(shipment)
  }
  
-+function salesRowNeedsFboBackfill(row: any): boolean {
-+  if (!row || typeof row !== 'object') return false
-+  const model = String(row?.delivery_model ?? '').trim().toUpperCase()
-+  if (model !== 'FBO') return false
+ function collectFboPostingNumbersNeedingCompat(
+--- a/electron/main/storage/fbo-sales.ts
++++ b/electron/main/storage/fbo-sales.ts
+@@ -109,11 +109,30 @@
+   return dateText(pickFromSources(['changed_state_date', 'result.changed_state_date'], ...sources))
+ }
+ 
++const FBO_SHIPMENT_STATES = [
++  'posting_transferring_to_delivery',
++  'posting_transfered_to_courier_service',
++  'posting_transferred_to_courier_service',
++  'posting_driver_pick_up',
++] as const
 +
-+  const status = String(row?.status ?? '').trim()
-+  const shipmentDate = String(row?.shipment_date ?? '').trim()
-+  const deliveryCluster = String(row?.delivery_cluster ?? '').trim()
-+  const deliveryDate = String(row?.delivery_date ?? '').trim()
++const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_STATES)
 +
-+  if (!shipmentDate) return true
-+  if (!deliveryCluster) return true
-+  if (status === 'Доставлен' && !deliveryDate) return true
++const FBO_DELIVERED_STATES = new Set<string>([
++  'delivered',
++  'delivered_to_customer',
++  'customer_received',
++  'posting_delivered',
++  'posting_delivered_to_customer',
++])
++
+ function shipmentEventDateFromSource(source: any): string {
+   if (!source || typeof source !== 'object') return ''
+ 
+   const queue: any[] = [source]
+   const seen = new Set<any>()
++  const byState = new Map<string, string[]>()
++  for (const state of FBO_SHIPMENT_STATES) byState.set(state, [])
+ 
+   while (queue.length > 0) {
+     const current = queue.shift()
+@@ -123,7 +142,10 @@
+ 
+     const state = text(pick(current, ['new_state', 'state', 'status', 'result.new_state', 'result.state', 'result.status'])).toLowerCase()
+     const changedStateDate = dateText(pick(current, ['changed_state_date', 'result.changed_state_date']))
+-    if (state === 'posting_transferring_to_delivery' && changedStateDate) return changedStateDate
++    if (FBO_SHIPMENT_STATE_SET.has(state) && changedStateDate) {
++      const bucket = byState.get(state)
++      if (bucket) bucket.push(changedStateDate)
++    }
+ 
+     if (Array.isArray(current)) {
+       for (const item of current) {
+@@ -135,6 +157,11 @@
+     for (const value of Object.values(current)) {
+       if (value && typeof value === 'object') queue.push(value)
+     }
++  }
++
++  for (const state of FBO_SHIPMENT_STATES) {
++    const best = (byState.get(state) ?? []).sort((left, right) => right.localeCompare(left))[0] ?? ''
++    if (best) return best
+   }
+ 
+   return ''
+@@ -191,25 +218,46 @@
+ 
+   const state = normalizedStateOf(detail, posting)
+   const changed = changedStateDateOf(detail, posting)
+-  if (state === 'posting_transferring_to_delivery' && changed) return changed
++  if (FBO_SHIPMENT_STATE_SET.has(state) && changed) return changed
+ 
+   return dateText(pickFromSources(['shipment_date', 'shipment_date_actual', 'shipped_at', 'delivering_date'], detail, posting))
+ }
+ 
++function hasDeliveredStateOf(...sources: any[]): boolean {
++  for (const source of sources) {
++    const state = text(pick(source, [
++      'status',
++      'result.status',
++      'provider_status',
++      'result.provider_status',
++      'new_state',
++      'result.new_state',
++      'state',
++      'result.state',
++    ])).toLowerCase()
++    if (state && FBO_DELIVERED_STATES.has(state)) return true
++  }
 +  return false
 +}
 +
-+function salesRowsNeedFboBackfill(rows: any[]): boolean {
-+  return rows.some((row) => salesRowNeedsFboBackfill(row))
-+}
+ function deliveryDateOf(detail: any, posting: any): string {
+-  return dateText(pickFromSources([
++  const exact = dateText(pickFromSources([
+     'fact_delivery_date',
+     'result.fact_delivery_date',
++  ], detail, posting))
++  if (exact) return exact
 +
-+export async function ensureLocalSalesSnapshotFromApiIfMissing(
-+  secrets: Secrets | null | undefined,
-+  requestedPeriod: SalesPeriod | null | undefined,
-+): Promise<{ refreshed: boolean; rowsCount: number }> {
-+  const storeClientId = secrets?.clientId ?? null
-+  const localRows = getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
-+  const rows = Array.isArray(localRows) ? localRows : []
-+  const needsRefresh = rows.length === 0 || salesRowsNeedFboBackfill(rows)
++  if (!hasDeliveredStateOf(detail, posting)) return ''
 +
-+  if (!secrets || !needsRefresh) {
-+    return { refreshed: false, rowsCount: rows.length }
-+  }
-+
-+  try {
-+    await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod)
-+    const refreshedRows = getLocalDatasetRows(storeClientId, 'sales', { period: requestedPeriod ?? null })
-+    return {
-+      refreshed: true,
-+      rowsCount: Array.isArray(refreshedRows) ? refreshedRows.length : 0,
-+    }
-+  } catch {
-+    return { refreshed: false, rowsCount: rows.length }
-+  }
-+}
-+
- export function getLocalDatasetRows(
-   storeClientId: string | null | undefined,
-   datasetRaw: LocalDatasetName,
-diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
-index 74e14df..2e0dd8e 100644
---- a/electron/main/ozon.ts
-+++ b/electron/main/ozon.ts
-@@ -789,7 +789,7 @@ export async function ozonPostingFbsGet(secrets: Secrets, postingNumber: string)
++  return dateText(pickFromSources([
++    'result.customer_deliver_date',
++    'customer_deliver_date',
++    'result.delivered_at',
++    'delivered_at',
+     'delivered_date',
+     'result.delivered_date',
+     'delivery_date',
+     'result.delivery_date',
+-    'analytics_data.delivery_date',
+-    'result.analytics_data.delivery_date',
+-    'analytics_data.delivery_date_begin',
+-    'result.analytics_data.delivery_date_begin',
+-    'analytics_data.delivery_date_end',
+-    'result.analytics_data.delivery_date_end',
+   ], detail, posting))
  }
  
- export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string) {
--  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber))
-+  return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, true))
- }
+@@ -370,7 +418,12 @@
+           WHERE e.store_client_id = p.store_client_id
+             AND e.period_key = p.period_key
+             AND e.posting_number = p.posting_number
+-            AND e.state = 'posting_transferring_to_delivery'
++            AND e.state IN (
++              'posting_transferring_to_delivery',
++              'posting_transfered_to_courier_service',
++              'posting_transferred_to_courier_service',
++              'posting_driver_pick_up'
++            )
+         )
+       ) AS shipment_date,
+       p.delivery_date,
+@@ -402,13 +455,28 @@
+     const shipmentDateFromExtra = text(extra?.shipment_date)
+     const shipmentDateFromRow = text(row?.shipment_date)
+     const acceptedAt = text(row?.in_process_at)
+-    const shipmentDate = shipmentDateFromExtra || (shipmentDateFromRow && shipmentDateFromRow !== acceptedAt ? shipmentDateFromRow : '')
++    const normalizedExtraShipment = shipmentDateFromExtra && shipmentDateFromExtra !== acceptedAt ? shipmentDateFromExtra : ''
++    const normalizedRowShipment = shipmentDateFromRow && shipmentDateFromRow !== acceptedAt ? shipmentDateFromRow : ''
++    const shipmentDate = normalizedExtraShipment || normalizedRowShipment
++
++    const deliveryDateFromRow = text(row?.delivery_date)
++    const deliveryDateFromExtra = text(extra?.delivery_date)
++    const rowStatus = text(row?.status).toLowerCase()
++    const isDelivered = Boolean(
++      rowStatus
++      && (
++        rowStatus.includes('доставлен')
++        || rowStatus.includes('получен покупателем')
++        || FBO_DELIVERED_STATES.has(rowStatus)
++      )
++    )
++    const deliveryDate = deliveryDateFromRow || (isDelivered ? deliveryDateFromExtra : '')
  
- export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
+     return {
+       ...row,
+       related_postings: text(row?.related_postings) || text(extra?.related_postings),
+       shipment_date: shipmentDate,
+-      delivery_date: text(row?.delivery_date) || text(extra?.delivery_date),
++      delivery_date: deliveryDate,
+       delivery_cluster: text(row?.delivery_cluster) || text(extra?.delivery_cluster),
+       delivery_model: text(row?.delivery_model) || 'FBO',
+     }
