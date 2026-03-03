@@ -5,7 +5,7 @@ import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMar
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
-import { ensureLocalSalesSnapshotFromApiIfMissing, getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
+import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 let mainWindow: BrowserWindow | null = null
 let startupShowTimer: NodeJS.Timeout | null = null
 let backgroundSyncTimer: NodeJS.Timeout | null = null
@@ -482,7 +482,7 @@ if (!mainWindow || mainWindow.isDestroyed()) return
 if (!hasSecrets()) return
 const online = await checkInternet()
 if (!online) return
-const resp = await performProductsSync({ salesPeriod: null })
+const resp = await performProductsSync({ salesPeriod: getDefaultRollingSalesPeriod() })
 if (resp?.ok) {
 startupLog('background-sync.ok', {
 reason,
