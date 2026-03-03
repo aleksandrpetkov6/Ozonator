@@ -322,13 +322,27 @@ export type SalesPostingStateEvent = {
 
 const SALES_STATE_CHANGED_EVENT_TYPE = 'type_state_changed'
 const FBO_SHIPMENT_STATE = 'posting_transferring_to_delivery'
-const FBO_SHIPMENT_STATES = [
+const FBO_SHIPMENT_PRIMARY_STATES = [
   FBO_SHIPMENT_STATE,
   'posting_transfered_to_courier_service',
   'posting_transferred_to_courier_service',
   'posting_driver_pick_up',
 ] as const
-const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_STATES)
+const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_PRIMARY_STATES)
+const FBO_SHIPMENT_FALLBACK_STATES = [
+  'posting_delivering',
+  'delivering',
+] as const
+function pickLatestSalesEventDateByStates(events: SalesPostingStateEvent[], states: readonly string[]): string {
+  for (const state of states) {
+    const latest = events
+      .filter((event) => event.state === state)
+      .map((event) => event.changed_state_date)
+      .sort((left, right) => right.localeCompare(left))[0] ?? ''
+    if (latest) return latest
+  }
+  return ''
+}
 
 function buildSalesStateEventCandidate(source: any): SalesPostingStateEvent | null {
   if (!source || typeof source !== 'object') return null
@@ -391,10 +405,11 @@ export function collectSalesStateEvents(...sources: any[]): SalesPostingStateEve
 }
 
 export function resolveFboShipmentDateFromSources(...sources: any[]): string {
-  return collectSalesStateEvents(...sources)
-    .filter((event) => FBO_SHIPMENT_STATE_SET.has(event.state))
-    .map((event) => event.changed_state_date)
-    .sort((left, right) => right.localeCompare(left))[0] ?? ''
+  const events = collectSalesStateEvents(...sources)
+  return (
+    pickLatestSalesEventDateByStates(events, FBO_SHIPMENT_PRIMARY_STATES)
+    || pickLatestSalesEventDateByStates(events, FBO_SHIPMENT_FALLBACK_STATES)
+  )
 }
 
 function buildRelatedPostingsText(posting: any, fallbackPostings: string[] = [], secondaryPosting: any = null): string {
