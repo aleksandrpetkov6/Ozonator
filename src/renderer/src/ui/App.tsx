@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import SettingsPage from './pages/SettingsPage'
 import ProductsPage from './pages/ProductsPage'
 import LogsPage from './pages/LogsPage'
@@ -11,6 +11,7 @@ import { useGlobalTableEnhancements } from './utils/tableEnhancements'
 const baseTitle = 'Озонатор'
 const STORE_NAME_LS_KEY = 'ozonator_store_name'
 const DEMAND_FORECAST_PERIOD_LS_KEY = UI_DATE_RANGE_LS_KEY
+const APP_UI_DRAFT_LS_KEY = 'ozonator_app_ui_draft'
 
 type DemandForecastPeriod = UiDateRange
 type SalesPeriod = UiDateRange
@@ -31,6 +32,61 @@ function formatPeriodBoundary(value: string, boundary: 'startOfDay' | 'endOfDay'
 
 function readDemandForecastPeriod(): DemandForecastPeriod {
   return readDateRangeWithDefault(DEMAND_FORECAST_PERIOD_LS_KEY, DEFAULT_UI_DATE_RANGE_DAYS)
+}
+
+type AppUiDraft = {
+  path?: string
+  productsQuery?: string
+  demandPeriod?: UiDateRange | null
+  salesPeriod?: UiDateRange | null
+  adminLogLifeDraft?: string
+}
+
+function isValidUiDateRange(value: unknown): value is UiDateRange {
+  return !!value
+    && typeof value === 'object'
+    && typeof (value as UiDateRange).from === 'string'
+    && typeof (value as UiDateRange).to === 'string'
+}
+
+function sanitizeDraftPath(value: unknown): string | null {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+  const allowed = new Set(['/', '/sales', '/returns', '/forecast-demand', '/stocks', '/logs', '/settings', '/admin'])
+  return allowed.has(raw) ? raw : null
+}
+
+function readAppUiDraft(): AppUiDraft {
+  try {
+    const raw = localStorage.getItem(APP_UI_DRAFT_LS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const draft = parsed as AppUiDraft
+    return {
+      path: sanitizeDraftPath(draft.path) ?? undefined,
+      productsQuery: typeof draft.productsQuery === 'string' ? draft.productsQuery : undefined,
+      demandPeriod: isValidUiDateRange(draft.demandPeriod) ? draft.demandPeriod : null,
+      salesPeriod: isValidUiDateRange(draft.salesPeriod) ? draft.salesPeriod : null,
+      adminLogLifeDraft: typeof draft.adminLogLifeDraft === 'string' ? draft.adminLogLifeDraft : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+function writeAppUiDraft(draft: AppUiDraft) {
+  try {
+    localStorage.setItem(APP_UI_DRAFT_LS_KEY, JSON.stringify({
+      path: sanitizeDraftPath(draft.path) ?? '/',
+      productsQuery: String(draft.productsQuery ?? ''),
+      demandPeriod: isValidUiDateRange(draft.demandPeriod) ? draft.demandPeriod : null,
+      salesPeriod: isValidUiDateRange(draft.salesPeriod) ? draft.salesPeriod : null,
+      adminLogLifeDraft: String(draft.adminLogLifeDraft ?? ''),
+    }))
+  } catch {
+    // ignore
+  }
 }
 
 const ProductsPageMemo = React.memo(ProductsPage)
@@ -69,6 +125,8 @@ function parseLogLifeDays(value: string): number | null {
 export default function App() {
   useGlobalTableEnhancements()
   const location = useLocation()
+  const navigate = useNavigate()
+  const bootDraft = useMemo(() => readAppUiDraft(), [])
   const online = useOnline()
 
   const [running, setRunning] = useState(false)
@@ -80,17 +138,18 @@ export default function App() {
   const [lastError, setLastError] = useState<string | null>(null)
 
   const [storeName, setStoreName] = useState<string>('')
-  const [productsQuery, setProductsQuery] = useState('')
+  const [productsQuery, setProductsQuery] = useState(() => bootDraft.productsQuery ?? '')
   const [productsTotal, setProductsTotal] = useState(0)
   const [productsFiltered, setProductsFiltered] = useState(0)
-  const [demandPeriod, setDemandPeriod] = useState<DemandForecastPeriod>(() => readDemandForecastPeriod())
-  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>(() => getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS))
+  const [demandPeriod, setDemandPeriod] = useState<DemandForecastPeriod>(() => isValidUiDateRange(bootDraft.demandPeriod) ? bootDraft.demandPeriod : readDemandForecastPeriod())
+  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>(() => isValidUiDateRange(bootDraft.salesPeriod) ? bootDraft.salesPeriod : getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS))
   const [salesRefreshTick, setSalesRefreshTick] = useState(0)
   const didOnlineBootstrapRef = useRef(false)
+  const bootDraftRestoreDoneRef = useRef(false)
 
   const [adminLoading, setAdminLoading] = useState(true)
   const [adminSaving, setAdminSaving] = useState(false)
-  const [adminLogLifeDraft, setAdminLogLifeDraft] = useState('')
+  const [adminLogLifeDraft, setAdminLogLifeDraft] = useState(() => bootDraft.adminLogLifeDraft ?? '')
   const [adminLogLifeSaved, setAdminLogLifeSaved] = useState<number>(30)
   const [adminNotice, setAdminNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const [datePresetOpen, setDatePresetOpen] = useState(false)
@@ -107,6 +166,39 @@ export default function App() {
   const isProducts = !isLogs && !isSettings && !isAdmin && !isDemandForecast && !isSales && !isReturns && !isStocks
   const isDataGridTab = isProducts || isSales || isReturns || isStocks
   const isProductsLike = isDataGridTab || isDemandForecast
+
+  useEffect(() => {
+    if (bootDraftRestoreDoneRef.current) return
+    bootDraftRestoreDoneRef.current = true
+    const nextPath = sanitizeDraftPath(bootDraft.path)
+    if (!nextPath || nextPath === pathname) return
+    navigate(nextPath, { replace: true })
+  }, [bootDraft.path, navigate, pathname])
+
+  useEffect(() => {
+    writeAppUiDraft({
+      path: pathname,
+      productsQuery,
+      demandPeriod,
+      salesPeriod,
+      adminLogLifeDraft,
+    })
+  }, [pathname, productsQuery, demandPeriod, salesPeriod, adminLogLifeDraft])
+
+  useEffect(() => {
+    const flushDraft = () => {
+      writeAppUiDraft({
+        path: pathname,
+        productsQuery,
+        demandPeriod,
+        salesPeriod,
+        adminLogLifeDraft,
+      })
+    }
+
+    window.addEventListener('ozon:prepare-install-exit', flushDraft)
+    return () => window.removeEventListener('ozon:prepare-install-exit', flushDraft)
+  }, [pathname, productsQuery, demandPeriod, salesPeriod, adminLogLifeDraft])
 
   const onProductStats = useCallback((s: { total: number; filtered: number }) => {
     setProductsTotal(s.total)
@@ -259,7 +351,7 @@ export default function App() {
 
         const days = Math.max(1, Math.trunc(Number(resp.logRetentionDays) || 30))
         setAdminLogLifeSaved(days)
-        setAdminLogLifeDraft(String(days))
+        setAdminLogLifeDraft((prev) => prev.trim() ? prev : String(days))
         setAdminNotice(null)
       } catch (e: any) {
         if (cancelled) return
