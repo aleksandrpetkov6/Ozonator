@@ -1,5 +1,5 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
-import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, type SalesPeriod } from './sales-sync'
+import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
 import { dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
@@ -53,27 +53,10 @@ function hasFboCompatDetail(detail: any): boolean {
     'cluster_to',
     'result.cluster_to',
   ]))
-  const shipment = normalizeTextValue(pickFirstPresent(detail, [
-    'shipment_date',
-    'shipment_date_actual',
-    'delivering_date',
-    'shipped_at',
-    'changed_state_date',
-    'result.shipment_date',
-    'result.shipment_date_actual',
-    'result.delivering_date',
-    'result.shipped_at',
-    'result.changed_state_date',
-  ]))
-  const delivery = normalizeTextValue(pickFirstPresent(detail, [
-    'fact_delivery_date',
-    'delivery_date',
-    'delivered_date',
-    'result.fact_delivery_date',
-    'result.delivery_date',
-    'result.delivered_date',
-  ]))
-  return Boolean(cluster && (shipment || delivery))
+  if (!cluster) return false
+
+  const shipment = normalizeTextValue(resolveFboShipmentDateFromSources(detail))
+  return Boolean(shipment)
 }
 
 function collectFboPostingNumbersNeedingCompat(

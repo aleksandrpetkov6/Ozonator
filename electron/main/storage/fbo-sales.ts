@@ -109,11 +109,30 @@ function changedStateDateOf(...sources: any[]): string {
   return dateText(pickFromSources(['changed_state_date', 'result.changed_state_date'], ...sources))
 }
 
+const FBO_SHIPMENT_STATES = [
+  'posting_transferring_to_delivery',
+  'posting_transfered_to_courier_service',
+  'posting_transferred_to_courier_service',
+  'posting_driver_pick_up',
+] as const
+
+const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_STATES)
+
+const FBO_DELIVERED_STATES = new Set<string>([
+  'delivered',
+  'delivered_to_customer',
+  'customer_received',
+  'posting_delivered',
+  'posting_delivered_to_customer',
+])
+
 function shipmentEventDateFromSource(source: any): string {
   if (!source || typeof source !== 'object') return ''
 
   const queue: any[] = [source]
   const seen = new Set<any>()
+  const byState = new Map<string, string[]>()
+  for (const state of FBO_SHIPMENT_STATES) byState.set(state, [])
 
   while (queue.length > 0) {
     const current = queue.shift()
@@ -123,7 +142,10 @@ function shipmentEventDateFromSource(source: any): string {
 
     const state = text(pick(current, ['new_state', 'state', 'status', 'result.new_state', 'result.state', 'result.status'])).toLowerCase()
     const changedStateDate = dateText(pick(current, ['changed_state_date', 'result.changed_state_date']))
-    if (state === 'posting_transferring_to_delivery' && changedStateDate) return changedStateDate
+    if (FBO_SHIPMENT_STATE_SET.has(state) && changedStateDate) {
+      const bucket = byState.get(state)
+      if (bucket) bucket.push(changedStateDate)
+    }
 
     if (Array.isArray(current)) {
       for (const item of current) {
@@ -135,6 +157,11 @@ function shipmentEventDateFromSource(source: any): string {
     for (const value of Object.values(current)) {
       if (value && typeof value === 'object') queue.push(value)
     }
+  }
+
+  for (const state of FBO_SHIPMENT_STATES) {
+    const best = (byState.get(state) ?? []).sort((left, right) => right.localeCompare(left))[0] ?? ''
+    if (best) return best
   }
 
   return ''
@@ -191,25 +218,46 @@ function shipmentDateOf(detail: any, posting: any): string {
 
   const state = normalizedStateOf(detail, posting)
   const changed = changedStateDateOf(detail, posting)
-  if (state === 'posting_transferring_to_delivery' && changed) return changed
+  if (FBO_SHIPMENT_STATE_SET.has(state) && changed) return changed
 
   return dateText(pickFromSources(['shipment_date', 'shipment_date_actual', 'shipped_at', 'delivering_date'], detail, posting))
 }
 
+function hasDeliveredStateOf(...sources: any[]): boolean {
+  for (const source of sources) {
+    const state = text(pick(source, [
+      'status',
+      'result.status',
+      'provider_status',
+      'result.provider_status',
+      'new_state',
+      'result.new_state',
+      'state',
+      'result.state',
+    ])).toLowerCase()
+    if (state && FBO_DELIVERED_STATES.has(state)) return true
+  }
+  return false
+}
+
 function deliveryDateOf(detail: any, posting: any): string {
-  return dateText(pickFromSources([
+  const exact = dateText(pickFromSources([
     'fact_delivery_date',
     'result.fact_delivery_date',
+  ], detail, posting))
+  if (exact) return exact
+
+  if (!hasDeliveredStateOf(detail, posting)) return ''
+
+  return dateText(pickFromSources([
+    'result.customer_deliver_date',
+    'customer_deliver_date',
+    'result.delivered_at',
+    'delivered_at',
     'delivered_date',
     'result.delivered_date',
     'delivery_date',
     'result.delivery_date',
-    'analytics_data.delivery_date',
-    'result.analytics_data.delivery_date',
-    'analytics_data.delivery_date_begin',
-    'result.analytics_data.delivery_date_begin',
-    'analytics_data.delivery_date_end',
-    'result.analytics_data.delivery_date_end',
   ], detail, posting))
 }
 
@@ -370,7 +418,12 @@ export function mergeSalesRowsWithFboLocalDb(args: {
           WHERE e.store_client_id = p.store_client_id
             AND e.period_key = p.period_key
             AND e.posting_number = p.posting_number
-            AND e.state = 'posting_transferring_to_delivery'
+            AND e.state IN (
+              'posting_transferring_to_delivery',
+              'posting_transfered_to_courier_service',
+              'posting_transferred_to_courier_service',
+              'posting_driver_pick_up'
+            )
         )
       ) AS shipment_date,
       p.delivery_date,
@@ -402,13 +455,28 @@ export function mergeSalesRowsWithFboLocalDb(args: {
     const shipmentDateFromExtra = text(extra?.shipment_date)
     const shipmentDateFromRow = text(row?.shipment_date)
     const acceptedAt = text(row?.in_process_at)
-    const shipmentDate = shipmentDateFromExtra || (shipmentDateFromRow && shipmentDateFromRow !== acceptedAt ? shipmentDateFromRow : '')
+    const normalizedExtraShipment = shipmentDateFromExtra && shipmentDateFromExtra !== acceptedAt ? shipmentDateFromExtra : ''
+    const normalizedRowShipment = shipmentDateFromRow && shipmentDateFromRow !== acceptedAt ? shipmentDateFromRow : ''
+    const shipmentDate = normalizedExtraShipment || normalizedRowShipment
+
+    const deliveryDateFromRow = text(row?.delivery_date)
+    const deliveryDateFromExtra = text(extra?.delivery_date)
+    const rowStatus = text(row?.status).toLowerCase()
+    const isDelivered = Boolean(
+      rowStatus
+      && (
+        rowStatus.includes('доставлен')
+        || rowStatus.includes('получен покупателем')
+        || FBO_DELIVERED_STATES.has(rowStatus)
+      )
+    )
+    const deliveryDate = deliveryDateFromRow || (isDelivered ? deliveryDateFromExtra : '')
 
     return {
       ...row,
       related_postings: text(row?.related_postings) || text(extra?.related_postings),
       shipment_date: shipmentDate,
-      delivery_date: text(row?.delivery_date) || text(extra?.delivery_date),
+      delivery_date: deliveryDate,
       delivery_cluster: text(row?.delivery_cluster) || text(extra?.delivery_cluster),
       delivery_model: text(row?.delivery_model) || 'FBO',
     }
