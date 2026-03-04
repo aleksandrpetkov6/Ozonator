@@ -222,7 +222,7 @@ try { app.exit(0) } catch {}
 }, 150)
 })
 } else {
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
 try {
 startupLog('app.whenReady')
 if (!safeStorage.isEncryptionAvailable()) {
@@ -236,9 +236,9 @@ try {
     host: '127.0.0.1',
     port: 0,
     handlers: {
-      syncProducts: async (payload) => await performProductsSync({ salesPeriod: payload?.salesPeriod ?? null }),
-      refreshSales: async (payload) => await handleRefreshSales(payload?.period ?? null),
-      getDatasetRows: async (payload) => {
+      syncProducts: async (payload: { salesPeriod?: SalesPeriod | null } | null | undefined) => await performProductsSync({ salesPeriod: payload?.salesPeriod ?? null }),
+      refreshSales: async (payload: { period?: SalesPeriod | null } | null | undefined) => await handleRefreshSales(payload?.period ?? null),
+      getDatasetRows: async (payload: { dataset?: string; period?: SalesPeriod | null } | null | undefined) => {
         try {
           return await handleGetDatasetRows(payload?.dataset, payload?.period ?? null)
         } catch (e: any) {
@@ -247,7 +247,7 @@ try {
         }
       },
       getProducts: async () => await handleGetProducts(),
-      getSales: async (payload) => {
+      getSales: async (payload: { period?: SalesPeriod | null } | null | undefined) => {
         try {
           return await handleGetSales(payload?.period ?? null)
         } catch (e: any) {
@@ -268,14 +268,14 @@ try {
           return { ok: false, error: e?.message ?? String(e), rows: [] }
         }
       },
-      getGridColumns: async (payload) => {
+      getGridColumns: async (payload: { dataset?: string } | null | undefined) => {
         try {
           return await handleGetGridColumns(payload?.dataset)
         } catch (e: any) {
           return { ok: false, error: e?.message ?? String(e), dataset: String(payload?.dataset ?? 'products'), cols: null }
         }
       },
-      saveGridColumns: async (payload) => {
+      saveGridColumns: async (payload: { dataset?: string; cols?: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }> } | null | undefined) => {
         try {
           return await handleSaveGridColumns(payload?.dataset, payload?.cols)
         } catch (e: any) {
