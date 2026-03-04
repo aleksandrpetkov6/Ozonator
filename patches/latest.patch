@@ -1,190 +1,30 @@
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -13,9 +13,13 @@
- let isQuitting = false
- let syncProductsInFlight: Promise<any> | null = null
- const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
-+const salesSnapshotWarmupRetryTimers = new Map<string, NodeJS.Timeout>()
- const SYNC_PRODUCTS_PAGE_LIMIT = 250
- const SYNC_PLACEMENT_BATCH_SIZE = 150
- const SYNC_YIELD_DELAY_MS = 25
-+const STARTUP_AUTO_SYNC_GRACE_MS = 12_000
-+const AUTO_SYNC_RETRY_DELAY_MS = 1_500
-+let appReadyAtMs = 0
- const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
- const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
- let installerShutdownInFlight: Promise<void> | null = null
-@@ -246,6 +250,7 @@
- app.whenReady().then(() => {
- try {
- startupLog('app.whenReady')
-+appReadyAtMs = Date.now()
- if (!safeStorage.isEncryptionAvailable()) {
- console.warn('safeStorage encryption is not available on this machine.')
- startupLog('safeStorage.unavailable')
-@@ -276,6 +281,10 @@
- clearInterval(backgroundSyncTimer)
- backgroundSyncTimer = null
- }
-+for (const timer of salesSnapshotWarmupRetryTimers.values()) {
-+try { clearTimeout(timer) } catch {}
-+}
-+salesSnapshotWarmupRetryTimers.clear()
- })
- app.on('activate', () => {
- startupLog('app.activate', { windows: BrowserWindow.getAllWindows().length })
-@@ -365,16 +374,49 @@
- return `${from}|${to}`
- }
+--- a/src/renderer/src/global.d.ts
++++ b/src/renderer/src/global.d.ts
+@@
+ // Existing global declarations (if any) can stay here.
  
-+function getStartupAutoSyncRemainingMs() {
-+if (!appReadyAtMs) return 0
-+return Math.max(0, (appReadyAtMs + STARTUP_AUTO_SYNC_GRACE_MS) - Date.now())
-+}
-+
-+function scheduleSalesWarmupRetry(scopeKey: string, period: SalesPeriod | null | undefined, reason: string, waitMs: number) {
-+if (salesSnapshotWarmupRetryTimers.has(scopeKey)) return
-+const safeWaitMs = Math.max(AUTO_SYNC_RETRY_DELAY_MS, Math.trunc(Number(waitMs) || 0))
-+const timer = setTimeout(() => {
-+const activeTimer = salesSnapshotWarmupRetryTimers.get(scopeKey)
-+if (activeTimer === timer) salesSnapshotWarmupRetryTimers.delete(scopeKey)
-+void warmupSalesSnapshotInBackground(period ?? null, `${reason}:deferred`)
-+}, safeWaitMs)
-+salesSnapshotWarmupRetryTimers.set(scopeKey, timer)
-+try { timer.unref?.() } catch {}
-+}
-+
- function warmupSalesSnapshotInBackground(period?: SalesPeriod | null, reason = 'sales-read') {
- const scopeKey = getSalesWarmupScopeKey(period)
- if (salesSnapshotWarmupInFlight.has(scopeKey)) return
- 
-+const startupDelayMs = getStartupAutoSyncRemainingMs()
-+if (startupDelayMs > 0) {
-+startupLog('sales-snapshot-warmup.defer-startup', { reason, scopeKey, waitMs: startupDelayMs })
-+scheduleSalesWarmupRetry(scopeKey, period ?? null, reason, startupDelayMs + AUTO_SYNC_RETRY_DELAY_MS)
-+return
-+}
-+
-+if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
-+startupLog('sales-snapshot-warmup.defer-window', { reason, scopeKey })
-+scheduleSalesWarmupRetry(scopeKey, period ?? null, reason, AUTO_SYNC_RETRY_DELAY_MS)
-+return
-+}
-+
- const job = (async () => {
- if (isQuitting) return
- if (!hasSecrets()) return
- 
- const online = await checkInternet()
--if (!online) return
-+if (!online) {
-+scheduleSalesWarmupRetry(scopeKey, period ?? null, reason, AUTO_SYNC_RETRY_DELAY_MS * 2)
-+return
-+}
- 
- let secrets = null
- try {
-@@ -597,7 +639,13 @@
- async function runBackgroundSyncTick(reason: string) {
- if (isQuitting) return
- if (!mainWindow || mainWindow.isDestroyed()) return
-+if (!mainWindow.isVisible()) return
- if (!hasSecrets()) return
-+const startupDelayMs = getStartupAutoSyncRemainingMs()
-+if (startupDelayMs > 0) {
-+startupLog('background-sync.defer-startup', { reason, waitMs: startupDelayMs })
-+return
-+}
- const online = await checkInternet()
- if (!online) return
- const resp = await performProductsSync({ salesPeriod: getDefaultRollingSalesPeriod() })
---- a/electron/main/ozon.ts
-+++ b/electron/main/ozon.ts
-@@ -49,7 +49,7 @@
- const OZON_MAX_RETRIES = 3
- const OZON_RETRY_DELAY_MS = 1200
- const OZON_REQUEST_TIMEOUT_MS = 25_000
--const OZON_REQUEST_MIN_GAP_MS = 300
-+const OZON_REQUEST_MIN_GAP_MS = 450
- 
- let ozonRequestQueue: Promise<void> = Promise.resolve()
- let ozonRequestNextAllowedAt = 0
-@@ -96,6 +96,8 @@
-     const releaseTurn = await waitForOzonRequestTurn()
-     let res: Response
-     let text = ''
-+    let json: any = null
-+    let retryWaitMs: number | null = null
- 
-     try {
-       const controller = new AbortController()
-@@ -117,39 +119,41 @@
-       } finally {
-         clearTimeout(timeoutId)
-       }
-+
-+      json = await parseJsonSafe(text)
-+      const shouldRetry = !res.ok && OZON_RETRYABLE_STATUSES.has(res.status) && attempt < OZON_MAX_RETRIES
-+
-+      if (ozonApiCaptureHook) {
-+        const fetchedAt = new Date().toISOString()
-+        await ozonApiCaptureHook({
-+          storeClientId: String(secrets?.clientId ?? '').trim() || null,
-+          method,
-+          endpoint,
-+          requestBody: body ?? null,
-+          responseBody: json ?? { __raw_text: text },
-+          httpStatus: res.status,
-+          isSuccess: res.ok,
-+          errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
-+          fetchedAt,
-+        })
-+      }
-+
-+      if (shouldRetry) {
-+        const retryAfterMs = getRetryAfterMs(res)
-+        retryWaitMs = retryAfterMs ?? (OZON_RETRY_DELAY_MS * (attempt + 1))
-+      } else if (!res.ok) {
-+        throw normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })
-+      } else {
-+        return json
-+      }
-     } finally {
-       releaseTurn()
-     }
--    const json = await parseJsonSafe(text)
--    const shouldRetry = !res.ok && OZON_RETRYABLE_STATUSES.has(res.status) && attempt < OZON_MAX_RETRIES
--
--    if (shouldRetry) {
--      const retryAfterMs = getRetryAfterMs(res)
--      const waitMs = retryAfterMs ?? (OZON_RETRY_DELAY_MS * (attempt + 1))
--      await sleep(waitMs)
-+
-+    if (retryWaitMs != null) {
-+      await sleep(retryWaitMs)
-       continue
-     }
--
--    if (ozonApiCaptureHook) {
--      const fetchedAt = new Date().toISOString()
--      await ozonApiCaptureHook({
--        storeClientId: String(secrets?.clientId ?? '').trim() || null,
--        method,
--        endpoint,
--        requestBody: body ?? null,
--        responseBody: json ?? { __raw_text: text },
--        httpStatus: res.status,
--        isSuccess: res.ok,
--        errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
--        fetchedAt,
--      })
--    }
--
--    if (!res.ok) {
--      throw normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })
--    }
--
--    return json
+ // Add Vite-specific ImportMeta type to satisfy TypeScript.
+ // This mirrors the shape of import.meta.env used in Vite projects.
+ declare global {
+   interface ImportMeta {
+     /**
+      * Vite exposes environment variables via `import.meta.env`.
+      * The exact shape depends on the variables defined in `.env` files.
+      * We declare it as an index signature to allow any key.
+      */
+     env: {
+       [key: string]: any;
+     };
    }
+ }
  
-   throw normalizeError('Ozon API error: retry loop exhausted', { endpoint, body })
+ // Ensure the file is treated as a module so that the global augmentation is applied.
+ export {};
+
+--- a/src/renderer/src/ui/App.tsx
++++ b/src/renderer/src/ui/App.tsx
+@@
+-  const env = import.meta.env;
++  // ImportMeta.env is now typed via global.d.ts. Use it directly.
++  const env = import.meta.env;
+*** End of File ***
