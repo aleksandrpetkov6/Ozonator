@@ -466,60 +466,31 @@ export default function App() {
   const adminParsed = parseLogLifeDays(adminLogLifeDraft)
   const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
   const visibleLastError = lastError && lastError !== 'Нет интернета' ? lastError : null
-  const windowTitleLogoSrc = './brand/ozonator-title-logo.png'
+
+  const titleLogoSrc = './brand/ozonator-title-logo.png'
+
+
 
   return (
     <div className="appShell">
-      <div
-        aria-label="Заголовок окна"
-        style={{
-          height: 40,
-          padding: '4px 144px 4px 8px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          background: '#F2F2F7',
-          borderBottom: '1px solid rgba(60,60,67,.12)',
-        }}
-      >
-        <div
-          className="windowBrand"
-          aria-label={storeName.trim() ? `Озонатор — ${storeName.trim()}` : 'Озонатор'}
-          style={{ minWidth: 0, maxWidth: '100%', display: 'inline-flex', alignItems: 'center', gap: 8 }}
-        >
-          <img
-            className="windowBrandImage"
-            src={windowTitleLogoSrc}
-            alt=""
-            draggable={false}
-            style={{ display: 'block', height: 20, width: 'auto' }}
-            onError={(e) => { e.currentTarget.style.display = 'none' }}
-          />
-          {storeName.trim() ? (
-            <>
-              <span aria-hidden style={{ fontSize: 15, lineHeight: 1, marginTop: 1 }}>🤝</span>
-              <span
-                className="appStoreName"
-                title={storeName.trim()}
-                style={{
-                  fontSize: 13,
-                  fontWeight: 700,
-                  color: 'rgba(60,60,67,.82)',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  maxWidth: 'min(42vw, 520px)',
-                }}
-              >
-                {storeName.trim()}
-              </span>
-            </>
-          ) : null}
+      <div className="windowTitlebar">
+        <div className="windowTitlebarInner">
+          <img className="windowTitlebarLogo" src={titleLogoSrc} alt="Ozonator" draggable={false} />
+          <div className="windowTitlebarText" aria-label="Магазин">
+            {storeName ? (
+              <>
+                <span className="windowTitlebarHandshake" aria-hidden>🤝</span>
+                <span className="windowTitlebarStore">{storeName}</span>
+              </>
+            ) : (
+              <span className="windowTitlebarStorePlaceholder" aria-hidden> </span>
+            )}
+          </div>
         </div>
       </div>
-
       <div className="topbar">
-        <div className="topbarInner" style={{ paddingRight: 10 }}>
+
+        <div className="topbarInner">
           <div className="topbarLeft">
             <NavLink
               end
