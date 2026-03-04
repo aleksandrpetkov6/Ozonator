@@ -20,6 +20,7 @@
     "playwright.config.js",
     "playwright.config.ts",
     "release",
-    "test-results"
+    "test-results",
+    "tests"
   ]
 }
