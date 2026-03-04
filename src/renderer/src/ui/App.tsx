@@ -472,30 +472,27 @@ export default function App() {
       <div
         aria-label="Заголовок окна"
         style={{
-          minHeight: 42,
           height: 42,
-          padding: '4px 190px 4px 10px',
+          padding: '4px 152px 4px 8px',
           display: 'flex',
           alignItems: 'center',
-          gap: 10,
-          background: 'rgba(254,254,254,.94)',
-          backdropFilter: 'blur(18px)',
-          WebkitBackdropFilter: 'blur(18px)',
+          gap: 8,
+          background: '#FEFEFE',
           borderBottom: '1px solid rgba(60,60,67,.12)',
-          userSelect: 'none',
-          boxSizing: 'border-box',
         }}
       >
         <div
           className="windowBrand"
           aria-label={storeName.trim() ? `Озонатор — ${storeName.trim()}` : 'Озонатор'}
-          style={{ minWidth: 0, maxWidth: '100%', gap: 10, paddingRight: 0 }}
+          style={{ minWidth: 0, maxWidth: '100%', display: 'inline-flex', alignItems: 'center', gap: 8 }}
         >
           <img
             className="windowBrandImage"
-            src="/brand/ozonator-title-logo.png"
-            alt="Озонатор"
+            src={`${import.meta.env.BASE_URL}brand/ozonator-title-logo.png`}
+            alt=""
             draggable={false}
+            style={{ display: 'block', height: 20, width: 'auto' }}
+            onError={(e) => { e.currentTarget.style.display = 'none' }}
           />
           {storeName.trim() ? (
             <>
