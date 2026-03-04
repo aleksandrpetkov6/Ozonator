@@ -469,18 +469,60 @@ export default function App() {
 
   return (
     <div className="appShell">
-      <div className="topbar">
-        <div className="topbarInner">
-          <div className="topbarLeft">
-            <div className="windowBrand" aria-label="Озонатор">
-              <img
-                className="windowBrandImage"
-                src="/brand/ozonator-title-logo.png"
-                alt="Озонатор"
-                draggable={false}
-              />
-            </div>
+      <div
+        aria-label="Заголовок окна"
+        style={{
+          minHeight: 42,
+          height: 42,
+          padding: '4px 190px 4px 10px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          background: 'rgba(254,254,254,.94)',
+          backdropFilter: 'blur(18px)',
+          WebkitBackdropFilter: 'blur(18px)',
+          borderBottom: '1px solid rgba(60,60,67,.12)',
+          userSelect: 'none',
+          boxSizing: 'border-box',
+        }}
+      >
+        <div
+          className="windowBrand"
+          aria-label={storeName.trim() ? `Озонатор — ${storeName.trim()}` : 'Озонатор'}
+          style={{ minWidth: 0, maxWidth: '100%', gap: 10, paddingRight: 0 }}
+        >
+          <img
+            className="windowBrandImage"
+            src="/brand/ozonator-title-logo.png"
+            alt="Озонатор"
+            draggable={false}
+          />
+          {storeName.trim() ? (
+            <>
+              <span aria-hidden style={{ fontSize: 15, lineHeight: 1, marginTop: 1 }}>🤝</span>
+              <span
+                className="appStoreName"
+                title={storeName.trim()}
+                style={{
+                  fontSize: 13,
+                  fontWeight: 700,
+                  color: 'rgba(60,60,67,.82)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  maxWidth: 'min(42vw, 520px)',
+                }}
+              >
+                {storeName.trim()}
+              </span>
+            </>
+          ) : null}
+        </div>
+      </div>
 
+      <div className="topbar">
+        <div className="topbarInner" style={{ paddingRight: 10 }}>
+          <div className="topbarLeft">
             <NavLink
               end
               to="/"
