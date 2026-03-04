@@ -7,7 +7,9 @@ import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProdu
 import { type SalesPeriod } from './sales-sync'
 import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 import { getPersistentRootDir } from './storage/paths'
+import { startLocalHttpServer, type LocalHttpServerHandle } from './local-http-server'
 let mainWindow: BrowserWindow | null = null
+let localHttpServer: LocalHttpServerHandle | null = null
 let startupShowTimer: NodeJS.Timeout | null = null
 let backgroundSyncTimer: NodeJS.Timeout | null = null
 let isQuitting = false
@@ -229,6 +231,77 @@ startupLog('safeStorage.unavailable')
 }
 ensureDb()
 startupLog('ensureDb.ok')
+try {
+  localHttpServer = await startLocalHttpServer({
+    host: '127.0.0.1',
+    port: 0,
+    handlers: {
+      syncProducts: async (payload) => await performProductsSync({ salesPeriod: payload?.salesPeriod ?? null }),
+      refreshSales: async (payload) => await handleRefreshSales(payload?.period ?? null),
+      getDatasetRows: async (payload) => {
+        try {
+          return await handleGetDatasetRows(payload?.dataset, payload?.period ?? null)
+        } catch (e: any) {
+          const dataset = String(payload?.dataset ?? 'products').trim() || 'products'
+          return { ok: false, error: e?.message ?? String(e), dataset, rows: [] }
+        }
+      },
+      getProducts: async () => await handleGetProducts(),
+      getSales: async (payload) => {
+        try {
+          return await handleGetSales(payload?.period ?? null)
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e), rows: [] }
+        }
+      },
+      getReturns: async () => {
+        try {
+          return await handleGetReturns()
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e), rows: [] }
+        }
+      },
+      getStocks: async () => {
+        try {
+          return await handleGetStocks()
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e), rows: [] }
+        }
+      },
+      getGridColumns: async (payload) => {
+        try {
+          return await handleGetGridColumns(payload?.dataset)
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e), dataset: String(payload?.dataset ?? 'products'), cols: null }
+        }
+      },
+      saveGridColumns: async (payload) => {
+        try {
+          return await handleSaveGridColumns(payload?.dataset, payload?.cols)
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e), dataset: String(payload?.dataset ?? 'products'), savedCount: 0 }
+        }
+      },
+      getSyncLog: async () => {
+        try {
+          return await handleGetSyncLog()
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e), logs: [] }
+        }
+      },
+      clearLogs: async () => {
+        try {
+          return await handleClearLogs()
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e) }
+        }
+      },
+    },
+  })
+  startupLog('local-http-server.started', { baseUrl: localHttpServer.config.baseUrl })
+} catch (e: any) {
+  startupLog('local-http-server.failed', { error: e?.message ?? String(e) })
+}
 setOzonApiCaptureHook((evt) => {
 dbRecordApiRawResponse({
 storeClientId: evt.storeClientId,
@@ -252,6 +325,11 @@ isQuitting = true
 if (backgroundSyncTimer) {
 clearInterval(backgroundSyncTimer)
 backgroundSyncTimer = null
+}
+if (localHttpServer) {
+  const srv = localHttpServer
+  localHttpServer = null
+  void srv.close().catch(() => {})
 }
 })
 app.on('activate', () => {
@@ -597,6 +675,98 @@ void runBackgroundSyncTick('interval')
 }, 60 * 1000)
 }
 
+
+
+async function handleRefreshSales(period: SalesPeriod | null | undefined) {
+  try {
+    const secrets = loadSecrets()
+    const refreshed = await refreshSalesRawSnapshotFromApi(secrets, period ?? null)
+    return { ok: true, rowsCount: Number(refreshed?.rowsCount ?? 0), rateLimited: false }
+  } catch (e: any) {
+    const message = e?.message ?? String(e)
+    const isRateLimited = /HTTP\s*429/.test(message)
+    if (isRateLimited) {
+      try {
+        const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+        if (Array.isArray(rows) && rows.length > 0) {
+          return { ok: true, rowsCount: rows.length, rateLimited: true }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return { ok: false, error: message, rowsCount: 0, rateLimited: isRateLimited }
+  }
+}
+
+async function handleGetDatasetRows(datasetRaw: unknown, period: SalesPeriod | null | undefined) {
+  const dataset = String(datasetRaw ?? 'products').trim() || 'products'
+  if (dataset === 'sales') {
+    const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+    void warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows')
+    return { ok: true, dataset, rows }
+  }
+  const { rows } = readDatasetRowsSafe(dataset, period ?? null)
+  return { ok: true, dataset, rows }
+}
+
+async function handleGetProducts() {
+  const { rows } = readDatasetRowsSafe('products', null)
+  return { ok: true, products: rows }
+}
+
+async function handleGetSales(period: SalesPeriod | null | undefined) {
+  const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+  void warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales')
+  return { ok: true, rows }
+}
+
+async function handleGetReturns() {
+  const { rows } = readDatasetRowsSafe('returns', null)
+  return { ok: true, rows }
+}
+
+async function handleGetStocks() {
+  const { rows } = readDatasetRowsSafe('stocks', null)
+  return { ok: true, rows }
+}
+
+async function handleGetGridColumns(datasetRaw: unknown) {
+  return { ok: true, ...dbGetGridColumns(String(datasetRaw ?? 'products')) }
+}
+
+async function handleSaveGridColumns(
+  datasetRaw: unknown,
+  cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }>,
+) {
+  return { ok: true, ...dbSaveGridColumns(String(datasetRaw ?? 'products'), cols) }
+}
+
+async function handleGetSyncLog() {
+  let storeClientId: string | null = null
+  try {
+    storeClientId = loadSecrets().clientId
+  } catch {
+    storeClientId = null
+  }
+  const logs = dbGetSyncLog(storeClientId)
+  return { ok: true, logs }
+}
+
+async function handleClearLogs() {
+  dbClearLogs()
+  return { ok: true }
+}
+
+ipcMain.handle('local-server:getConfig', async () => {
+  try {
+    if (!localHttpServer) return { ok: false, error: 'local server not started' }
+    return { ok: true, ...localHttpServer.config }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
+})
+
 ipcMain.handle('secrets:status', async () => {
 return {
 hasSecrets: hasSecrets(),
@@ -659,108 +829,69 @@ if (resp?.ok) emitRendererDataUpdatedEvents()
 return resp
 })
 ipcMain.handle('data:refreshSales', async (_e, args?: { period?: SalesPeriod | null }) => {
-try {
-const secrets = loadSecrets()
-const refreshed = await refreshSalesRawSnapshotFromApi(secrets, args?.period ?? null)
-return { ok: true, rowsCount: Number(refreshed?.rowsCount ?? 0), rateLimited: false }
-} catch (e: any) {
-const message = e?.message ?? String(e)
-const isRateLimited = /HTTP\s*429/.test(message)
-if (isRateLimited) {
-try {
-const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: args?.period ?? null })
-if (Array.isArray(rows) && rows.length > 0) {
-return { ok: true, rowsCount: rows.length, rateLimited: true }
-}
-} catch {
-}
-}
-return { ok: false, error: message, rowsCount: 0, rateLimited: isRateLimited }
-}
+  return await handleRefreshSales(args?.period ?? null)
 })
 ipcMain.handle('data:getDatasetRows', async (_e, args?: { dataset?: string; period?: SalesPeriod | null }) => {
-try {
-const dataset = String(args?.dataset ?? 'products').trim() || 'products'
-if (dataset === 'sales') {
-const period = args?.period ?? null
-const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period })
-void warmupSalesSnapshotInBackground(period, 'data:getDatasetRows')
-return { ok: true, dataset, rows }
-}
-const { rows } = readDatasetRowsSafe(dataset, args?.period ?? null)
-return { ok: true, dataset, rows }
-} catch (e: any) {
-const dataset = String(args?.dataset ?? 'products').trim() || 'products'
-return { ok: false, error: e?.message ?? String(e), dataset, rows: [] }
-}
+  try {
+    return await handleGetDatasetRows(args?.dataset, args?.period ?? null)
+  } catch (e: any) {
+    const dataset = String(args?.dataset ?? 'products').trim() || 'products'
+    return { ok: false, error: e?.message ?? String(e), dataset, rows: [] }
+  }
 })
 ipcMain.handle('data:getProducts', async () => {
-try {
-const { rows } = readDatasetRowsSafe('products', null)
-return { ok: true, products: rows }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), products: [] }
-}
+  try {
+    return await handleGetProducts()
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), products: [] }
+  }
 })
 ipcMain.handle('data:getSales', async (_e, args?: { period?: SalesPeriod | null }) => {
-try {
-const period = args?.period ?? null
-const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period })
-void warmupSalesSnapshotInBackground(period, 'data:getSales')
-return { ok: true, rows }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), rows: [] }
-}
+  try {
+    return await handleGetSales(args?.period ?? null)
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), rows: [] }
+  }
 })
 ipcMain.handle('data:getReturns', async () => {
-try {
-const { rows } = readDatasetRowsSafe('returns', null)
-return { ok: true, rows }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), rows: [] }
-}
+  try {
+    return await handleGetReturns()
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), rows: [] }
+  }
 })
 ipcMain.handle('data:getStocks', async () => {
-try {
-const { rows } = readDatasetRowsSafe('stocks', null)
-return { ok: true, rows }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), rows: [] }
-}
+  try {
+    return await handleGetStocks()
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), rows: [] }
+  }
 })
 ipcMain.handle('ui:getGridColumns', async (_e, args: { dataset: string }) => {
-try {
-return { ok: true, ...dbGetGridColumns(args?.dataset) }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), dataset: String(args?.dataset ?? 'products'), cols: null }
-}
+  try {
+    return await handleGetGridColumns(args?.dataset)
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), dataset: String(args?.dataset ?? 'products'), cols: null }
+  }
 })
 ipcMain.handle('ui:saveGridColumns', async (_e, args: { dataset: string; cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }> }) => {
-try {
-return { ok: true, ...dbSaveGridColumns(args?.dataset, args?.cols) }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), dataset: String(args?.dataset ?? 'products'), savedCount: 0 }
-}
+  try {
+    return await handleSaveGridColumns(args?.dataset, args?.cols)
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), dataset: String(args?.dataset ?? 'products'), savedCount: 0 }
+  }
 })
 ipcMain.handle('data:getSyncLog', async () => {
-try {
-let storeClientId: string | null = null
-try {
-storeClientId = loadSecrets().clientId
-} catch {
-storeClientId = null
-}
-const logs = dbGetSyncLog(storeClientId)
-return { ok: true, logs }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e), logs: [] }
-}
+  try {
+    return await handleGetSyncLog()
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e), logs: [] }
+  }
 })
 ipcMain.handle('data:clearLogs', async () => {
-try {
-dbClearLogs()
-return { ok: true }
-} catch (e: any) {
-return { ok: false, error: e?.message ?? String(e) }
-}
+  try {
+    return await handleClearLogs()
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
 })
