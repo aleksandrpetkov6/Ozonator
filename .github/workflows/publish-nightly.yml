@@ -30,14 +30,33 @@ jobs:
       - name: Install dependencies (npm ci; fallback --legacy-peer-deps)
         id: install
         run: |
-          $ok = $true
-          try {
-            npm ci
-            if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
-          } catch {
+          $ErrorActionPreference = "Stop"
+          npm config set fetch-retries 5
+          npm config set fetch-retry-factor 2
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+          npm config set prefer-online true
+
+          function Invoke-WithRetry($ScriptBlock, $Attempts, $BaseDelaySec) {
+            for ($i = 1; $i -le $Attempts; $i++) {
+              try {
+                & $ScriptBlock
+                if ($LASTEXITCODE -eq 0) { return $true }
+                throw "ExitCode=$LASTEXITCODE"
+              } catch {
+                if ($i -ge $Attempts) { return $false }
+                $sleep = $BaseDelaySec * $i
+                Write-Host "Attempt $i failed: $($_). Sleeping $sleep sec..."
+                Start-Sleep -Seconds $sleep
+              }
+            }
+            return $false
+          }
+
+          $ok = Invoke-WithRetry({ npm ci }, 3, 15)
+          if (-not $ok) {
             Write-Host "npm ci failed. Retrying with npm ci --legacy-peer-deps"
-            npm ci --legacy-peer-deps
-            if ($LASTEXITCODE -ne 0) { $ok = $false }
+            $ok = Invoke-WithRetry({ npm ci --legacy-peer-deps }, 2, 20)
           }
 
           "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
