@@ -277,7 +277,11 @@ try {
       },
       saveGridColumns: async (payload: { dataset?: string; cols?: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }> } | null | undefined) => {
         try {
-          return await handleSaveGridColumns(payload?.dataset, payload?.cols)
+          const cols = payload?.cols
+          if (!cols) {
+            return { ok: false, error: 'cols missing', dataset: String(payload?.dataset ?? 'products'), savedCount: 0 }
+          }
+          return await handleSaveGridColumns(payload?.dataset, cols)
         } catch (e: any) {
           return { ok: false, error: e?.message ?? String(e), dataset: String(payload?.dataset ?? 'products'), savedCount: 0 }
         }
