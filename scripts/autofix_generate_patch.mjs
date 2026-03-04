@@ -3,9 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 
-const AUTOFIX_TOKEN_BUDGET_MAX = 7900;
-const APPROX_CHARS_PER_TOKEN = 4;
-const PROMPT_CHAR_BUDGET = Math.floor(AUTOFIX_TOKEN_BUDGET_MAX * APPROX_CHARS_PER_TOKEN * 0.8);
+const AUTOFIX_TOKEN_BUDGET_MAX = 4800;
+const APPROX_CHARS_PER_TOKEN = 3;
+const PROMPT_CHAR_BUDGET = Math.floor(AUTOFIX_TOKEN_BUDGET_MAX * APPROX_CHARS_PER_TOKEN * 0.7);
 
 function parseArgs(argv) {
   const out = {};
