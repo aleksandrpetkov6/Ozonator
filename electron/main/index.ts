@@ -140,6 +140,7 @@ title: 'Озонатор',
 show: false,
 backgroundColor: '#F2F2F7',
 autoHideMenuBar: true,
+titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
 titleBarOverlay: { color: '#F2F2F7', symbolColor: '#1d1d1f', height: 40 },
 webPreferences: {
 preload: join(__dirname, '../preload/index.js'),
