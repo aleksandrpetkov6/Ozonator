@@ -466,18 +466,19 @@ export default function App() {
   const adminParsed = parseLogLifeDays(adminLogLifeDraft)
   const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
   const visibleLastError = lastError && lastError !== 'Нет интернета' ? lastError : null
+  const windowTitleLogoSrc = './brand/ozonator-title-logo.png'
 
   return (
     <div className="appShell">
       <div
         aria-label="Заголовок окна"
         style={{
-          height: 42,
-          padding: '4px 152px 4px 8px',
+          height: 40,
+          padding: '4px 144px 4px 8px',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
-          background: '#FEFEFE',
+          background: '#F2F2F7',
           borderBottom: '1px solid rgba(60,60,67,.12)',
         }}
       >
@@ -488,7 +489,7 @@ export default function App() {
         >
           <img
             className="windowBrandImage"
-            src={`${import.meta.env.BASE_URL}brand/ozonator-title-logo.png`}
+            src={windowTitleLogoSrc}
             alt=""
             draggable={false}
             style={{ display: 'block', height: 20, width: 'auto' }}
