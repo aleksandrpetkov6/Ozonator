@@ -49,7 +49,7 @@ const OZON_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 const OZON_MAX_RETRIES = 3
 const OZON_RETRY_DELAY_MS = 1200
 const OZON_REQUEST_TIMEOUT_MS = 25_000
-const OZON_REQUEST_MIN_GAP_MS = 300
+const OZON_REQUEST_MIN_GAP_MS = 450
 
 let ozonRequestQueue: Promise<void> = Promise.resolve()
 let ozonRequestNextAllowedAt = 0
@@ -96,6 +96,8 @@ async function ozonRequest(secrets: Secrets, method: 'GET'|'POST', endpoint: str
     const releaseTurn = await waitForOzonRequestTurn()
     let res: Response
     let text = ''
+    let json: any = null
+    let retryWaitMs: number | null = null
 
     try {
       const controller = new AbortController()
@@ -117,39 +119,41 @@ async function ozonRequest(secrets: Secrets, method: 'GET'|'POST', endpoint: str
       } finally {
         clearTimeout(timeoutId)
       }
+
+      json = await parseJsonSafe(text)
+      const shouldRetry = !res.ok && OZON_RETRYABLE_STATUSES.has(res.status) && attempt < OZON_MAX_RETRIES
+
+      if (ozonApiCaptureHook) {
+        const fetchedAt = new Date().toISOString()
+        await ozonApiCaptureHook({
+          storeClientId: String(secrets?.clientId ?? '').trim() || null,
+          method,
+          endpoint,
+          requestBody: body ?? null,
+          responseBody: json ?? { __raw_text: text },
+          httpStatus: res.status,
+          isSuccess: res.ok,
+          errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
+          fetchedAt,
+        })
+      }
+
+      if (shouldRetry) {
+        const retryAfterMs = getRetryAfterMs(res)
+        retryWaitMs = retryAfterMs ?? (OZON_RETRY_DELAY_MS * (attempt + 1))
+      } else if (!res.ok) {
+        throw normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })
+      } else {
+        return json
+      }
     } finally {
       releaseTurn()
     }
-    const json = await parseJsonSafe(text)
-    const shouldRetry = !res.ok && OZON_RETRYABLE_STATUSES.has(res.status) && attempt < OZON_MAX_RETRIES
 
-    if (shouldRetry) {
-      const retryAfterMs = getRetryAfterMs(res)
-      const waitMs = retryAfterMs ?? (OZON_RETRY_DELAY_MS * (attempt + 1))
-      await sleep(waitMs)
+    if (retryWaitMs != null) {
+      await sleep(retryWaitMs)
       continue
     }
-
-    if (ozonApiCaptureHook) {
-      const fetchedAt = new Date().toISOString()
-      await ozonApiCaptureHook({
-        storeClientId: String(secrets?.clientId ?? '').trim() || null,
-        method,
-        endpoint,
-        requestBody: body ?? null,
-        responseBody: json ?? { __raw_text: text },
-        httpStatus: res.status,
-        isSuccess: res.ok,
-        errorMessage: res.ok ? null : `Ozon API error: HTTP ${res.status}`,
-        fetchedAt,
-      })
-    }
-
-    if (!res.ok) {
-      throw normalizeError(`Ozon API error: HTTP ${res.status}`, { status: res.status, endpoint, body, response: json ?? text })
-    }
-
-    return json
   }
 
   throw normalizeError('Ozon API error: retry loop exhausted', { endpoint, body })

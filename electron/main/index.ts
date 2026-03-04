@@ -13,9 +13,13 @@ let backgroundSyncTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let syncProductsInFlight: Promise<any> | null = null
 const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
+const salesSnapshotWarmupRetryTimers = new Map<string, NodeJS.Timeout>()
 const SYNC_PRODUCTS_PAGE_LIMIT = 250
 const SYNC_PLACEMENT_BATCH_SIZE = 150
 const SYNC_YIELD_DELAY_MS = 25
+const STARTUP_AUTO_SYNC_GRACE_MS = 12_000
+const AUTO_SYNC_RETRY_DELAY_MS = 1_500
+let appReadyAtMs = 0
 const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
 const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
 let installerShutdownInFlight: Promise<void> | null = null
@@ -246,6 +250,7 @@ try { app.exit(0) } catch {}
 app.whenReady().then(() => {
 try {
 startupLog('app.whenReady')
+appReadyAtMs = Date.now()
 if (!safeStorage.isEncryptionAvailable()) {
 console.warn('safeStorage encryption is not available on this machine.')
 startupLog('safeStorage.unavailable')
@@ -276,6 +281,10 @@ if (backgroundSyncTimer) {
 clearInterval(backgroundSyncTimer)
 backgroundSyncTimer = null
 }
+for (const timer of salesSnapshotWarmupRetryTimers.values()) {
+try { clearTimeout(timer) } catch {}
+}
+salesSnapshotWarmupRetryTimers.clear()
 })
 app.on('activate', () => {
 startupLog('app.activate', { windows: BrowserWindow.getAllWindows().length })
@@ -365,16 +374,49 @@ const to = typeof period?.to === 'string' ? period.to.trim() : ''
 return `${from}|${to}`
 }
 
+function getStartupAutoSyncRemainingMs() {
+if (!appReadyAtMs) return 0
+return Math.max(0, (appReadyAtMs + STARTUP_AUTO_SYNC_GRACE_MS) - Date.now())
+}
+
+function scheduleSalesWarmupRetry(scopeKey: string, period: SalesPeriod | null | undefined, reason: string, waitMs: number) {
+if (salesSnapshotWarmupRetryTimers.has(scopeKey)) return
+const safeWaitMs = Math.max(AUTO_SYNC_RETRY_DELAY_MS, Math.trunc(Number(waitMs) || 0))
+const timer = setTimeout(() => {
+const activeTimer = salesSnapshotWarmupRetryTimers.get(scopeKey)
+if (activeTimer === timer) salesSnapshotWarmupRetryTimers.delete(scopeKey)
+void warmupSalesSnapshotInBackground(period ?? null, `${reason}:deferred`)
+}, safeWaitMs)
+salesSnapshotWarmupRetryTimers.set(scopeKey, timer)
+try { timer.unref?.() } catch {}
+}
+
 function warmupSalesSnapshotInBackground(period?: SalesPeriod | null, reason = 'sales-read') {
 const scopeKey = getSalesWarmupScopeKey(period)
 if (salesSnapshotWarmupInFlight.has(scopeKey)) return
+
+const startupDelayMs = getStartupAutoSyncRemainingMs()
+if (startupDelayMs > 0) {
+startupLog('sales-snapshot-warmup.defer-startup', { reason, scopeKey, waitMs: startupDelayMs })
+scheduleSalesWarmupRetry(scopeKey, period ?? null, reason, startupDelayMs + AUTO_SYNC_RETRY_DELAY_MS)
+return
+}
+
+if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
+startupLog('sales-snapshot-warmup.defer-window', { reason, scopeKey })
+scheduleSalesWarmupRetry(scopeKey, period ?? null, reason, AUTO_SYNC_RETRY_DELAY_MS)
+return
+}
 
 const job = (async () => {
 if (isQuitting) return
 if (!hasSecrets()) return
 
 const online = await checkInternet()
-if (!online) return
+if (!online) {
+scheduleSalesWarmupRetry(scopeKey, period ?? null, reason, AUTO_SYNC_RETRY_DELAY_MS * 2)
+return
+}
 
 let secrets = null
 try {
@@ -597,7 +639,13 @@ if (syncProductsInFlight === job) syncProductsInFlight = null
 async function runBackgroundSyncTick(reason: string) {
 if (isQuitting) return
 if (!mainWindow || mainWindow.isDestroyed()) return
+if (!mainWindow.isVisible()) return
 if (!hasSecrets()) return
+const startupDelayMs = getStartupAutoSyncRemainingMs()
+if (startupDelayMs > 0) {
+startupLog('background-sync.defer-startup', { reason, waitMs: startupDelayMs })
+return
+}
 const online = await checkInternet()
 if (!online) return
 const resp = await performProductsSync({ salesPeriod: getDefaultRollingSalesPeriod() })
