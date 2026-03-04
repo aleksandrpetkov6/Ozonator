@@ -13,6 +13,9 @@ let backgroundSyncTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let syncProductsInFlight: Promise<any> | null = null
 const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
+const SYNC_PRODUCTS_PAGE_LIMIT = 250
+const SYNC_PLACEMENT_BATCH_SIZE = 150
+const SYNC_YIELD_DELAY_MS = 25
 const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
 const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
 let installerShutdownInFlight: Promise<void> | null = null
@@ -24,6 +27,11 @@ app.quit()
 
 function delay(ms: number) {
 return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function pauseSyncYield(ms = SYNC_YIELD_DELAY_MS) {
+if (ms <= 0) return
+await delay(ms)
 }
 
 function getInstallerMarkerDir() {
@@ -407,7 +415,7 @@ const existingOfferIds = new Set(dbGetProducts(secrets.clientId).map((p: any) =>
 const incomingOfferIds = new Set<string>()
 let added = 0
 let lastId = ''
-const limit = 1000
+const limit = SYNC_PRODUCTS_PAGE_LIMIT
 let pages = 0
 let total = 0
 for (let guard = 0; guard < 200; guard++) {
@@ -450,6 +458,7 @@ added += 1
 }
 }
 dbUpsertProducts(enriched)
+await pauseSyncYield()
 if (!next) break
 if (next === lastId) break
 lastId = next
@@ -462,8 +471,8 @@ let placementSyncError: string | null = null
 let placementCacheKept = false
 try {
 const productsForStore = dbGetProducts(secrets.clientId)
-const ozonSkuList = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
-const sellerSkuList = Array.from(new Set(productsForStore.map((p) => String(p.offer_id ?? '').trim()).filter(Boolean)))
+const ozonSkuList: string[] = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
+const sellerSkuList: string[] = Array.from(new Set(productsForStore.map((p) => String(p.offer_id ?? '').trim()).filter(Boolean)))
 if (ozonSkuList.length > 0 || sellerSkuList.length > 0) {
 const warehouses = await ozonWarehouseList(secrets)
 if (!Array.isArray(warehouses) || warehouses.length === 0) {
@@ -512,15 +521,17 @@ placement_zone: z.placement_zone ?? null,
 for (const wh of warehouses) {
 const wid = Number(wh.warehouse_id)
 if (!Number.isFinite(wid)) continue
-for (const part of chunk(ozonSkuList, 500)) {
+for (const part of chunk(ozonSkuList, SYNC_PLACEMENT_BATCH_SIZE)) {
 placementApiCallCount += 1
 const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
 appendPlacementRows(wid, wh.name ?? null, zones)
+await pauseSyncYield()
 }
-for (const part of chunk(sellerSkuList, 500)) {
+for (const part of chunk(sellerSkuList, SYNC_PLACEMENT_BATCH_SIZE)) {
 placementApiCallCount += 1
 const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
 appendPlacementRows(wid, wh.name ?? null, zones)
+await pauseSyncYield()
 }
 }
 if (allPlacementRows.length === 0 && placementApiCallCount > 0) {

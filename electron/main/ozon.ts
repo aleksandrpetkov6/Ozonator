@@ -48,9 +48,33 @@ async function parseJsonSafe(text: string) {
 const OZON_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 const OZON_MAX_RETRIES = 3
 const OZON_RETRY_DELAY_MS = 1200
+const OZON_REQUEST_TIMEOUT_MS = 25_000
+const OZON_REQUEST_MIN_GAP_MS = 300
+
+let ozonRequestQueue: Promise<void> = Promise.resolve()
+let ozonRequestNextAllowedAt = 0
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForOzonRequestTurn() {
+  const previous = ozonRequestQueue
+  let releaseCurrent: (() => void) | null = null
+
+  ozonRequestQueue = new Promise<void>((resolve) => {
+    releaseCurrent = resolve
+  })
+
+  await previous
+
+  const waitMs = ozonRequestNextAllowedAt - Date.now()
+  if (waitMs > 0) await sleep(waitMs)
+
+  return () => {
+    ozonRequestNextAllowedAt = Date.now() + OZON_REQUEST_MIN_GAP_MS
+    releaseCurrent?.()
+  }
 }
 
 function getRetryAfterMs(res: Response): number | null {
@@ -69,13 +93,33 @@ async function ozonRequest(secrets: Secrets, method: 'GET'|'POST', endpoint: str
   const url = `${OZON_BASE}${endpoint}`
 
   for (let attempt = 0; attempt <= OZON_MAX_RETRIES; attempt += 1) {
-    const res = await fetch(url, {
-      method,
-      headers: headers(secrets) as any,
-      body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
-    })
+    const releaseTurn = await waitForOzonRequestTurn()
+    let res: Response
+    let text = ''
 
-    const text = await res.text()
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), OZON_REQUEST_TIMEOUT_MS)
+
+      try {
+        res = await fetch(url, {
+          method,
+          headers: headers(secrets) as any,
+          body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+          signal: controller.signal,
+        })
+        text = await res.text()
+      } catch (error: any) {
+        if (error?.name === 'AbortError') {
+          throw normalizeError(`Ozon API error: timeout after ${OZON_REQUEST_TIMEOUT_MS} ms`, { endpoint, body, timeoutMs: OZON_REQUEST_TIMEOUT_MS })
+        }
+        throw error
+      } finally {
+        clearTimeout(timeoutId)
+      }
+    } finally {
+      releaseTurn()
+    }
     const json = await parseJsonSafe(text)
     const shouldRetry = !res.ok && OZON_RETRYABLE_STATUSES.has(res.status) && attempt < OZON_MAX_RETRIES
 
