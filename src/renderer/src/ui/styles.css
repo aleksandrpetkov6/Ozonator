@@ -77,38 +77,51 @@ a{ color: inherit; text-decoration: none; }
   position: sticky;
   top: 0;
   z-index: 60;
-  background: rgba(254,254,254,.94);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+  background: rgba(242,242,247,.72);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
   border-bottom: 1px solid var(--hairline2);
 }
 
 .topbarInner{
   max-width: none;
   margin: 0 auto;
-  min-height: 42px;
-  padding: 6px 148px 8px 10px;
+  padding: 8px 8px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  -webkit-app-region: drag;
 }
 
-.windowBrand{
+.topbarBrand{
+  flex: 0 1 auto;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
-  flex: 0 0 auto;
-  height: 34px;
-  padding-right: 2px;
-  user-select: none;
-  -webkit-app-region: drag;
-  app-region: drag;
+  gap: 8px;
+  padding: 0 2px 0 0;
+  white-space: nowrap;
 }
 
-.windowBrandImage{
+.topbarBrandLogo{
   display: block;
-  height: 32px;
+  height: 26px;
   width: auto;
+  max-width: none;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
   pointer-events: none;
+}
+
+.topbarBrandStore{
+  max-width: clamp(120px, 22vw, 320px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(60,60,67,.78);
 }
 
 .appTitle{
@@ -187,6 +200,19 @@ a{ color: inherit; text-decoration: none; }
   align-items: center;
   justify-content: flex-start;
   gap: 10px;
+}
+
+.navChip,
+.topbarDateChipHost,
+.topbarDateTrigger,
+.topbarDatePopover,
+.topbarDatePopover *,
+.topbarSearch,
+.topbarSearch *,
+.iconLink,
+.iconBtn,
+.topbarSaveBtn{
+  -webkit-app-region: no-drag;
 }
 
 .topbarRight{
