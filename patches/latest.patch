@@ -1,30 +1,49 @@
---- a/src/renderer/src/global.d.ts
-+++ b/src/renderer/src/global.d.ts
-@@
- // Existing global declarations (if any) can stay here.
- 
- // Add Vite-specific ImportMeta type to satisfy TypeScript.
- // This mirrors the shape of import.meta.env used in Vite projects.
- declare global {
-   interface ImportMeta {
-     /**
-      * Vite exposes environment variables via `import.meta.env`.
-      * The exact shape depends on the variables defined in `.env` files.
-      * We declare it as an index signature to allow any key.
-      */
-     env: {
-       [key: string]: any;
-     };
-   }
- }
- 
- // Ensure the file is treated as a module so that the global augmentation is applied.
- export {};
-
 --- a/src/renderer/src/ui/App.tsx
 +++ b/src/renderer/src/ui/App.tsx
-@@
--  const env = import.meta.env;
-+  // ImportMeta.env is now typed via global.d.ts. Use it directly.
-+  const env = import.meta.env;
-*** End of File ***
+@@ -466,18 +466,19 @@
+   const adminParsed = parseLogLifeDays(adminLogLifeDraft)
+   const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
+   const visibleLastError = lastError && lastError !== 'Нет интернета' ? lastError : null
++  const windowTitleLogoSrc = './brand/ozonator-title-logo.png'
+ 
+   return (
+     <div className="appShell">
+       <div
+         aria-label="Заголовок окна"
+         style={{
+-          height: 42,
+-          padding: '4px 152px 4px 8px',
++          height: 40,
++          padding: '4px 144px 4px 8px',
+           display: 'flex',
+           alignItems: 'center',
+           gap: 8,
+-          background: '#FEFEFE',
++          background: '#F2F2F7',
+           borderBottom: '1px solid rgba(60,60,67,.12)',
+         }}
+       >
+@@ -488,7 +489,7 @@
+         >
+           <img
+             className="windowBrandImage"
+-            src={`${import.meta.env.BASE_URL}brand/ozonator-title-logo.png`}
++            src={windowTitleLogoSrc}
+             alt=""
+             draggable={false}
+             style={{ display: 'block', height: 20, width: 'auto' }}
+--- a/electron/main/index.ts
++++ b/electron/main/index.ts
+@@ -164,10 +164,10 @@
+ minHeight: 620,
+ title: 'Озонатор',
+ show: false,
+-backgroundColor: '#FEFEFE',
++backgroundColor: '#F2F2F7',
+ autoHideMenuBar: true,
+ titleBarStyle: 'hidden',
+-titleBarOverlay: { color: '#FEFEFE', symbolColor: '#1d1d1f', height: 42 },
++titleBarOverlay: { color: '#F2F2F7', symbolColor: '#1d1d1f', height: 40 },
+ ...(windowIcon ? { icon: windowIcon } : {}),
+ webPreferences: {
+ preload: join(__dirname, '../preload/index.js'),
