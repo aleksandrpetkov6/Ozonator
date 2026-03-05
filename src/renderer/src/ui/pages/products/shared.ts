@@ -246,6 +246,7 @@ function sortRowsForDefaultView(dataset: DataSet, rows: GridRow[]): GridRow[] {
   if (rows.length < 2) return rows
   if (dataset === 'returns') return rows
   if (dataset === 'sales' && rows.length > 5000) return rows
+  if ((dataset === 'products' || dataset === 'stocks' || dataset === 'forecast-demand') && rows.length > 5000) return rows
 
   return rows
     .map((row, index) => ({ row, index }))

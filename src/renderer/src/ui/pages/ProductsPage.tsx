@@ -115,6 +115,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
  const bodyTableRef = useRef<HTMLTableElement | null>(null)
  const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
+ const measureFontCacheRef = useRef<{ headerFont: string | null; cellFont: string | null; headerAt: number; cellAt: number }>({ headerFont: null, cellFont: null, headerAt: 0, cellAt: 0 })
  const didAutoInitRef = useRef(false)
  const photoHoverTimerRef = useRef<number | null>(null)
  const photoHoverPendingRef = useRef<{ url: string; alt: string; clientX: number; clientY: number } | null>(null)
@@ -250,7 +251,8 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
 
  useEffect(() => () => { clearPhotoHoverTimer() }, [clearPhotoHoverTimer])
 
- const autoInitSample = useMemo(() => (products.length > 1600 ? products.slice(0, 1600) : products), [products])
+ const autoInitCap = dataset === 'sales' ? 400 : 800
+ const autoInitSample = useMemo(() => (products.length > autoInitCap ? products.slice(0, autoInitCap) : products), [products, autoInitCap])
 
  useEffect(() => {
    if (!colsSyncReady) return
@@ -602,16 +604,34 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    const ctx = canvas.getContext('2d')
    if (!ctx) return text.length * 7
 
-   const probe = document.querySelector(kind === 'header' ? '.thTitle' : '.cellText') as HTMLElement | null
-   const cs = window.getComputedStyle(probe ?? document.body)
-   const fontStyle = cs.fontStyle || 'normal'
-   const fontVariant = cs.fontVariant || 'normal'
-   const fontWeight = cs.fontWeight || '400'
-   const fontSize = cs.fontSize || '13px'
-   const lineHeight = cs.lineHeight && cs.lineHeight !== 'normal' ? `/${cs.lineHeight}` : ''
-   const fontFamily = cs.fontFamily || 'system-ui'
-   ctx.font = `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize}${lineHeight} ${fontFamily}`
+   const cache = measureFontCacheRef.current
+   const now = Date.now()
+   const isHeader = kind === 'header'
+   const ttlMs = 1500
 
+   const cachedFont = isHeader ? cache.headerFont : cache.cellFont
+   const cachedAt = isHeader ? cache.headerAt : cache.cellAt
+
+   if (!cachedFont || now - cachedAt > ttlMs) {
+     const probe = document.querySelector(isHeader ? '.thTitle' : '.cellText') as HTMLElement | null
+     const cs = window.getComputedStyle(probe ?? document.body)
+     const fontStyle = cs.fontStyle || 'normal'
+     const fontVariant = cs.fontVariant || 'normal'
+     const fontWeight = cs.fontWeight || '400'
+     const fontSize = cs.fontSize || '13px'
+     const lineHeight = cs.lineHeight && cs.lineHeight !== 'normal' ? `/${cs.lineHeight}` : ''
+     const fontFamily = cs.fontFamily || 'system-ui'
+     const font = `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize}${lineHeight} ${fontFamily}`
+     if (isHeader) {
+       cache.headerFont = font
+       cache.headerAt = now
+     } else {
+       cache.cellFont = font
+       cache.cellAt = now
+     }
+   }
+
+   ctx.font = (isHeader ? cache.headerFont : cache.cellFont) || ctx.font
    return ctx.measureText(text).width
  }
 

@@ -484,6 +484,9 @@ function persistDatasetSnapshot(args: {
   sourceEndpoints?: string[]
 }) {
   const period = normalizeSalesPeriod(args.period ?? null)
+  const dataset = String(args.dataset ?? '').trim()
+  if (dataset === 'products' || dataset === 'stocks' || dataset === 'returns' || dataset === 'forecast-demand') return
+
   dbSaveDatasetSnapshot({
     storeClientId: args.storeClientId ?? null,
     dataset: args.dataset,

@@ -563,6 +563,7 @@ added += 1
 }
 }
 dbUpsertProducts(enriched)
+      await delay(0)
 if (!next) break
 if (next === lastId) break
 lastId = next
@@ -700,7 +701,6 @@ async function runBackgroundSyncTick(reason: string) {
 if (isQuitting) return
 if (!mainWindow || mainWindow.isDestroyed()) return
 if (!hasSecrets()) return
-if (mainWindow.isVisible() && mainWindow.isFocused()) return
 const online = await checkInternet()
 if (!online) return
 const resp = await performProductsSync({ salesPeriod: getDefaultRollingSalesPeriod() })
@@ -723,10 +723,10 @@ backgroundSyncTimer = null
 }
 backgroundSyncTimer = setInterval(() => {
 void runBackgroundSyncTick('interval')
-}, 10 * 60 * 1000)
+}, 60 * 1000)
 setTimeout(() => {
 void runBackgroundSyncTick('startup-delay')
-}, 25 * 1000)
+}, 15 * 1000)
 }
 
 
