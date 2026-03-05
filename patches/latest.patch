@@ -1,136 +1,137 @@
 diff --git a/electron/main/index.ts b/electron/main/index.ts
-index d9e85ab..c07e38d 100644
 --- a/electron/main/index.ts
 +++ b/electron/main/index.ts
-@@ -756,9 +756,13 @@ async function handleRefreshSales(period: SalesPeriod | null | undefined) {
- async function handleGetDatasetRows(datasetRaw: unknown, period: SalesPeriod | null | undefined) {
-   const dataset = String(datasetRaw ?? 'products').trim() || 'products'
-   if (dataset === 'sales') {
--    const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
--    void warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows')
--    return { ok: true, dataset, rows }
-+    const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
-+    const MAX_UI_ROWS = 8000
-+    const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
-+    const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
-+    if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length })
-+    setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows'), 0)
-+    return { ok: true, dataset, rows, truncated, totalRows: rowsAll.length }
-   }
-   const { rows } = readDatasetRowsSafe(dataset, period ?? null)
-   return { ok: true, dataset, rows }
-@@ -770,9 +774,13 @@ async function handleGetProducts() {
+@@ -563,6 +563,7 @@
+ }
+ }
+ dbUpsertProducts(enriched)
++      await delay(0)
+ if (!next) break
+ if (next === lastId) break
+ lastId = next
+@@ -700,7 +701,6 @@
+ if (isQuitting) return
+ if (!mainWindow || mainWindow.isDestroyed()) return
+ if (!hasSecrets()) return
+-if (mainWindow.isVisible() && mainWindow.isFocused()) return
+ const online = await checkInternet()
+ if (!online) return
+ const resp = await performProductsSync({ salesPeriod: getDefaultRollingSalesPeriod() })
+@@ -723,10 +723,10 @@
+ }
+ backgroundSyncTimer = setInterval(() => {
+ void runBackgroundSyncTick('interval')
+-}, 10 * 60 * 1000)
++}, 60 * 1000)
+ setTimeout(() => {
+ void runBackgroundSyncTick('startup-delay')
+-}, 25 * 1000)
++}, 15 * 1000)
  }
  
- async function handleGetSales(period: SalesPeriod | null | undefined) {
--  const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
--  void warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales')
--  return { ok: true, rows }
-+  const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
-+  const MAX_UI_ROWS = 8000
-+  const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
-+  const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
-+  if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length, reason: 'local-server:getSales' })
-+  setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales'), 0)
-+  return { ok: true, rows, truncated, totalRows: rowsAll.length }
- }
  
- async function handleGetReturns() {
 diff --git a/electron/main/local-datasets.ts b/electron/main/local-datasets.ts
-index 3ace016..d5364ca 100644
 --- a/electron/main/local-datasets.ts
 +++ b/electron/main/local-datasets.ts
-@@ -1,5 +1,5 @@
- import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
--import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
-+import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
- import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
- import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
- import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
-@@ -548,6 +548,31 @@ export async function refreshSalesRawSnapshotFromApi(
-     fetchedAt,
-   })
- 
-+  const trimListPayload = (payload: any) => {
-+    const postings = extractPostingsFromPayload(payload)
-+    if (Array.isArray(postings) && postings.length > 0) return { result: { postings } }
-+    return payload
-+  }
+@@ -484,6 +484,9 @@
+   sourceEndpoints?: string[]
+ }) {
+   const period = normalizeSalesPeriod(args.period ?? null)
++  const dataset = String(args.dataset ?? '').trim()
++  if (dataset === 'products' || dataset === 'stocks' || dataset === 'returns' || dataset === 'forecast-demand') return
 +
-+  const MAX_DETAILS_ITEMS = 2000
-+  const detailsItems: Array<{ key: string; payload: any }> = []
-+  const seenDetailKeys = new Set<string>()
-+  for (const env of payloads) {
-+    const endpointKind = String(env.endpoint).includes('/fbs/') ? 'FBS' : 'FBO'
-+    for (const posting of extractPostingsFromPayload(env.payload)) {
-+      const postingNumber = String((posting as any)?.posting_number ?? (posting as any)?.postingNumber ?? '').trim()
-+      if (!postingNumber) continue
-+      const key = getSalesPostingDetailsKey(endpointKind, postingNumber)
-+      if (seenDetailKeys.has(key)) continue
-+      const payload = postingDetailsByKey.get(key)
-+      if (!payload) continue
-+      detailsItems.push({ key, payload })
-+      seenDetailKeys.add(key)
-+      if (detailsItems.length >= MAX_DETAILS_ITEMS) break
-+    }
-+    if (detailsItems.length >= MAX_DETAILS_ITEMS) break
-+  }
-+
-   const persistRawSnapshot = (endpoint: string, responseBody: any) => {
-     dbRecordApiRawResponse({
-       storeClientId: secrets.clientId,
-@@ -567,16 +592,16 @@ export async function refreshSalesRawSnapshotFromApi(
-   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs, {
-     sourceEndpoint: '/v3/posting/fbs/list',
-     period: normalizedRequestedPeriod,
--    payloads: fbsPayloads.map((item) => item.payload),
-+    payloads: fbsPayloads.map((item) => trimListPayload(item.payload)),
-   })
-   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo, {
-     sourceEndpoint: '/v2/posting/fbo/list',
-     period: normalizedRequestedPeriod,
--    payloads: fboPayloads.map((item) => item.payload),
-+    payloads: fboPayloads.map((item) => trimListPayload(item.payload)),
-   })
-   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.details, {
-     period: normalizedRequestedPeriod,
--    items: Array.from(postingDetailsByKey.entries()).map(([key, payload]) => ({ key, payload })),
-+    items: detailsItems,
-   })
- 
-   const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey)
-diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
-index 1eca45f..3a872a7 100644
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
-@@ -594,7 +594,9 @@ export function dbSaveDatasetSnapshot(args: {
-   let rowsJson = '[]'
-   let rowsCount = 0
-   try {
--    const rows = Array.isArray(args.rows) ? args.rows : []
-+    const allRows = Array.isArray(args.rows) ? args.rows : []
-+    const MAX_ROWS = dataset === 'sales' ? 5000 : 20000
-+    const rows = allRows.length > MAX_ROWS ? allRows.slice(0, MAX_ROWS) : allRows
-     rowsJson = JSON.stringify(rows)
-     rowsCount = rows.length
-   } catch {
+   dbSaveDatasetSnapshot({
+     storeClientId: args.storeClientId ?? null,
+     dataset: args.dataset,
 diff --git a/src/renderer/src/ui/pages/products/shared.ts b/src/renderer/src/ui/pages/products/shared.ts
-index 828a458..b2a9527 100644
 --- a/src/renderer/src/ui/pages/products/shared.ts
 +++ b/src/renderer/src/ui/pages/products/shared.ts
-@@ -189,6 +189,7 @@ function normalizeShipmentDateForUi(row: GridRow, nowMs: number): string {
- 
- function sanitizeSalesRows(rows: GridRow[]): GridRow[] {
-   if (rows.length === 0) return rows
-+  if (rows.length > 3000) return rows
-   const nowMs = Date.now()
- 
-   return rows.map((row) => {
-@@ -244,6 +245,7 @@ function compareRowsByDefaultSort(dataset: DataSet, left: GridRow, right: GridRo
- function sortRowsForDefaultView(dataset: DataSet, rows: GridRow[]): GridRow[] {
+@@ -246,6 +246,7 @@
    if (rows.length < 2) return rows
    if (dataset === 'returns') return rows
-+  if (dataset === 'sales' && rows.length > 5000) return rows
+   if (dataset === 'sales' && rows.length > 5000) return rows
++  if ((dataset === 'products' || dataset === 'stocks' || dataset === 'forecast-demand') && rows.length > 5000) return rows
  
    return rows
      .map((row, index) => ({ row, index }))
+diff --git a/src/renderer/src/ui/pages/ProductsPage.tsx b/src/renderer/src/ui/pages/ProductsPage.tsx
+--- a/src/renderer/src/ui/pages/ProductsPage.tsx
++++ b/src/renderer/src/ui/pages/ProductsPage.tsx
+@@ -115,6 +115,7 @@
+  const bodyTableRef = useRef<HTMLTableElement | null>(null)
+  const resizeIndicatorRef = useRef<HTMLDivElement | null>(null)
+  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null)
++ const measureFontCacheRef = useRef<{ headerFont: string | null; cellFont: string | null; headerAt: number; cellAt: number }>({ headerFont: null, cellFont: null, headerAt: 0, cellAt: 0 })
+  const didAutoInitRef = useRef(false)
+  const photoHoverTimerRef = useRef<number | null>(null)
+  const photoHoverPendingRef = useRef<{ url: string; alt: string; clientX: number; clientY: number } | null>(null)
+@@ -250,7 +251,8 @@
+ 
+  useEffect(() => () => { clearPhotoHoverTimer() }, [clearPhotoHoverTimer])
+ 
+- const autoInitSample = useMemo(() => (products.length > 1600 ? products.slice(0, 1600) : products), [products])
++ const autoInitCap = dataset === 'sales' ? 400 : 800
++ const autoInitSample = useMemo(() => (products.length > autoInitCap ? products.slice(0, autoInitCap) : products), [products, autoInitCap])
+ 
+  useEffect(() => {
+    if (!colsSyncReady) return
+@@ -602,16 +604,34 @@
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return text.length * 7
+ 
+-   const probe = document.querySelector(kind === 'header' ? '.thTitle' : '.cellText') as HTMLElement | null
+-   const cs = window.getComputedStyle(probe ?? document.body)
+-   const fontStyle = cs.fontStyle || 'normal'
+-   const fontVariant = cs.fontVariant || 'normal'
+-   const fontWeight = cs.fontWeight || '400'
+-   const fontSize = cs.fontSize || '13px'
+-   const lineHeight = cs.lineHeight && cs.lineHeight !== 'normal' ? `/${cs.lineHeight}` : ''
+-   const fontFamily = cs.fontFamily || 'system-ui'
+-   ctx.font = `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize}${lineHeight} ${fontFamily}`
+-
++   const cache = measureFontCacheRef.current
++   const now = Date.now()
++   const isHeader = kind === 'header'
++   const ttlMs = 1500
++
++   const cachedFont = isHeader ? cache.headerFont : cache.cellFont
++   const cachedAt = isHeader ? cache.headerAt : cache.cellAt
++
++   if (!cachedFont || now - cachedAt > ttlMs) {
++     const probe = document.querySelector(isHeader ? '.thTitle' : '.cellText') as HTMLElement | null
++     const cs = window.getComputedStyle(probe ?? document.body)
++     const fontStyle = cs.fontStyle || 'normal'
++     const fontVariant = cs.fontVariant || 'normal'
++     const fontWeight = cs.fontWeight || '400'
++     const fontSize = cs.fontSize || '13px'
++     const lineHeight = cs.lineHeight && cs.lineHeight !== 'normal' ? `/${cs.lineHeight}` : ''
++     const fontFamily = cs.fontFamily || 'system-ui'
++     const font = `${fontStyle} ${fontVariant} ${fontWeight} ${fontSize}${lineHeight} ${fontFamily}`
++     if (isHeader) {
++       cache.headerFont = font
++       cache.headerAt = now
++     } else {
++       cache.cellFont = font
++       cache.cellAt = now
++     }
++   }
++
++   ctx.font = (isHeader ? cache.headerFont : cache.cellFont) || ctx.font
+    return ctx.measureText(text).width
+  }
+ 
+diff --git a/electron/types/electron-app-session-end.d.ts b/electron/types/electron-app-session-end.d.ts
+new file mode 100644
+--- /dev/null
++++ b/electron/types/electron-app-session-end.d.ts
+@@ -0,0 +1,10 @@
++import 'electron'
++
++declare module 'electron' {
++  interface App {
++    on(event: 'session-end', listener: () => void): this
++    once(event: 'session-end', listener: () => void): this
++    addListener(event: 'session-end', listener: () => void): this
++    removeListener(event: 'session-end', listener: () => void): this
++  }
++}
