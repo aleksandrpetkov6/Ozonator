@@ -324,6 +324,14 @@ async function installE2EMockApi(page: Page): Promise<void> {
     const returnsResponse = () => ({ ok: true, rows: attachListAliases([...returnsRows]) });
     const stocksResponse = () => ({ ok: true, rows: attachListAliases([...stocksRows]) });
     const logsResponse = () => ({ ok: true, logs: attachListAliases([...logs]) });
+    const datasetRowsResponse = (datasetRaw: unknown) => {
+      const dataset = String(datasetRaw || 'products').trim().toLowerCase();
+      if (dataset === 'sales') return { ok: true, dataset, rows: attachListAliases([...salesRows]) };
+      if (dataset === 'returns') return { ok: true, dataset, rows: attachListAliases([...returnsRows]) };
+      if (dataset === 'stocks') return { ok: true, dataset, rows: attachListAliases([...stocksRows]) };
+      if (dataset === 'logs') return { ok: true, dataset, rows: attachListAliases([...logs]) };
+      return { ok: true, dataset: 'products', rows: attachListAliases([...products]) };
+    };
     const secretsResponse = () => ({ ok: true, secrets: { clientId: secrets.clientId, apiKey: secrets.apiKey, storeName: secrets.storeName } });
     const secretsStatusResponse = () => ({ ok: true, hasSecrets: true });
     const adminSettingsResponse = () => ({ ok: true, logRetentionDays: 30 });
@@ -385,6 +393,7 @@ async function installE2EMockApi(page: Page): Promise<void> {
       getProducts: async () => productsResponse(),
       listProducts: async () => productsResponse(),
       loadProducts: async () => productsResponse(),
+      getDatasetRows: async (dataset: string) => datasetRowsResponse(dataset),
       getSales: async () => salesResponse(),
       getReturns: async () => returnsResponse(),
       getStocks: async () => stocksResponse(),

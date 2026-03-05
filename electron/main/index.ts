@@ -376,9 +376,6 @@ if (localHttpServer) {
   void srv.close().catch(() => {})
 }
 })
-app.on('session-end', () => {
-  void requestGracefulShutdown('session-end')
-})
 app.on('activate', () => {
 startupLog('app.activate', { windows: BrowserWindow.getAllWindows().length })
 if (BrowserWindow.getAllWindows().length === 0) createWindow()
