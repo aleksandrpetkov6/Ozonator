@@ -18,6 +18,7 @@ const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
 const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
 const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
 let installerShutdownInFlight: Promise<void> | null = null
+let gracefulShutdownInFlight: Promise<void> | null = null
 
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
@@ -93,6 +94,46 @@ await job
 if (installerShutdownInFlight === job) installerShutdownInFlight = null
 }
 }
+
+async function requestGracefulShutdown(reason: string) {
+if (gracefulShutdownInFlight) return await gracefulShutdownInFlight
+const job = (async () => {
+startupLog('graceful-shutdown.request', { reason, pid: process.pid })
+isQuitting = true
+if (backgroundSyncTimer) {
+clearInterval(backgroundSyncTimer)
+backgroundSyncTimer = null
+}
+try {
+await flushRendererDraftsForInstallerExit()
+await delay(250)
+} catch {}
+try {
+if (localHttpServer) {
+  const srv = localHttpServer
+  localHttpServer = null
+  await srv.close().catch(() => {})
+}
+} catch {}
+try {
+if (mainWindow && !mainWindow.isDestroyed()) {
+try { mainWindow.close() } catch {}
+}
+} catch {}
+await delay(150)
+try { app.quit() } catch {}
+setTimeout(() => {
+try { app.exit(0) } catch {}
+}, 1800)
+})()
+gracefulShutdownInFlight = job
+try {
+await job
+} finally {
+if (gracefulShutdownInFlight === job) gracefulShutdownInFlight = null
+}
+}
+
 function startupLog(...args: any[]) {
 try {
 const dir = app?.isReady?.() ? app.getPath('userData') : app.getPath('temp')
@@ -188,9 +229,8 @@ startupLog('event.window-unresponsive')
 mainWindow.on('close', (event) => {
 if (isQuitting) return
 event.preventDefault()
-startupLog('event.window-close-hide')
-try { mainWindow?.hide() } catch {}
-void runBackgroundSyncTick('window-close')
+startupLog('event.window-close-quit')
+void requestGracefulShutdown('window-close')
 })
 mainWindow.on('closed', () => {
 startupLog('event.window-closed')
@@ -336,6 +376,9 @@ if (localHttpServer) {
   void srv.close().catch(() => {})
 }
 })
+app.on('session-end', () => {
+  void requestGracefulShutdown('session-end')
+})
 app.on('activate', () => {
 startupLog('app.activate', { windows: BrowserWindow.getAllWindows().length })
 if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -365,6 +408,12 @@ startupLog('process.uncaughtException', e?.stack ?? e?.message ?? String(e))
 })
 process.on('unhandledRejection', (e: any) => {
 startupLog('process.unhandledRejection', e as any)
+})
+process.on('SIGTERM', () => {
+  void requestGracefulShutdown('SIGTERM')
+})
+process.on('SIGINT', () => {
+  void requestGracefulShutdown('SIGINT')
 })
 app.on('window-all-closed', () => {
 if (process.platform !== 'darwin') app.quit()
@@ -654,6 +703,7 @@ async function runBackgroundSyncTick(reason: string) {
 if (isQuitting) return
 if (!mainWindow || mainWindow.isDestroyed()) return
 if (!hasSecrets()) return
+if (mainWindow.isVisible() && mainWindow.isFocused()) return
 const online = await checkInternet()
 if (!online) return
 const resp = await performProductsSync({ salesPeriod: getDefaultRollingSalesPeriod() })
@@ -676,7 +726,10 @@ backgroundSyncTimer = null
 }
 backgroundSyncTimer = setInterval(() => {
 void runBackgroundSyncTick('interval')
-}, 60 * 1000)
+}, 10 * 60 * 1000)
+setTimeout(() => {
+void runBackgroundSyncTick('startup-delay')
+}, 25 * 1000)
 }
 
 
