@@ -189,6 +189,7 @@ function normalizeShipmentDateForUi(row: GridRow, nowMs: number): string {
 
 function sanitizeSalesRows(rows: GridRow[]): GridRow[] {
   if (rows.length === 0) return rows
+  if (rows.length > 3000) return rows
   const nowMs = Date.now()
 
   return rows.map((row) => {
@@ -244,6 +245,7 @@ function compareRowsByDefaultSort(dataset: DataSet, left: GridRow, right: GridRo
 function sortRowsForDefaultView(dataset: DataSet, rows: GridRow[]): GridRow[] {
   if (rows.length < 2) return rows
   if (dataset === 'returns') return rows
+  if (dataset === 'sales' && rows.length > 5000) return rows
 
   return rows
     .map((row, index) => ({ row, index }))

@@ -1,5 +1,5 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
-import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
+import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
 import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
@@ -548,6 +548,31 @@ export async function refreshSalesRawSnapshotFromApi(
     fetchedAt,
   })
 
+  const trimListPayload = (payload: any) => {
+    const postings = extractPostingsFromPayload(payload)
+    if (Array.isArray(postings) && postings.length > 0) return { result: { postings } }
+    return payload
+  }
+
+  const MAX_DETAILS_ITEMS = 2000
+  const detailsItems: Array<{ key: string; payload: any }> = []
+  const seenDetailKeys = new Set<string>()
+  for (const env of payloads) {
+    const endpointKind = String(env.endpoint).includes('/fbs/') ? 'FBS' : 'FBO'
+    for (const posting of extractPostingsFromPayload(env.payload)) {
+      const postingNumber = String((posting as any)?.posting_number ?? (posting as any)?.postingNumber ?? '').trim()
+      if (!postingNumber) continue
+      const key = getSalesPostingDetailsKey(endpointKind, postingNumber)
+      if (seenDetailKeys.has(key)) continue
+      const payload = postingDetailsByKey.get(key)
+      if (!payload) continue
+      detailsItems.push({ key, payload })
+      seenDetailKeys.add(key)
+      if (detailsItems.length >= MAX_DETAILS_ITEMS) break
+    }
+    if (detailsItems.length >= MAX_DETAILS_ITEMS) break
+  }
+
   const persistRawSnapshot = (endpoint: string, responseBody: any) => {
     dbRecordApiRawResponse({
       storeClientId: secrets.clientId,
@@ -567,16 +592,16 @@ export async function refreshSalesRawSnapshotFromApi(
   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs, {
     sourceEndpoint: '/v3/posting/fbs/list',
     period: normalizedRequestedPeriod,
-    payloads: fbsPayloads.map((item) => item.payload),
+    payloads: fbsPayloads.map((item) => trimListPayload(item.payload)),
   })
   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo, {
     sourceEndpoint: '/v2/posting/fbo/list',
     period: normalizedRequestedPeriod,
-    payloads: fboPayloads.map((item) => item.payload),
+    payloads: fboPayloads.map((item) => trimListPayload(item.payload)),
   })
   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.details, {
     period: normalizedRequestedPeriod,
-    items: Array.from(postingDetailsByKey.entries()).map(([key, payload]) => ({ key, payload })),
+    items: detailsItems,
   })
 
   const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey)

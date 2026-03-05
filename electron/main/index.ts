@@ -756,9 +756,13 @@ async function handleRefreshSales(period: SalesPeriod | null | undefined) {
 async function handleGetDatasetRows(datasetRaw: unknown, period: SalesPeriod | null | undefined) {
   const dataset = String(datasetRaw ?? 'products').trim() || 'products'
   if (dataset === 'sales') {
-    const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
-    void warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows')
-    return { ok: true, dataset, rows }
+    const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+    const MAX_UI_ROWS = 8000
+    const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
+    const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
+    if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length })
+    setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows'), 0)
+    return { ok: true, dataset, rows, truncated, totalRows: rowsAll.length }
   }
   const { rows } = readDatasetRowsSafe(dataset, period ?? null)
   return { ok: true, dataset, rows }
@@ -770,9 +774,13 @@ async function handleGetProducts() {
 }
 
 async function handleGetSales(period: SalesPeriod | null | undefined) {
-  const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
-  void warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales')
-  return { ok: true, rows }
+  const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+  const MAX_UI_ROWS = 8000
+  const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
+  const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
+  if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length, reason: 'local-server:getSales' })
+  setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales'), 0)
+  return { ok: true, rows, truncated, totalRows: rowsAll.length }
 }
 
 async function handleGetReturns() {
