@@ -873,6 +873,27 @@ export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string)
   return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, true))
 }
 
+/**
+ * Совместимый запрос деталей FBO-отправления.
+ *
+ * Норма (РД): любые вызовы Seller API обязаны проходить через ozonRequest/ozonPost,
+ * чтобы заполнялись raw-cache и endpoint registry (через capture hook).
+ *
+ * Эта функция нужна для случаев, когда мы пробуем несколько вариантов `with.*`
+ * (compat probing), но при этом не имеем права делать прямой fetch из других модулей.
+ */
+export async function ozonPostingFboGetCompat(secrets: Secrets, body: any) {
+  const incoming = (body && typeof body === 'object') ? body : {}
+  const postingNumber = String((incoming as any).posting_number ?? (incoming as any).postingNumber ?? '').trim()
+  if (!postingNumber) throw new Error('Не указан posting_number')
+
+  // Канонизируем поле под Seller API: posting_number (snake_case).
+  const reqBody: any = { ...incoming, posting_number: postingNumber }
+  if ('postingNumber' in reqBody) delete reqBody.postingNumber
+
+  return ozonPost(secrets, '/v2/posting/fbo/get', reqBody)
+}
+
 export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
   // Ozon API периодически меняет версию/эндпойнт: поэтому делаем несколько попыток.
   const candidates: Array<() => Promise<any>> = [

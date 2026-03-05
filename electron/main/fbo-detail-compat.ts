@@ -1,15 +1,5 @@
 import type { Secrets } from './types'
-
-const OZON_BASE = 'https://api-seller.ozon.ru'
-
-function headers(secrets: Secrets) {
-  return {
-    'Client-Id': secrets.clientId,
-    'Api-Key': secrets.apiKey,
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  }
-}
+import { ozonPostingFboGetCompat } from './ozon'
 
 function uniquePostingNumbers(values: string[]): string[] {
   const out: string[] = []
@@ -29,30 +19,6 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out
 }
 
-async function parseJsonSafe(text: string) {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
-  }
-}
-
-async function postFboGet(secrets: Secrets, body: any): Promise<any> {
-  const res = await fetch(`${OZON_BASE}/v2/posting/fbo/get`, {
-    method: 'POST',
-    headers: headers(secrets) as any,
-    body: JSON.stringify(body ?? {}),
-  })
-  const text = await res.text()
-  const json = await parseJsonSafe(text)
-  if (!res.ok) {
-    const err: any = new Error(`Ozon FBO get failed: ${res.status}`)
-    err.response = json ?? text
-    throw err
-  }
-  return json
-}
-
 function extractResult(payload: any): any {
   if (payload?.result && typeof payload.result === 'object') return payload.result
   return payload && typeof payload === 'object' ? payload : null
@@ -67,7 +33,9 @@ async function fetchOneCompat(secrets: Secrets, postingNumber: string): Promise<
 
   for (const body of bodies) {
     try {
-      const payload = await postFboGet(secrets, body)
+      // ВАЖНО (РД 2.4.4): никаких прямых fetch к Seller API.
+      // Все запросы идут через ozonRequest/ozonPost, чтобы заполнялись raw-cache и endpoint registry.
+      const payload = await ozonPostingFboGetCompat(secrets, body)
       const result = extractResult(payload)
       if (result) return result
     } catch {
