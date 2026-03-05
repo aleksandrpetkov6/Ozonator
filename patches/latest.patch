@@ -1,84 +1,136 @@
+diff --git a/electron/main/index.ts b/electron/main/index.ts
+index d9e85ab..c07e38d 100644
+--- a/electron/main/index.ts
++++ b/electron/main/index.ts
+@@ -756,9 +756,13 @@ async function handleRefreshSales(period: SalesPeriod | null | undefined) {
+ async function handleGetDatasetRows(datasetRaw: unknown, period: SalesPeriod | null | undefined) {
+   const dataset = String(datasetRaw ?? 'products').trim() || 'products'
+   if (dataset === 'sales') {
+-    const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+-    void warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows')
+-    return { ok: true, dataset, rows }
++    const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
++    const MAX_UI_ROWS = 8000
++    const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
++    const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
++    if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length })
++    setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows'), 0)
++    return { ok: true, dataset, rows, truncated, totalRows: rowsAll.length }
+   }
+   const { rows } = readDatasetRowsSafe(dataset, period ?? null)
+   return { ok: true, dataset, rows }
+@@ -770,9 +774,13 @@ async function handleGetProducts() {
+ }
+ 
+ async function handleGetSales(period: SalesPeriod | null | undefined) {
+-  const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+-  void warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales')
+-  return { ok: true, rows }
++  const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
++  const MAX_UI_ROWS = 8000
++  const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
++  const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
++  if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length, reason: 'local-server:getSales' })
++  setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales'), 0)
++  return { ok: true, rows, truncated, totalRows: rowsAll.length }
+ }
+ 
+ async function handleGetReturns() {
+diff --git a/electron/main/local-datasets.ts b/electron/main/local-datasets.ts
+index 3ace016..d5364ca 100644
+--- a/electron/main/local-datasets.ts
++++ b/electron/main/local-datasets.ts
+@@ -1,5 +1,5 @@
+ import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
+-import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
++import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
+ import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
+ import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
+ import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
+@@ -548,6 +548,31 @@ export async function refreshSalesRawSnapshotFromApi(
+     fetchedAt,
+   })
+ 
++  const trimListPayload = (payload: any) => {
++    const postings = extractPostingsFromPayload(payload)
++    if (Array.isArray(postings) && postings.length > 0) return { result: { postings } }
++    return payload
++  }
++
++  const MAX_DETAILS_ITEMS = 2000
++  const detailsItems: Array<{ key: string; payload: any }> = []
++  const seenDetailKeys = new Set<string>()
++  for (const env of payloads) {
++    const endpointKind = String(env.endpoint).includes('/fbs/') ? 'FBS' : 'FBO'
++    for (const posting of extractPostingsFromPayload(env.payload)) {
++      const postingNumber = String((posting as any)?.posting_number ?? (posting as any)?.postingNumber ?? '').trim()
++      if (!postingNumber) continue
++      const key = getSalesPostingDetailsKey(endpointKind, postingNumber)
++      if (seenDetailKeys.has(key)) continue
++      const payload = postingDetailsByKey.get(key)
++      if (!payload) continue
++      detailsItems.push({ key, payload })
++      seenDetailKeys.add(key)
++      if (detailsItems.length >= MAX_DETAILS_ITEMS) break
++    }
++    if (detailsItems.length >= MAX_DETAILS_ITEMS) break
++  }
++
+   const persistRawSnapshot = (endpoint: string, responseBody: any) => {
+     dbRecordApiRawResponse({
+       storeClientId: secrets.clientId,
+@@ -567,16 +592,16 @@ export async function refreshSalesRawSnapshotFromApi(
+   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs, {
+     sourceEndpoint: '/v3/posting/fbs/list',
+     period: normalizedRequestedPeriod,
+-    payloads: fbsPayloads.map((item) => item.payload),
++    payloads: fbsPayloads.map((item) => trimListPayload(item.payload)),
+   })
+   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo, {
+     sourceEndpoint: '/v2/posting/fbo/list',
+     period: normalizedRequestedPeriod,
+-    payloads: fboPayloads.map((item) => item.payload),
++    payloads: fboPayloads.map((item) => trimListPayload(item.payload)),
+   })
+   persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.details, {
+     period: normalizedRequestedPeriod,
+-    items: Array.from(postingDetailsByKey.entries()).map(([key, payload]) => ({ key, payload })),
++    items: detailsItems,
+   })
+ 
+   const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey)
+diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
+index 1eca45f..3a872a7 100644
+--- a/electron/main/storage/db.ts
++++ b/electron/main/storage/db.ts
+@@ -594,7 +594,9 @@ export function dbSaveDatasetSnapshot(args: {
+   let rowsJson = '[]'
+   let rowsCount = 0
+   try {
+-    const rows = Array.isArray(args.rows) ? args.rows : []
++    const allRows = Array.isArray(args.rows) ? args.rows : []
++    const MAX_ROWS = dataset === 'sales' ? 5000 : 20000
++    const rows = allRows.length > MAX_ROWS ? allRows.slice(0, MAX_ROWS) : allRows
+     rowsJson = JSON.stringify(rows)
+     rowsCount = rows.length
+   } catch {
 diff --git a/src/renderer/src/ui/pages/products/shared.ts b/src/renderer/src/ui/pages/products/shared.ts
+index 828a458..b2a9527 100644
 --- a/src/renderer/src/ui/pages/products/shared.ts
 +++ b/src/renderer/src/ui/pages/products/shared.ts
-@@ -189,6 +189,8 @@
+@@ -189,6 +189,7 @@ function normalizeShipmentDateForUi(row: GridRow, nowMs: number): string {
  
  function sanitizeSalesRows(rows: GridRow[]): GridRow[] {
    if (rows.length === 0) return rows
-+  // Для больших массивов нормализация может подвесить UI; в таком случае оставляем как есть.
 +  if (rows.length > 3000) return rows
    const nowMs = Date.now()
  
    return rows.map((row) => {
-@@ -244,6 +246,9 @@
+@@ -244,6 +245,7 @@ function compareRowsByDefaultSort(dataset: DataSet, left: GridRow, right: GridRo
  function sortRowsForDefaultView(dataset: DataSet, rows: GridRow[]): GridRow[] {
    if (rows.length < 2) return rows
    if (dataset === 'returns') return rows
-+  // Ozon API уже возвращает отправления в нужном порядке; сортировка в UI на больших выборках
-+  // может подвесить рендер-поток.
-+  if (dataset === 'sales') return rows
++  if (dataset === 'sales' && rows.length > 5000) return rows
  
    return rows
      .map((row, index) => ({ row, index }))
-diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
-@@ -9,6 +9,7 @@
- const DEFAULT_LOG_RETENTION_DAYS = 30
- const MAX_JSON_LEN = 20000
- const MAX_API_JSON_LEN = 750000
-+const MAX_SNAPSHOT_ROWS = 5000
- const REINSTALL_UNINSTALL_SUPPRESS_WINDOW_MS = 10 * 60 * 1000
- 
- type AppLogType =
-@@ -595,8 +596,29 @@
-   let rowsCount = 0
-   try {
-     const rows = Array.isArray(args.rows) ? args.rows : []
--    rowsJson = JSON.stringify(rows)
-     rowsCount = rows.length
-+
-+    // JSON.stringify большого массива может подвесить main-процесс.
-+    // Поэтому сохраняем только "срез" выборки, стараясь оставить наиболее свежие строки для sales.
-+    let rowsToStore = rows
-+    if (rows.length > MAX_SNAPSHOT_ROWS) {
-+      if (dataset === 'sales') {
-+        const firstAt = (rows[0] as any)?.in_process_at
-+        const lastAt = (rows[rows.length - 1] as any)?.in_process_at
-+        const firstTs = (typeof firstAt === 'string') ? Date.parse(firstAt) : Number.NaN
-+        const lastTs = (typeof lastAt === 'string') ? Date.parse(lastAt) : Number.NaN
-+        // Если список отсортирован по возрастанию, оставляем хвост (самые свежие).
-+        if (Number.isFinite(firstTs) && Number.isFinite(lastTs) && firstTs < lastTs) {
-+          rowsToStore = rows.slice(rows.length - MAX_SNAPSHOT_ROWS)
-+        } else {
-+          rowsToStore = rows.slice(0, MAX_SNAPSHOT_ROWS)
-+        }
-+      } else {
-+        rowsToStore = rows.slice(0, MAX_SNAPSHOT_ROWS)
-+      }
-+    }
-+
-+    rowsJson = JSON.stringify(rowsToStore)
-   } catch {
-     rowsJson = '[]'
-     rowsCount = 0
-diff --git a/electron/main/index.ts b/electron/main/index.ts
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -186,11 +186,14 @@
- startupLog('event.window-unresponsive')
- })
- mainWindow.on('close', (event) => {
--if (isQuitting) return
-+// Во время graceful shutdown / инсталлятора окно должно закрываться реально, а не прятаться.
-+if (isQuitting || installerShutdownInFlight || hasInstallerCloseRequestFlag) {
-+startupLog('event.window-close-allow', { isQuitting, installerShutdown: !!installerShutdownInFlight, hasInstallerCloseRequestFlag })
-+return
-+}
- event.preventDefault()
- startupLog('event.window-close-hide')
- try { mainWindow?.hide() } catch {}
--void runBackgroundSyncTick('window-close')
- })
- mainWindow.on('closed', () => {
- startupLog('event.window-closed')
