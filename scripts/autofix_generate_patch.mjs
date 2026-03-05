@@ -294,6 +294,23 @@ async function generatePatch(prompt) {
   );
 }
 
+function shouldKeepExistingPatchOnProviderError(err) {
+  const msg = String(err?.stack || err?.message || err || "");
+  return (
+    msg.includes('tool_use_failed') ||
+    msg.includes('Tool choice is none') ||
+    msg.includes('failed_generation')
+  );
+}
+
+function hasUsableExistingLatestPatch() {
+  try {
+    return fs.existsSync('patches/latest.patch') && fs.statSync('patches/latest.patch').size > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const logsDir = args["logs-dir"] || "_ci_logs";
@@ -341,6 +358,14 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[AutoFix] ERROR:", err?.stack || err?.message || String(err));
+  const message = String(err?.stack || err?.message || err || "");
+  fs.writeFileSync('patches/_autofix_error.txt', message, 'utf8');
+
+  if (shouldKeepExistingPatchOnProviderError(err) && hasUsableExistingLatestPatch()) {
+    console.warn('[AutoFix] Non-actionable provider error. Keeping existing patches/latest.patch');
+    process.exit(0);
+  }
+
+  console.error("[AutoFix] ERROR:", message);
   process.exit(1);
 });
