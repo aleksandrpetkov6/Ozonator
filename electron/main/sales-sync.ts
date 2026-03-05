@@ -743,8 +743,10 @@ async function fetchSingleSalesPostingDetailWithRetry(secrets: any, request: { e
 export async function fetchSalesPostingDetails(
   secrets: any,
   payloads: SalesPayloadEnvelope[],
+  existingDetailsByKey?: Map<string, any>,
 ): Promise<Map<string, any>> {
   const requests: Array<{ endpointKind: 'FBS' | 'FBO'; postingNumber: string }> = []
+  const out = new Map<string, any>(existingDetailsByKey ?? [])
   const seen = new Set<string>()
   for (const envelope of payloads) {
     const endpointKind = normalizeSalesEndpointName(envelope.endpoint)
@@ -753,13 +755,12 @@ export async function fetchSalesPostingDetails(
       const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
       if (!postingNumber || !shouldFetchSalesPostingDetails(posting, endpointKind)) continue
       const requestKey = getSalesPostingDetailsKey(endpointKind, postingNumber)
-      if (seen.has(requestKey)) continue
+      if (out.has(requestKey) || seen.has(requestKey)) continue
       seen.add(requestKey)
       requests.push({ endpointKind, postingNumber })
     }
   }
-  if (requests.length === 0) return new Map()
-  const out = new Map<string, any>()
+  if (requests.length === 0) return out
   for (const batch of chunk(requests, 4)) {
     const settled = await Promise.allSettled(batch.map(async (request) => ({
       request,

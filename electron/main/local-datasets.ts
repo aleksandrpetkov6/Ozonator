@@ -1,6 +1,6 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
 import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
-import { dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
+import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
 import type { Secrets } from './types'
@@ -266,6 +266,44 @@ function getLegacySalesPayloadMap(storeClientId: string | null | undefined) {
   return out
 }
 
+const SALES_POSTING_DETAIL_ENDPOINTS = ['/v3/posting/fbs/get', '/v2/posting/fbo/get'] as const
+
+function extractSalesPostingDetailResult(payload: any): any {
+  if (payload?.result && typeof payload.result === 'object') return payload.result
+  return payload && typeof payload === 'object' ? payload : null
+}
+
+function extractSalesPostingNumberFromRawRequestBody(raw: any): string {
+  return normalizeTextValue(raw?.posting_number ?? raw?.postingNumber)
+}
+
+function getSalesPostingDetailsFromRawCache(storeClientId: string | null | undefined) {
+  const scoped = dbGetApiRawResponses(storeClientId ?? null, SALES_POSTING_DETAIL_ENDPOINTS as unknown as string[])
+  const rows = scoped.length > 0 ? scoped : dbGetApiRawResponses(null, SALES_POSTING_DETAIL_ENDPOINTS as unknown as string[])
+  const out = new Map<string, any>()
+
+  for (const row of rows) {
+    const endpoint = String(row?.endpoint ?? '').trim()
+    const endpointKind = endpoint.includes('/posting/fbs/') ? 'FBS' : (endpoint.includes('/posting/fbo/') ? 'FBO' : '')
+    if (endpointKind !== 'FBS' && endpointKind !== 'FBO') continue
+
+    const requestBody = parseJsonTextSafe(row?.request_body)
+    const responseBody = parseJsonTextSafe(row?.response_body)
+    const detail = extractSalesPostingDetailResult(responseBody)
+    if (!detail) continue
+
+    const postingNumber = extractSalesPostingNumberFromRawRequestBody(requestBody)
+      || normalizeTextValue(detail?.posting_number ?? detail?.postingNumber)
+    if (!postingNumber) continue
+
+    const key = getSalesPostingDetailsKey(endpointKind, postingNumber)
+    if (out.has(key)) continue
+    out.set(key, detail)
+  }
+
+  return out
+}
+
 function buildSalesPayloadsFromSnapshotMap(
   cacheByEndpoint: Map<string, any>,
   requestedPeriod: SalesPeriod | null | undefined,
@@ -489,9 +527,10 @@ export async function refreshSalesRawSnapshotFromApi(
     '/v2/posting/fbo/list',
   )
   const payloads = [...fbsPayloads, ...fboPayloads]
+  const cachedPostingDetailsByKey = getSalesPostingDetailsFromRawCache(secrets.clientId)
   const postingDetailsByKey = payloads.length > 0
-    ? await fetchSalesPostingDetails(secrets, payloads)
-    : new Map<string, any>()
+    ? await fetchSalesPostingDetails(secrets, payloads, cachedPostingDetailsByKey)
+    : new Map<string, any>(cachedPostingDetailsByKey)
   const compatFboPostingNumbers = collectFboPostingNumbersNeedingCompat(fboPayloads, postingDetailsByKey)
   if (compatFboPostingNumbers.length > 0) {
     const compatDetails = await fetchFboPostingDetailsCompat(secrets, compatFboPostingNumbers)

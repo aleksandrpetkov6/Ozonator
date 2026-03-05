@@ -38,6 +38,14 @@ export type ApiRawCacheResponseRow = {
   store_client_id?: string | null
 }
 
+export type ApiRawCacheEntryRow = {
+  endpoint: string
+  request_body: string | null
+  response_body: string | null
+  fetched_at: string
+  store_client_id?: string | null
+}
+
 const GRID_COLS_KEY_PREFIX = 'grid_cols_layout:'
 
 function dbPath() {
@@ -521,6 +529,42 @@ export function dbGetLatestApiRawResponses(storeClientId: string | null | undefi
   }
 
   return out
+}
+
+export function dbGetApiRawResponses(storeClientId: string | null | undefined, endpointsRaw: unknown): ApiRawCacheEntryRow[] {
+  const endpoints = Array.from(new Set((Array.isArray(endpointsRaw) ? endpointsRaw : [])
+    .map((v) => String(v ?? '').trim())
+    .filter(Boolean)))
+
+  if (endpoints.length === 0) return []
+
+  const placeholders = endpoints.map(() => '?').join(', ')
+  const params = [...endpoints]
+  let sql = `
+    SELECT endpoint, request_body, response_body, fetched_at, store_client_id
+    FROM api_raw_cache
+    WHERE is_success = 1
+      AND request_truncated = 0
+      AND response_body IS NOT NULL
+      AND response_truncated = 0
+      AND endpoint IN (${placeholders})
+  `
+
+  const scopedStoreClientId = String(storeClientId ?? '').trim()
+  if (scopedStoreClientId) {
+    sql += ` AND store_client_id = ?`
+    params.push(scopedStoreClientId)
+  }
+
+  sql += ` ORDER BY fetched_at DESC, id DESC`
+
+  return (mustDb().prepare(sql).all(...params) as any[]).map((row) => ({
+    endpoint: String((row as any)?.endpoint ?? '').trim(),
+    request_body: typeof (row as any)?.request_body === 'string' ? (row as any).request_body : null,
+    response_body: typeof (row as any)?.response_body === 'string' ? (row as any).response_body : null,
+    fetched_at: String((row as any)?.fetched_at ?? ''),
+    store_client_id: typeof (row as any)?.store_client_id === 'string' ? (row as any).store_client_id : null,
+  }))
 }
 
 export function dbSaveDatasetSnapshot(args: {
