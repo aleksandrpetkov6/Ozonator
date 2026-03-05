@@ -1,44 +1,84 @@
-diff --git a/scripts/autofix_generate_patch.mjs b/scripts/autofix_generate_patch.mjs
-index 16bdd1f..3263494 100644
---- a/scripts/autofix_generate_patch.mjs
-+++ b/scripts/autofix_generate_patch.mjs
-@@ -294,6 +294,23 @@ async function generatePatch(prompt) {
-   );
- }
+diff --git a/src/renderer/src/ui/pages/products/shared.ts b/src/renderer/src/ui/pages/products/shared.ts
+--- a/src/renderer/src/ui/pages/products/shared.ts
++++ b/src/renderer/src/ui/pages/products/shared.ts
+@@ -189,6 +189,8 @@
  
-+function shouldKeepExistingPatchOnProviderError(err) {
-+  const msg = String(err?.stack || err?.message || err || "");
-+  return (
-+    msg.includes('tool_use_failed') ||
-+    msg.includes('Tool choice is none') ||
-+    msg.includes('failed_generation')
-+  );
-+}
-+
-+function hasUsableExistingLatestPatch() {
-+  try {
-+    return fs.existsSync('patches/latest.patch') && fs.statSync('patches/latest.patch').size > 0;
-+  } catch {
-+    return false;
-+  }
-+}
-+
- async function main() {
-   const args = parseArgs(process.argv);
-   const logsDir = args["logs-dir"] || "_ci_logs";
-@@ -341,6 +358,14 @@ async function main() {
- }
+ function sanitizeSalesRows(rows: GridRow[]): GridRow[] {
+   if (rows.length === 0) return rows
++  // Для больших массивов нормализация может подвесить UI; в таком случае оставляем как есть.
++  if (rows.length > 3000) return rows
+   const nowMs = Date.now()
  
- main().catch((err) => {
--  console.error("[AutoFix] ERROR:", err?.stack || err?.message || String(err));
-+  const message = String(err?.stack || err?.message || err || "");
-+  fs.writeFileSync('patches/_autofix_error.txt', message, 'utf8');
+   return rows.map((row) => {
+@@ -244,6 +246,9 @@
+ function sortRowsForDefaultView(dataset: DataSet, rows: GridRow[]): GridRow[] {
+   if (rows.length < 2) return rows
+   if (dataset === 'returns') return rows
++  // Ozon API уже возвращает отправления в нужном порядке; сортировка в UI на больших выборках
++  // может подвесить рендер-поток.
++  if (dataset === 'sales') return rows
+ 
+   return rows
+     .map((row, index) => ({ row, index }))
+diff --git a/electron/main/storage/db.ts b/electron/main/storage/db.ts
+--- a/electron/main/storage/db.ts
++++ b/electron/main/storage/db.ts
+@@ -9,6 +9,7 @@
+ const DEFAULT_LOG_RETENTION_DAYS = 30
+ const MAX_JSON_LEN = 20000
+ const MAX_API_JSON_LEN = 750000
++const MAX_SNAPSHOT_ROWS = 5000
+ const REINSTALL_UNINSTALL_SUPPRESS_WINDOW_MS = 10 * 60 * 1000
+ 
+ type AppLogType =
+@@ -595,8 +596,29 @@
+   let rowsCount = 0
+   try {
+     const rows = Array.isArray(args.rows) ? args.rows : []
+-    rowsJson = JSON.stringify(rows)
+     rowsCount = rows.length
 +
-+  if (shouldKeepExistingPatchOnProviderError(err) && hasUsableExistingLatestPatch()) {
-+    console.warn('[AutoFix] Non-actionable provider error. Keeping existing patches/latest.patch');
-+    process.exit(0);
-+  }
++    // JSON.stringify большого массива может подвесить main-процесс.
++    // Поэтому сохраняем только "срез" выборки, стараясь оставить наиболее свежие строки для sales.
++    let rowsToStore = rows
++    if (rows.length > MAX_SNAPSHOT_ROWS) {
++      if (dataset === 'sales') {
++        const firstAt = (rows[0] as any)?.in_process_at
++        const lastAt = (rows[rows.length - 1] as any)?.in_process_at
++        const firstTs = (typeof firstAt === 'string') ? Date.parse(firstAt) : Number.NaN
++        const lastTs = (typeof lastAt === 'string') ? Date.parse(lastAt) : Number.NaN
++        // Если список отсортирован по возрастанию, оставляем хвост (самые свежие).
++        if (Number.isFinite(firstTs) && Number.isFinite(lastTs) && firstTs < lastTs) {
++          rowsToStore = rows.slice(rows.length - MAX_SNAPSHOT_ROWS)
++        } else {
++          rowsToStore = rows.slice(0, MAX_SNAPSHOT_ROWS)
++        }
++      } else {
++        rowsToStore = rows.slice(0, MAX_SNAPSHOT_ROWS)
++      }
++    }
 +
-+  console.error("[AutoFix] ERROR:", message);
-   process.exit(1);
- });
++    rowsJson = JSON.stringify(rowsToStore)
+   } catch {
+     rowsJson = '[]'
+     rowsCount = 0
+diff --git a/electron/main/index.ts b/electron/main/index.ts
+--- a/electron/main/index.ts
++++ b/electron/main/index.ts
+@@ -186,11 +186,14 @@
+ startupLog('event.window-unresponsive')
+ })
+ mainWindow.on('close', (event) => {
+-if (isQuitting) return
++// Во время graceful shutdown / инсталлятора окно должно закрываться реально, а не прятаться.
++if (isQuitting || installerShutdownInFlight || hasInstallerCloseRequestFlag) {
++startupLog('event.window-close-allow', { isQuitting, installerShutdown: !!installerShutdownInFlight, hasInstallerCloseRequestFlag })
++return
++}
+ event.preventDefault()
+ startupLog('event.window-close-hide')
+ try { mainWindow?.hide() } catch {}
+-void runBackgroundSyncTick('window-close')
+ })
+ mainWindow.on('closed', () => {
+ startupLog('event.window-closed')
