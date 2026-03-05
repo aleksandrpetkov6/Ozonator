@@ -1,40 +1,109 @@
-diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
-index 5765158..b1f98b9 100644
---- a/electron/main/ozon.ts
-+++ b/electron/main/ozon.ts
-@@ -873,6 +873,27 @@ export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string)
-   return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, true))
- }
+--- a/electron/main/storage/db.ts
++++ b/electron/main/storage/db.ts
+@@ -33,6 +33,14 @@
  
-+/**
-+ * Совместимый запрос деталей FBO-отправления.
-+ *
-+ * Норма (РД): любые вызовы Seller API обязаны проходить через ozonRequest/ozonPost,
-+ * чтобы заполнялись raw-cache и endpoint registry (через capture hook).
-+ *
-+ * Эта функция нужна для случаев, когда мы пробуем несколько вариантов `with.*`
-+ * (compat probing), но при этом не имеем права делать прямой fetch из других модулей.
-+ */
-+export async function ozonPostingFboGetCompat(secrets: Secrets, body: any) {
-+  const incoming = (body && typeof body === 'object') ? body : {}
-+  const postingNumber = String((incoming as any).posting_number ?? (incoming as any).postingNumber ?? '').trim()
-+  if (!postingNumber) throw new Error('Не указан posting_number')
-+
-+  // Канонизируем поле под Seller API: posting_number (snake_case).
-+  const reqBody: any = { ...incoming, posting_number: postingNumber }
-+  if ('postingNumber' in reqBody) delete reqBody.postingNumber
-+
-+  return ozonPost(secrets, '/v2/posting/fbo/get', reqBody)
+ export type ApiRawCacheResponseRow = {
+   endpoint: string
++  response_body: string | null
++  fetched_at: string
++  store_client_id?: string | null
 +}
 +
++export type ApiRawCacheEntryRow = {
++  endpoint: string
++  request_body: string | null
+   response_body: string | null
+   fetched_at: string
+   store_client_id?: string | null
+@@ -521,6 +529,42 @@
+   }
+ 
+   return out
++}
++
++export function dbGetApiRawResponses(storeClientId: string | null | undefined, endpointsRaw: unknown): ApiRawCacheEntryRow[] {
++  const endpoints = Array.from(new Set((Array.isArray(endpointsRaw) ? endpointsRaw : [])
++    .map((v) => String(v ?? '').trim())
++    .filter(Boolean)))
++
++  if (endpoints.length === 0) return []
++
++  const placeholders = endpoints.map(() => '?').join(', ')
++  const params = [...endpoints]
++  let sql = `
++    SELECT endpoint, request_body, response_body, fetched_at, store_client_id
++    FROM api_raw_cache
++    WHERE is_success = 1
++      AND request_truncated = 0
++      AND response_body IS NOT NULL
++      AND response_truncated = 0
++      AND endpoint IN (${placeholders})
++  `
++
++  const scopedStoreClientId = String(storeClientId ?? '').trim()
++  if (scopedStoreClientId) {
++    sql += ` AND store_client_id = ?`
++    params.push(scopedStoreClientId)
++  }
++
++  sql += ` ORDER BY fetched_at DESC, id DESC`
++
++  return (mustDb().prepare(sql).all(...params) as any[]).map((row) => ({
++    endpoint: String((row as any)?.endpoint ?? '').trim(),
++    request_body: typeof (row as any)?.request_body === 'string' ? (row as any).request_body : null,
++    response_body: typeof (row as any)?.response_body === 'string' ? (row as any).response_body : null,
++    fetched_at: String((row as any)?.fetched_at ?? ''),
++    store_client_id: typeof (row as any)?.store_client_id === 'string' ? (row as any).store_client_id : null,
++  }))
+ }
+ 
+ export function dbSaveDatasetSnapshot(args: {
+--- a/electron/main/sales-sync.ts
++++ b/electron/main/sales-sync.ts
+@@ -743,8 +743,10 @@
+ export async function fetchSalesPostingDetails(
+   secrets: any,
+   payloads: SalesPayloadEnvelope[],
++  existingDetailsByKey?: Map<string, any>,
+ ): Promise<Map<string, any>> {
+   const requests: Array<{ endpointKind: 'FBS' | 'FBO'; postingNumber: string }> = []
++  const out = new Map<string, any>(existingDetailsByKey ?? [])
+   const seen = new Set<string>()
+   for (const envelope of payloads) {
+     const endpointKind = normalizeSalesEndpointName(envelope.endpoint)
+@@ -753,13 +755,12 @@
+       const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
+       if (!postingNumber || !shouldFetchSalesPostingDetails(posting, endpointKind)) continue
+       const requestKey = getSalesPostingDetailsKey(endpointKind, postingNumber)
+-      if (seen.has(requestKey)) continue
++      if (out.has(requestKey) || seen.has(requestKey)) continue
+       seen.add(requestKey)
+       requests.push({ endpointKind, postingNumber })
+     }
+   }
+-  if (requests.length === 0) return new Map()
+-  const out = new Map<string, any>()
++  if (requests.length === 0) return out
+   for (const batch of chunk(requests, 4)) {
+     const settled = await Promise.allSettled(batch.map(async (request) => ({
+       request,
+--- a/electron/main/ozon.ts
++++ b/electron/main/ozon.ts
+@@ -871,6 +871,10 @@
+ 
+ export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string) {
+   return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, true))
++}
++
++export async function ozonPostingFboGetCompat(secrets: Secrets, body: any) {
++  return ozonPost(secrets, '/v2/posting/fbo/get', body ?? {})
+ }
+ 
  export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
-   // Ozon API периодически меняет версию/эндпойнт: поэтому делаем несколько попыток.
-   const candidates: Array<() => Promise<any>> = [
-diff --git a/electron/main/fbo-detail-compat.ts b/electron/main/fbo-detail-compat.ts
-index 8b355f8..11d372a 100644
 --- a/electron/main/fbo-detail-compat.ts
 +++ b/electron/main/fbo-detail-compat.ts
 @@ -1,15 +1,5 @@
++import { ozonPostingFboGetCompat } from './ozon'
  import type { Secrets } from './types'
 -
 -const OZON_BASE = 'https://api-seller.ozon.ru'
@@ -47,11 +116,10 @@ index 8b355f8..11d372a 100644
 -    'Accept': 'application/json',
 -  }
 -}
-+import { ozonPostingFboGetCompat } from './ozon'
  
  function uniquePostingNumbers(values: string[]): string[] {
    const out: string[] = []
-@@ -29,30 +19,6 @@ function chunk<T>(arr: T[], size: number): T[][] {
+@@ -29,30 +19,6 @@
    return out
  }
  
@@ -82,14 +150,80 @@ index 8b355f8..11d372a 100644
  function extractResult(payload: any): any {
    if (payload?.result && typeof payload.result === 'object') return payload.result
    return payload && typeof payload === 'object' ? payload : null
-@@ -67,7 +33,9 @@ async function fetchOneCompat(secrets: Secrets, postingNumber: string): Promise<
+@@ -67,7 +33,7 @@
  
    for (const body of bodies) {
      try {
 -      const payload = await postFboGet(secrets, body)
-+      // ВАЖНО (РД 2.4.4): никаких прямых fetch к Seller API.
-+      // Все запросы идут через ozonRequest/ozonPost, чтобы заполнялись raw-cache и endpoint registry.
 +      const payload = await ozonPostingFboGetCompat(secrets, body)
        const result = extractResult(payload)
        if (result) return result
      } catch {
+--- a/electron/main/local-datasets.ts
++++ b/electron/main/local-datasets.ts
+@@ -1,6 +1,6 @@
+ import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
+ import { fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
+-import { dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
++import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
+ import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
+ import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
+ import type { Secrets } from './types'
+@@ -263,6 +263,44 @@
+     const parsed = parseJsonTextSafe(row?.response_body)
+     if (parsed) out.set(row.endpoint, parsed)
+   }
++  return out
++}
++
++const SALES_POSTING_DETAIL_ENDPOINTS = ['/v3/posting/fbs/get', '/v2/posting/fbo/get'] as const
++
++function extractSalesPostingDetailResult(payload: any): any {
++  if (payload?.result && typeof payload.result === 'object') return payload.result
++  return payload && typeof payload === 'object' ? payload : null
++}
++
++function extractSalesPostingNumberFromRawRequestBody(raw: any): string {
++  return normalizeTextValue(raw?.posting_number ?? raw?.postingNumber)
++}
++
++function getSalesPostingDetailsFromRawCache(storeClientId: string | null | undefined) {
++  const scoped = dbGetApiRawResponses(storeClientId ?? null, SALES_POSTING_DETAIL_ENDPOINTS as unknown as string[])
++  const rows = scoped.length > 0 ? scoped : dbGetApiRawResponses(null, SALES_POSTING_DETAIL_ENDPOINTS as unknown as string[])
++  const out = new Map<string, any>()
++
++  for (const row of rows) {
++    const endpoint = String(row?.endpoint ?? '').trim()
++    const endpointKind = endpoint.includes('/posting/fbs/') ? 'FBS' : (endpoint.includes('/posting/fbo/') ? 'FBO' : '')
++    if (endpointKind !== 'FBS' && endpointKind !== 'FBO') continue
++
++    const requestBody = parseJsonTextSafe(row?.request_body)
++    const responseBody = parseJsonTextSafe(row?.response_body)
++    const detail = extractSalesPostingDetailResult(responseBody)
++    if (!detail) continue
++
++    const postingNumber = extractSalesPostingNumberFromRawRequestBody(requestBody)
++      || normalizeTextValue(detail?.posting_number ?? detail?.postingNumber)
++    if (!postingNumber) continue
++
++    const key = getSalesPostingDetailsKey(endpointKind, postingNumber)
++    if (out.has(key)) continue
++    out.set(key, detail)
++  }
++
+   return out
+ }
+ 
+@@ -489,9 +527,10 @@
+     '/v2/posting/fbo/list',
+   )
+   const payloads = [...fbsPayloads, ...fboPayloads]
++  const cachedPostingDetailsByKey = getSalesPostingDetailsFromRawCache(secrets.clientId)
+   const postingDetailsByKey = payloads.length > 0
+-    ? await fetchSalesPostingDetails(secrets, payloads)
+-    : new Map<string, any>()
++    ? await fetchSalesPostingDetails(secrets, payloads, cachedPostingDetailsByKey)
++    : new Map<string, any>(cachedPostingDetailsByKey)
+   const compatFboPostingNumbers = collectFboPostingNumbersNeedingCompat(fboPayloads, postingDetailsByKey)
+   if (compatFboPostingNumbers.length > 0) {
+     const compatDetails = await fetchFboPostingDetailsCompat(secrets, compatFboPostingNumbers)
