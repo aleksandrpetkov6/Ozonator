@@ -1,49 +1,95 @@
---- a/src/renderer/src/ui/App.tsx
-+++ b/src/renderer/src/ui/App.tsx
-@@ -466,18 +466,19 @@
-   const adminParsed = parseLogLifeDays(adminLogLifeDraft)
-   const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
-   const visibleLastError = lastError && lastError !== 'Нет интернета' ? lastError : null
-+  const windowTitleLogoSrc = './brand/ozonator-title-logo.png'
+diff --git a/electron/main/ozon.ts b/electron/main/ozon.ts
+index 5765158..b1f98b9 100644
+--- a/electron/main/ozon.ts
++++ b/electron/main/ozon.ts
+@@ -873,6 +873,27 @@ export async function ozonPostingFboGet(secrets: Secrets, postingNumber: string)
+   return ozonPost(secrets, '/v2/posting/fbo/get', buildPostingGetBody(postingNumber, true))
+ }
  
-   return (
-     <div className="appShell">
-       <div
-         aria-label="Заголовок окна"
-         style={{
--          height: 42,
--          padding: '4px 152px 4px 8px',
-+          height: 40,
-+          padding: '4px 144px 4px 8px',
-           display: 'flex',
-           alignItems: 'center',
-           gap: 8,
--          background: '#FEFEFE',
-+          background: '#F2F2F7',
-           borderBottom: '1px solid rgba(60,60,67,.12)',
-         }}
-       >
-@@ -488,7 +489,7 @@
-         >
-           <img
-             className="windowBrandImage"
--            src={`${import.meta.env.BASE_URL}brand/ozonator-title-logo.png`}
-+            src={windowTitleLogoSrc}
-             alt=""
-             draggable={false}
-             style={{ display: 'block', height: 20, width: 'auto' }}
---- a/electron/main/index.ts
-+++ b/electron/main/index.ts
-@@ -164,10 +164,10 @@
- minHeight: 620,
- title: 'Озонатор',
- show: false,
--backgroundColor: '#FEFEFE',
-+backgroundColor: '#F2F2F7',
- autoHideMenuBar: true,
- titleBarStyle: 'hidden',
--titleBarOverlay: { color: '#FEFEFE', symbolColor: '#1d1d1f', height: 42 },
-+titleBarOverlay: { color: '#F2F2F7', symbolColor: '#1d1d1f', height: 40 },
- ...(windowIcon ? { icon: windowIcon } : {}),
- webPreferences: {
- preload: join(__dirname, '../preload/index.js'),
++/**
++ * Совместимый запрос деталей FBO-отправления.
++ *
++ * Норма (РД): любые вызовы Seller API обязаны проходить через ozonRequest/ozonPost,
++ * чтобы заполнялись raw-cache и endpoint registry (через capture hook).
++ *
++ * Эта функция нужна для случаев, когда мы пробуем несколько вариантов `with.*`
++ * (compat probing), но при этом не имеем права делать прямой fetch из других модулей.
++ */
++export async function ozonPostingFboGetCompat(secrets: Secrets, body: any) {
++  const incoming = (body && typeof body === 'object') ? body : {}
++  const postingNumber = String((incoming as any).posting_number ?? (incoming as any).postingNumber ?? '').trim()
++  if (!postingNumber) throw new Error('Не указан posting_number')
++
++  // Канонизируем поле под Seller API: posting_number (snake_case).
++  const reqBody: any = { ...incoming, posting_number: postingNumber }
++  if ('postingNumber' in reqBody) delete reqBody.postingNumber
++
++  return ozonPost(secrets, '/v2/posting/fbo/get', reqBody)
++}
++
+ export async function ozonGetStoreName(secrets: Secrets): Promise<string | null> {
+   // Ozon API периодически меняет версию/эндпойнт: поэтому делаем несколько попыток.
+   const candidates: Array<() => Promise<any>> = [
+diff --git a/electron/main/fbo-detail-compat.ts b/electron/main/fbo-detail-compat.ts
+index 8b355f8..11d372a 100644
+--- a/electron/main/fbo-detail-compat.ts
++++ b/electron/main/fbo-detail-compat.ts
+@@ -1,15 +1,5 @@
+ import type { Secrets } from './types'
+-
+-const OZON_BASE = 'https://api-seller.ozon.ru'
+-
+-function headers(secrets: Secrets) {
+-  return {
+-    'Client-Id': secrets.clientId,
+-    'Api-Key': secrets.apiKey,
+-    'Content-Type': 'application/json',
+-    'Accept': 'application/json',
+-  }
+-}
++import { ozonPostingFboGetCompat } from './ozon'
+ 
+ function uniquePostingNumbers(values: string[]): string[] {
+   const out: string[] = []
+@@ -29,30 +19,6 @@ function chunk<T>(arr: T[], size: number): T[][] {
+   return out
+ }
+ 
+-async function parseJsonSafe(text: string) {
+-  try {
+-    return JSON.parse(text)
+-  } catch {
+-    return null
+-  }
+-}
+-
+-async function postFboGet(secrets: Secrets, body: any): Promise<any> {
+-  const res = await fetch(`${OZON_BASE}/v2/posting/fbo/get`, {
+-    method: 'POST',
+-    headers: headers(secrets) as any,
+-    body: JSON.stringify(body ?? {}),
+-  })
+-  const text = await res.text()
+-  const json = await parseJsonSafe(text)
+-  if (!res.ok) {
+-    const err: any = new Error(`Ozon FBO get failed: ${res.status}`)
+-    err.response = json ?? text
+-    throw err
+-  }
+-  return json
+-}
+-
+ function extractResult(payload: any): any {
+   if (payload?.result && typeof payload.result === 'object') return payload.result
+   return payload && typeof payload === 'object' ? payload : null
+@@ -67,7 +33,9 @@ async function fetchOneCompat(secrets: Secrets, postingNumber: string): Promise<
+ 
+   for (const body of bodies) {
+     try {
+-      const payload = await postFboGet(secrets, body)
++      // ВАЖНО (РД 2.4.4): никаких прямых fetch к Seller API.
++      // Все запросы идут через ozonRequest/ozonPost, чтобы заполнялись raw-cache и endpoint registry.
++      const payload = await ozonPostingFboGetCompat(secrets, body)
+       const result = extractResult(payload)
+       if (result) return result
+     } catch {
