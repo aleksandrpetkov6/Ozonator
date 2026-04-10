@@ -220,6 +220,10 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     const postingNumber = normalizeTextValue(row?.posting_number)
     if (!postingNumber) return row
 
+    // КС П: для FBO «Дата отгрузки» берётся только из TYPE_STATE_CHANGED/new_state=posting_transferring_to_delivery.
+    // Поэтому для FBO запрещено добирать shipment_date из CSV-отчёта.
+    if (normalizeDeliveryModelKey(row?.delivery_model) === 'fbo') return row
+
     const currentShipmentDate = normalizeTextValue(row?.shipment_date)
     if (currentShipmentDate) return row
 

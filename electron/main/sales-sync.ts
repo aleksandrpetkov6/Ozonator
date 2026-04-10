@@ -330,13 +330,7 @@ export type SalesPostingStateEvent = {
 
 const SALES_STATE_CHANGED_EVENT_TYPE = 'type_state_changed'
 const FBO_SHIPMENT_STATE = 'posting_transferring_to_delivery'
-const FBO_SHIPMENT_STATES = [
-  FBO_SHIPMENT_STATE,
-  'posting_transfered_to_courier_service',
-  'posting_transferred_to_courier_service',
-  'posting_driver_pick_up',
-] as const
-const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_STATES)
+const FBO_SHIPMENT_STATE_SET = new Set<string>([FBO_SHIPMENT_STATE])
 
 function buildSalesStateEventCandidate(source: any): SalesPostingStateEvent | null {
   if (!source || typeof source !== 'object') return null
@@ -508,7 +502,7 @@ function buildSalesStatusDetailsValue(posting: any, endpoint: string, secondaryP
   if (normalizeSalesEndpointName(endpoint) === 'FBO') {
     const nextStateRaw = pickFirstPresentFromSources(['new_state', 'result.new_state'], posting, secondaryPosting)
     const nextStateKey = normalizeSalesLookupKey(nextStateRaw)
-    const nextState = nextStateKey && FBO_SHIPMENT_STATE_SET.has(nextStateKey)
+    const nextState = nextStateKey === FBO_SHIPMENT_STATE
       ? 'Передан в доставку'
       : translateSalesCodeValue(nextStateRaw, 'detail')
     pushUniqueSalesPart(parts, nextState)
