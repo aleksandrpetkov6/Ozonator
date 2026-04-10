@@ -3,18 +3,21 @@ import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingD
 import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
+import { fetchSalesPostingsReportRows, type SalesPostingsReportRow } from './postings-report'
 import type { Secrets } from './types'
 
 const SALES_CACHE_SNAPSHOT_ENDPOINTS = {
   fbs: '/__local__/sales-cache/fbs',
   fbo: '/__local__/sales-cache/fbo',
   details: '/__local__/sales-cache/posting-details',
+  postingsReport: '/__local__/sales-cache/postings-report',
 } as const
 
 const SALES_CACHE_SNAPSHOT_KEYS = [
   SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs,
   SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo,
   SALES_CACHE_SNAPSHOT_ENDPOINTS.details,
+  SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport,
 ] as const
 
 const SALES_LEGACY_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] as const
@@ -178,6 +181,90 @@ function parseJsonTextSafe(text: string | null | undefined) {
   } catch {
     return null
   }
+}
+
+
+type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'delivery_schema' | 'shipment_date'>
+
+function normalizeDeliveryModelKey(value: unknown): string {
+  const raw = normalizeTextValue(value).toLowerCase().replace(/[^a-z]/g, '')
+  if (!raw) return ''
+  if (raw.includes('rfbs')) return 'rfbs'
+  if (raw.includes('fbo')) return 'fbo'
+  if (raw.includes('fbs')) return 'fbs'
+  return ''
+}
+
+function buildSalesShipmentReportMap(rows: SalesShipmentReportRow[]): Map<string, string> {
+  const out = new Map<string, string>()
+
+  const save = (key: string, shipmentDate: string) => {
+    if (!key || !shipmentDate) return
+    const prev = normalizeTextValue(out.get(key))
+    if (!prev || shipmentDate > prev) out.set(key, shipmentDate)
+  }
+
+  for (const row of rows) {
+    const postingNumber = normalizeTextValue(row?.posting_number)
+    const shipmentDate = normalizeTextValue(row?.shipment_date)
+    if (!postingNumber || !shipmentDate) continue
+
+    const modelKey = normalizeDeliveryModelKey(row?.delivery_schema)
+    save(`*|${postingNumber}`, shipmentDate)
+    if (modelKey) save(`${modelKey}|${postingNumber}`, shipmentDate)
+  }
+
+  return out
+}
+
+function buildSalesShipmentReportRowsFromSnapshotMap(
+  cacheByEndpoint: Map<string, any>,
+  requestedPeriod: SalesPeriod | null | undefined,
+): SalesShipmentReportRow[] {
+  const snapshot = cacheByEndpoint.get(SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport)
+  if (!snapshot || typeof snapshot !== 'object') return []
+
+  const normalizedRequestedPeriod = normalizeSalesPeriod(requestedPeriod)
+  const snapshotPeriod = normalizeSalesPeriod(snapshot?.period ?? null)
+  const useSnapshot = sameSalesPeriod(snapshotPeriod, normalizedRequestedPeriod) || Boolean(snapshot?.rows)
+  if (!useSnapshot) return []
+
+  const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : []
+  return rows
+    .map((row) => ({
+      posting_number: normalizeTextValue(row?.posting_number),
+      delivery_schema: normalizeTextValue(row?.delivery_schema),
+      shipment_date: normalizeTextValue(row?.shipment_date),
+    }))
+    .filter((row) => row.posting_number && row.shipment_date)
+}
+
+function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentReportRow[]): any[] {
+  if (!Array.isArray(rows) || rows.length === 0) return Array.isArray(rows) ? rows : []
+  if (!Array.isArray(reportRows) || reportRows.length === 0) return rows
+
+  const reportMap = buildSalesShipmentReportMap(reportRows)
+  if (reportMap.size === 0) return rows
+
+  return rows.map((row) => {
+    const postingNumber = normalizeTextValue(row?.posting_number)
+    if (!postingNumber) return row
+
+    const currentShipmentDate = normalizeTextValue(row?.shipment_date)
+    if (currentShipmentDate) return row
+
+    const modelKey = normalizeDeliveryModelKey(row?.delivery_model)
+    const reportShipmentDate = normalizeTextValue(
+      (modelKey ? reportMap.get(`${modelKey}|${postingNumber}`) : '')
+      || reportMap.get(`*|${postingNumber}`),
+    )
+    if (!reportShipmentDate) return row
+
+    return {
+      ...row,
+      shipment_date: reportShipmentDate,
+    }
+  })
 }
 
 function normalizeSalesPeriodValue(value: any): string | null {
@@ -437,6 +524,7 @@ function buildSalesRowsFromPayloads(
   requestedPeriod: SalesPeriod | null | undefined,
   payloads: Array<{ endpoint: string; payload: any }>,
   postingDetailsByKey: Map<string, any>,
+  reportRows: SalesShipmentReportRow[] = [],
 ) {
   const products = dbGetProducts(storeClientId ?? null)
   const sourceEndpoints = new Set<string>()
@@ -452,7 +540,8 @@ function buildSalesRowsFromPayloads(
     storeClientId: storeClientId ?? null,
     periodKey: buildDatasetScopeKey(requestedPeriod),
   })
-  const strictRows = filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
+  const rowsWithReportShipmentDates = applySalesShipmentReportDates(mergedRows, reportRows)
+  const strictRows = filterSalesRowsStrictByPeriod(rowsWithReportShipmentDates, requestedPeriod)
   const normalizedRows = applySalesRelatedPostingPrefix(strictRows)
   return { rows: normalizedRows, sourceEndpoints: Array.from(sourceEndpoints) }
 }
@@ -461,6 +550,7 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
   const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
   const payloads = buildSalesPayloadsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
   const postingDetailsByKey = buildSalesPostingDetailsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
+  const reportRows = buildSalesShipmentReportRowsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
 
   if (payloads.length === 0 && cacheByEndpoint.size === 0) {
     const legacyPayloads = getLegacySalesPayloadMap(storeClientId)
@@ -469,7 +559,7 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
     }
   }
 
-  return buildSalesRowsFromPayloads(storeClientId, requestedPeriod, payloads, postingDetailsByKey)
+  return buildSalesRowsFromPayloads(storeClientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
 }
 
 function readScopedSalesSnapshotRows(
@@ -574,6 +664,21 @@ export async function refreshSalesRawSnapshotFromApi(
       postingDetailsByKey.set(getSalesPostingDetailsKey('FBO', postingNumber), payload)
     }
   }
+
+  let reportRows: SalesShipmentReportRow[] = []
+  try {
+    const report = await fetchSalesPostingsReportRows(secrets, requestedPeriod)
+    reportRows = report.rows
+      .map((row) => ({
+        posting_number: normalizeTextValue(row?.posting_number),
+        delivery_schema: normalizeTextValue(row?.delivery_schema),
+        shipment_date: normalizeTextValue(row?.shipment_date),
+      }))
+      .filter((row) => row.posting_number && row.shipment_date)
+  } catch {
+    reportRows = []
+  }
+
   const fetchedAt = new Date().toISOString()
 
   buildAndPersistFboSalesSnapshot({
@@ -639,8 +744,12 @@ export async function refreshSalesRawSnapshotFromApi(
     period: normalizedRequestedPeriod,
     items: detailsItems,
   })
+  persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport, {
+    period: normalizedRequestedPeriod,
+    rows: reportRows,
+  })
 
-  const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey)
+  const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
   persistDatasetSnapshot({
     storeClientId: secrets.clientId,
     dataset: 'sales',

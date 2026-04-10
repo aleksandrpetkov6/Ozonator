@@ -633,22 +633,15 @@ function getShipmentDateValue(detailPosting: any, posting: any, endpointKind: 'F
   }
 
   if (endpointKind === 'FBS') {
-    const deliveryModel = buildDeliveryModelValue(posting, detailPosting, '/v3/posting/fbs/get')
-    if (deliveryModel === 'rFBS') {
-      return normalizeDateValue(pickFirstPresentFromSources([
-        'delivering_date',
-        'shipment_date_actual',
-        'shipped_at',
-      ], detailPosting, posting))
-    }
-
     return normalizeDateValue(pickFirstPresentFromSources([
+      'delivering_date',
       'shipment_date_actual',
       'shipped_at',
     ], detailPosting, posting))
   }
 
   return normalizeDateValue(pickFirstPresentFromSources([
+    'delivering_date',
     'shipment_date_actual',
     'shipped_at',
   ], detailPosting, posting))
