@@ -406,7 +406,7 @@ function salesRelatedPostingPrefix(value: unknown): string {
   const firstDash = postingNumber.indexOf('-')
   if (firstDash < 0) return ''
   const secondDash = postingNumber.indexOf('-', firstDash + 1)
-  if (secondDash < 0) return postingNumber
+  if (secondDash < 0) return ''
   return postingNumber.slice(0, secondDash).trim()
 }
 
