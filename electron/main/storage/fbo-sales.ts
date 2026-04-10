@@ -181,6 +181,16 @@ function relatedOf(detail: any, posting: any, fallback: string[]): string {
   return fallback.join(', ')
 }
 
+function pushTraceSample(target: string[], value: string, limit = 10) {
+  if (!value || target.includes(value) || target.length >= limit) return
+  target.push(value)
+}
+
+function countBySql(conn: Database.Database, sql: string, ...params: any[]): number {
+  const row = conn.prepare(sql).get(...params) as { cnt?: number } | undefined
+  return Number(row?.cnt ?? 0)
+}
+
 function shipmentDateOf(detail: any, posting: any): string {
   return resolveFboShipmentDateFromSources(detail, posting)
 }
@@ -238,13 +248,43 @@ export function buildAndPersistFboSalesSnapshot(args: {
   fetchedAt?: string
 }) {
   const storeClientId = text(args.storeClientId)
-  if (!storeClientId) return { postingsCount: 0, itemsCount: 0, eventsCount: 0 }
+  if (!storeClientId) return {
+    postingsCount: 0,
+    itemsCount: 0,
+    eventsCount: 0,
+    trace: {
+      postingsSeen: 0,
+      postingsWithDetail: 0,
+      postingsWithoutDetail: 0,
+      postingsWithAnyStateEvents: 0,
+      postingsWithShipmentTransferEvent: 0,
+      postingsWithResolvedShipmentDate: 0,
+      missingDetailPostingNumbers: [],
+      missingShipmentDatePostingNumbers: [],
+      shipmentTransferPostingNumbers: [],
+    },
+    persisted: {
+      postingsCount: 0,
+      itemsCount: 0,
+      eventsCount: 0,
+      shipmentDateCount: 0,
+      shipmentTransferEventCount: 0,
+    },
+  }
   const periodKey = text(args.periodKey)
   const fetchedAt = text(args.fetchedAt) || new Date().toISOString()
   const orderPostings = new Map<string, Set<string>>()
   const postingRows = new Map<string, any>()
   const itemRows = new Map<string, any>()
   const eventRows = new Map<string, any>()
+  const postingsSeen = new Set<string>()
+  const postingsWithDetail = new Set<string>()
+  const postingsWithAnyStateEvents = new Set<string>()
+  const postingsWithShipmentTransferEvent = new Set<string>()
+  const postingsWithResolvedShipmentDate = new Set<string>()
+  const missingDetailPostingNumbers: string[] = []
+  const missingShipmentDatePostingNumbers: string[] = []
+  const shipmentTransferPostingNumbers: string[] = []
 
   for (const envelope of args.fboPayloads) {
     for (const posting of extractPostingsFromPayload(envelope.payload)) {
@@ -270,6 +310,21 @@ export function buildAndPersistFboSalesSnapshot(args: {
       const fallback = orderId ? Array.from(orderPostings.get(orderId) ?? []).filter((v) => v !== postingNumber) : []
       const shipmentDate = shipmentDateOf(detail, posting)
       const stateEvents = collectSalesStateEvents(detail, posting)
+      const shipmentTransferEvents = stateEvents.filter((event) => (
+        text(event?.event_type) === FBO_STATE_CHANGED_EVENT_TYPE
+        && text(event?.new_state || event?.state) === 'posting_transferring_to_delivery'
+      ))
+
+      postingsSeen.add(postingNumber)
+      if (detail) postingsWithDetail.add(postingNumber)
+      else pushTraceSample(missingDetailPostingNumbers, postingNumber)
+      if (stateEvents.length > 0) postingsWithAnyStateEvents.add(postingNumber)
+      if (shipmentTransferEvents.length > 0) {
+        postingsWithShipmentTransferEvent.add(postingNumber)
+        pushTraceSample(shipmentTransferPostingNumbers, postingNumber)
+      }
+      if (shipmentDate) postingsWithResolvedShipmentDate.add(postingNumber)
+      else pushTraceSample(missingShipmentDatePostingNumbers, postingNumber)
 
       postingRows.set(postingNumber, {
         store_client_id: storeClientId,
@@ -358,7 +413,71 @@ export function buildAndPersistFboSalesSnapshot(args: {
   })
   tx()
 
-  return { postingsCount: postingRows.size, itemsCount: itemRows.size, eventsCount: eventRows.size }
+  const connAfter = db()
+  const persistedPostingsCount = countBySql(
+    connAfter,
+    'SELECT COUNT(*) AS cnt FROM fbo_postings WHERE store_client_id = ? AND period_key = ?',
+    storeClientId,
+    periodKey,
+  )
+  const persistedItemsCount = countBySql(
+    connAfter,
+    'SELECT COUNT(*) AS cnt FROM fbo_posting_items WHERE store_client_id = ? AND period_key = ?',
+    storeClientId,
+    periodKey,
+  )
+  const persistedEventsCount = countBySql(
+    connAfter,
+    'SELECT COUNT(*) AS cnt FROM posting_state_events WHERE store_client_id = ? AND period_key = ?',
+    storeClientId,
+    periodKey,
+  )
+  const persistedShipmentDateCount = countBySql(
+    connAfter,
+    `SELECT COUNT(*) AS cnt
+       FROM fbo_postings
+      WHERE store_client_id = ?
+        AND period_key = ?
+        AND shipment_date IS NOT NULL
+        AND shipment_date <> ''`,
+    storeClientId,
+    periodKey,
+  )
+  const persistedShipmentTransferEventCount = countBySql(
+    connAfter,
+    `SELECT COUNT(*) AS cnt
+       FROM posting_state_events
+      WHERE store_client_id = ?
+        AND period_key = ?
+        AND COALESCE(NULLIF(event_type, ''), 'type_state_changed') = 'type_state_changed'
+        AND COALESCE(NULLIF(new_state, ''), state) = 'posting_transferring_to_delivery'`,
+    storeClientId,
+    periodKey,
+  )
+
+  return {
+    postingsCount: postingRows.size,
+    itemsCount: itemRows.size,
+    eventsCount: eventRows.size,
+    trace: {
+      postingsSeen: postingsSeen.size,
+      postingsWithDetail: postingsWithDetail.size,
+      postingsWithoutDetail: Math.max(0, postingsSeen.size - postingsWithDetail.size),
+      postingsWithAnyStateEvents: postingsWithAnyStateEvents.size,
+      postingsWithShipmentTransferEvent: postingsWithShipmentTransferEvent.size,
+      postingsWithResolvedShipmentDate: postingsWithResolvedShipmentDate.size,
+      missingDetailPostingNumbers,
+      missingShipmentDatePostingNumbers,
+      shipmentTransferPostingNumbers,
+    },
+    persisted: {
+      postingsCount: persistedPostingsCount,
+      itemsCount: persistedItemsCount,
+      eventsCount: persistedEventsCount,
+      shipmentDateCount: persistedShipmentDateCount,
+      shipmentTransferEventCount: persistedShipmentTransferEventCount,
+    },
+  }
 }
 
 export function mergeSalesRowsWithFboLocalDb(args: {

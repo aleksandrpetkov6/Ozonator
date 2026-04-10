@@ -19,6 +19,7 @@ type AppLogType =
   | 'app_reinstall'
   | 'app_uninstall'
   | 'admin_settings'
+  | 'sales_fbo_shipment_trace'
 
 type GridColsDataset = string
 
