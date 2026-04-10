@@ -40,6 +40,7 @@ declare global {
 
   interface Window {
     api: {
+      localServerConfig: () => Promise<{ ok: boolean; baseUrl?: string; token?: string; webhookPath?: string; webhookUrlLocal?: string; webhookToken?: string; error?: string }>
       secretsStatus: () => Promise<{ hasSecrets: boolean; encryptionAvailable: boolean }>
       saveSecrets: (secrets: { clientId: string; apiKey: string; storeName?: string }) => Promise<{ ok: boolean }>
       loadSecrets: () => Promise<{ ok: boolean; secrets: { clientId: string; apiKey: string; storeName?: string | null } }>
