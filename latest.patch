@@ -1,18 +1,620 @@
-diff --git a/src/renderer/src/ui/pages/products/shared.ts b/src/renderer/src/ui/pages/products/shared.ts
-@@ -179,10 +179,9 @@
-   if (!raw) return ''
- 
-   const shipmentTs = toSortTimestamp(raw)
--  if (shipmentTs == null) return ''
-+  if (shipmentTs == null) return raw
- 
-   if (shipmentTs > (nowMs + 60_000)) return ''
--  if (!hasConfirmedShipmentSignal(row)) return ''
- 
-   return raw
+diff -ruN /mnt/data/ozorig/Ozonator-main/electron/main/local-datasets.ts /mnt/data/ozrepo/Ozonator-main/electron/main/local-datasets.ts
+--- /mnt/data/ozorig/Ozonator-main/electron/main/local-datasets.ts	2026-04-10 08:00:39.000000000 +0000
++++ /mnt/data/ozrepo/Ozonator-main/electron/main/local-datasets.ts	2026-04-10 09:07:25.011892072 +0000
+@@ -1,6 +1,9 @@
+-import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
++import { mkdirSync, readFileSync, writeFileSync } from 'fs'
++import { dirname } from 'path'
++import { ozonPostingFboList, ozonPostingFbsActGetPostings, ozonPostingFbsActList, ozonPostingFbsList } from './ozon'
+ import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
+ import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
++import { getSalesShipmentReportPath } from './storage/paths'
+ import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
+ import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
+ import type { Secrets } from './types'
+@@ -432,6 +435,330 @@
+   })
  }
-
-diff --git a/src/renderer/src/ui/pages/products/ProductsGridView.tsx b/src/renderer/src/ui/pages/products/ProductsGridView.tsx
+ 
++
++type SalesShipmentReportRow = {
++  posting_number: string
++  shipment_date: string
++  delivery_model: string
++  status: string
++  status_details: string
++  carrier_status_details: string
++  in_process_at: string
++  source_kind: string
++}
++
++const SALES_SHIPMENT_REPORT_HEADERS: Array<keyof SalesShipmentReportRow> = [
++  'posting_number',
++  'shipment_date',
++  'delivery_model',
++  'status',
++  'status_details',
++  'carrier_status_details',
++  'in_process_at',
++  'source_kind',
++]
++
++function toIsoDayStart(value: string | null | undefined): string {
++  const day = normalizeSalesPeriodValue(value)
++  return day ? `${day}T00:00:00.000Z` : ''
++}
++
++function toIsoDayEnd(value: string | null | undefined): string {
++  const day = normalizeSalesPeriodValue(value)
++  return day ? `${day}T23:59:59.999Z` : ''
++}
++
++function buildFbsActListBody(period: SalesPeriod | null | undefined): any {
++  const normalized = normalizeSalesPeriod(period)
++  const filter: Record<string, unknown> = {}
++  const dateFrom = toIsoDayStart(normalized.from)
++  const dateTo = toIsoDayEnd(normalized.to)
++  if (dateFrom) filter.date_from = dateFrom
++  if (dateTo) filter.date_to = dateTo
++  return Object.keys(filter).length > 0
++    ? { limit: 1000, filter }
++    : { limit: 1000 }
++}
++
++function extractFbsActEntries(payload: any): any[] {
++  if (Array.isArray(payload?.result)) return payload.result
++  if (Array.isArray(payload?.result?.acts)) return payload.result.acts
++  if (Array.isArray(payload?.acts)) return payload.acts
++  if (Array.isArray(payload?.items)) return payload.items
++  return []
++}
++
++function looksLikePostingNumber(value: string): boolean {
++  return /^\d[\d-]{4,}$/.test(value)
++}
++
++function extractFbsActPostingNumbers(payload: any): string[] {
++  const buckets = [payload?.result, payload?.items, payload?.postings, payload]
++  const out: string[] = []
++  const seen = new Set<string>()
++
++  const pushOne = (value: any) => {
++    const raw = normalizeTextValue(value)
++    if (!raw || !looksLikePostingNumber(raw) || seen.has(raw)) return
++    seen.add(raw)
++    out.push(raw)
++  }
++
++  const walk = (value: any) => {
++    if (value == null) return
++    if (Array.isArray(value)) {
++      for (const item of value) walk(item)
++      return
++    }
++    if (typeof value !== 'object') {
++      pushOne(value)
++      return
++    }
++
++    pushOne((value as any).posting_number)
++    pushOne((value as any).postingNumber)
++    pushOne((value as any).number)
++    pushOne((value as any).value)
++
++    for (const nested of Object.values(value as Record<string, unknown>)) {
++      if (nested && typeof nested === 'object') walk(nested)
++    }
++  }
++
++  for (const bucket of buckets) walk(bucket)
++  return out
++}
++
++function escapeCsvCell(value: string): string {
++  if (!/[",\n\r]/.test(value)) return value
++  return `"${value.replace(/"/g, '""')}"`
++}
++
++function serializeSalesShipmentReportCsv(rows: SalesShipmentReportRow[]): string {
++  const lines: string[] = [SALES_SHIPMENT_REPORT_HEADERS.join(',')]
++  for (const row of rows) {
++    const cells = SALES_SHIPMENT_REPORT_HEADERS.map((header) => escapeCsvCell(normalizeTextValue(row[header] ?? '')))
++    lines.push(cells.join(','))
++  }
++  return `${lines.join('\n')}\n`
++}
++
++function parseCsvTable(text: string): string[][] {
++  const rows: string[][] = []
++  let row: string[] = []
++  let cell = ''
++  let inQuotes = false
++
++  for (let i = 0; i < text.length; i += 1) {
++    const ch = text[i]
++    if (inQuotes) {
++      if (ch === '"') {
++        if (text[i + 1] === '"') {
++          cell += '"'
++          i += 1
++        } else {
++          inQuotes = false
++        }
++      } else {
++        cell += ch
++      }
++      continue
++    }
++
++    if (ch === '"') {
++      inQuotes = true
++      continue
++    }
++    if (ch === ',') {
++      row.push(cell)
++      cell = ''
++      continue
++    }
++    if (ch === '\n') {
++      row.push(cell)
++      rows.push(row)
++      row = []
++      cell = ''
++      continue
++    }
++    if (ch === '\r') continue
++    cell += ch
++  }
++
++  if (cell || row.length > 0) {
++    row.push(cell)
++    rows.push(row)
++  }
++
++  return rows
++}
++
++function parseSalesShipmentReportCsv(text: string): SalesShipmentReportRow[] {
++  const table = parseCsvTable(text)
++  if (table.length === 0) return []
++  const header = table[0].map((value) => normalizeTextValue(value))
++  const rows: SalesShipmentReportRow[] = []
++  for (const cells of table.slice(1)) {
++    if (cells.length === 0 || cells.every((value) => !normalizeTextValue(value))) continue
++    const entry: Record<string, string> = {}
++    for (let i = 0; i < header.length; i += 1) {
++      const key = header[i]
++      if (!key) continue
++      entry[key] = normalizeTextValue(cells[i] ?? '')
++    }
++    const postingNumber = normalizeTextValue(entry.posting_number)
++    if (!postingNumber) continue
++    rows.push({
++      posting_number: postingNumber,
++      shipment_date: normalizeTextValue(entry.shipment_date),
++      delivery_model: normalizeTextValue(entry.delivery_model),
++      status: normalizeTextValue(entry.status),
++      status_details: normalizeTextValue(entry.status_details),
++      carrier_status_details: normalizeTextValue(entry.carrier_status_details),
++      in_process_at: normalizeTextValue(entry.in_process_at),
++      source_kind: normalizeTextValue(entry.source_kind),
++    })
++  }
++  return rows
++}
++
++function buildSalesShipmentReportRows(rows: any[], actShipmentDates?: Map<string, string>): SalesShipmentReportRow[] {
++  const byPosting = new Map<string, SalesShipmentReportRow>()
++  for (const row of Array.isArray(rows) ? rows : []) {
++    const postingNumber = normalizeTextValue((row as any)?.posting_number)
++    if (!postingNumber) continue
++    const shipmentDate = normalizeTextValue((row as any)?.shipment_date)
++    if (!shipmentDate) continue
++    const sourceKind = actShipmentDates?.get(postingNumber) === shipmentDate ? 'fbs-act-list' : 'sales-cache'
++    const current: SalesShipmentReportRow = {
++      posting_number: postingNumber,
++      shipment_date: shipmentDate,
++      delivery_model: normalizeTextValue((row as any)?.delivery_model),
++      status: normalizeTextValue((row as any)?.status),
++      status_details: normalizeTextValue((row as any)?.status_details),
++      carrier_status_details: normalizeTextValue((row as any)?.carrier_status_details),
++      in_process_at: normalizeTextValue((row as any)?.in_process_at),
++      source_kind: sourceKind,
++    }
++    const prev = byPosting.get(postingNumber)
++    if (!prev || current.shipment_date > prev.shipment_date) byPosting.set(postingNumber, current)
++  }
++  return Array.from(byPosting.values()).sort((left, right) => left.posting_number.localeCompare(right.posting_number))
++}
++
++function persistSalesShipmentReportCsv(args: {
++  storeClientId?: string | null
++  scopeKey?: string | null
++  rows: any[]
++  actShipmentDates?: Map<string, string>
++}) {
++  const path = getSalesShipmentReportPath(args.storeClientId ?? null, args.scopeKey ?? '')
++  mkdirSync(dirname(path), { recursive: true })
++  const reportRows = buildSalesShipmentReportRows(args.rows, args.actShipmentDates)
++  const csvText = serializeSalesShipmentReportCsv(reportRows)
++  writeFileSync(path, csvText, 'utf8')
++  return { path, rowsCount: reportRows.length }
++}
++
++function readSalesShipmentReportMap(storeClientId: string | null | undefined, scopeKey?: string | null): Map<string, string> {
++  const path = getSalesShipmentReportPath(storeClientId ?? null, scopeKey ?? '')
++  try {
++    const raw = readFileSync(path, 'utf8')
++    const rows = parseSalesShipmentReportCsv(raw)
++    const out = new Map<string, string>()
++    for (const row of rows) {
++      if (!row.posting_number || !row.shipment_date) continue
++      const prev = out.get(row.posting_number)
++      if (!prev || row.shipment_date > prev) out.set(row.posting_number, row.shipment_date)
++    }
++    return out
++  } catch {
++    return new Map<string, string>()
++  }
++}
++
++function applySalesShipmentReportOverrides(rows: any[], shipmentReportMap: Map<string, string>): any[] {
++  if (!Array.isArray(rows) || rows.length === 0 || shipmentReportMap.size === 0) return rows
++  let changed = false
++  const nextRows = rows.map((row) => {
++    const postingNumber = normalizeTextValue((row as any)?.posting_number)
++    const shipmentDate = postingNumber ? normalizeTextValue(shipmentReportMap.get(postingNumber)) : ''
++    if (!shipmentDate) return row
++    const current = normalizeTextValue((row as any)?.shipment_date)
++    if (current === shipmentDate) return row
++    changed = true
++    return { ...row, shipment_date: shipmentDate }
++  })
++  return changed ? nextRows : rows
++}
++
++async function fetchFbsActShipmentDates(
++  secrets: Secrets,
++  period: SalesPeriod | null | undefined,
++  fbsPayloads: Array<{ endpoint: string; payload: any }>,
++): Promise<Map<string, string>> {
++  const requestedPostings = new Set<string>()
++  for (const envelope of fbsPayloads) {
++    for (const posting of extractPostingsFromPayload(envelope.payload)) {
++      const postingNumber = normalizeTextValue((posting as any)?.posting_number ?? (posting as any)?.postingNumber)
++      if (postingNumber) requestedPostings.add(postingNumber)
++    }
++  }
++  if (requestedPostings.size === 0) return new Map<string, string>()
++
++  const actsPayload = await ozonPostingFbsActList(secrets, buildFbsActListBody(period))
++  const acts = extractFbsActEntries(actsPayload)
++  if (acts.length === 0) return new Map<string, string>()
++
++  const actRequests = acts
++    .map((act) => ({ id: Number((act as any)?.id), createdAt: normalizeTextValue((act as any)?.created_at) }))
++    .filter((act) => Number.isFinite(act.id) && act.id > 0 && act.createdAt)
++
++  const postingToShipmentDate = new Map<string, string>()
++  for (const batch of chunk(actRequests, 4)) {
++    const settled = await Promise.allSettled(batch.map(async (act) => ({
++      act,
++      payload: await ozonPostingFbsActGetPostings(secrets, act.id),
++    })))
++    for (const result of settled) {
++      if (result.status !== 'fulfilled') continue
++      const createdAt = normalizeTextValue(result.value.act.createdAt)
++      if (!createdAt) continue
++      for (const postingNumber of extractFbsActPostingNumbers(result.value.payload)) {
++        if (!requestedPostings.has(postingNumber)) continue
++        const prev = postingToShipmentDate.get(postingNumber)
++        if (!prev || createdAt > prev) postingToShipmentDate.set(postingNumber, createdAt)
++      }
++    }
++    if (batch.length === 4) await new Promise((resolve) => setTimeout(resolve, 120))
++  }
++
++  return postingToShipmentDate
++}
++
++function applyPostingShipmentOverrides(rows: any[], overrides: Map<string, string>): any[] {
++  if (!Array.isArray(rows) || rows.length === 0 || overrides.size === 0) return rows
++  let changed = false
++  const nextRows = rows.map((row) => {
++    const postingNumber = normalizeTextValue((row as any)?.posting_number)
++    const override = postingNumber ? normalizeTextValue(overrides.get(postingNumber)) : ''
++    if (!override) return row
++    const current = normalizeTextValue((row as any)?.shipment_date)
++    if (current === override) return row
++    changed = true
++    return { ...row, shipment_date: override }
++  })
++  return changed ? nextRows : rows
++}
++
++function applySalesShipmentReportForScope(
++  storeClientId: string | null | undefined,
++  requestedPeriod: SalesPeriod | null | undefined,
++  rows: any[],
++): any[] {
++  return applySalesShipmentReportOverrides(rows, readSalesShipmentReportMap(storeClientId ?? null, buildDatasetScopeKey(requestedPeriod)))
++}
++
+ function buildSalesRowsFromPayloads(
+   storeClientId: string | null | undefined,
+   requestedPeriod: SalesPeriod | null | undefined,
+@@ -563,6 +890,12 @@
+     '/v2/posting/fbo/list',
+   )
+   const payloads = [...fbsPayloads, ...fboPayloads]
++  let fbsActShipmentDates = new Map<string, string>()
++  try {
++    fbsActShipmentDates = await fetchFbsActShipmentDates(secrets, requestedPeriod, fbsPayloads)
++  } catch {
++    fbsActShipmentDates = new Map<string, string>()
++  }
+   const cachedPostingDetailsByKey = getSalesPostingDetailsFromRawCache(secrets.clientId)
+   const postingDetailsByKey = payloads.length > 0
+     ? await fetchSalesPostingDetails(secrets, payloads, cachedPostingDetailsByKey)
+@@ -640,11 +973,25 @@
+     items: detailsItems,
+   })
+ 
+-  const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey)
++  const scopeKey = buildDatasetScopeKey(requestedPeriod)
++  const built = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey)
++  const rows = applyPostingShipmentOverrides(built.rows, fbsActShipmentDates)
++  const sourceEndpoints = Array.from(new Set([
++    ...built.sourceEndpoints,
++    ...(fbsActShipmentDates.size > 0 ? ['/v2/posting/fbs/act/list', '/v2/posting/fbs/act/get-postings'] : []),
++  ]))
++
++  persistSalesShipmentReportCsv({
++    storeClientId: secrets.clientId,
++    scopeKey,
++    rows,
++    actShipmentDates: fbsActShipmentDates,
++  })
++
+   persistDatasetSnapshot({
+     storeClientId: secrets.clientId,
+     dataset: 'sales',
+-    scopeKey: buildDatasetScopeKey(requestedPeriod),
++    scopeKey,
+     period: requestedPeriod,
+     rows,
+     sourceKind: 'api-live',
+@@ -657,7 +1004,7 @@
+       dataset: 'sales',
+       scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+       period: requestedPeriod,
+-      rows,
++      rows: applySalesShipmentReportOverrides(rows, readSalesShipmentReportMap(secrets.clientId, scopeKey)),
+       sourceKind: 'api-live-default-window',
+       sourceEndpoints,
+     })
+@@ -666,6 +1013,31 @@
+   return { rowsCount: rows.length }
+ }
+ 
++const SALES_SHIPMENT_STATUS_MARKERS = [
++  'доставляется',
++  'в пути',
++  'передан в доставку',
++  'передан в службу доставки',
++  'забирает курьер',
++  'доставлен',
++  'доставлен покупателю',
++  'получен покупателем',
++  'возвращается',
++  'возвращён',
++  'возвращен',
++  'возврат',
++]
++
++function hasSalesShipmentStatusSignal(row: any): boolean {
++  if (!row || typeof row !== 'object') return false
++  const text = [row?.status, row?.status_details, row?.carrier_status_details]
++    .map((value) => String(value ?? '').trim().toLowerCase())
++    .filter(Boolean)
++    .join(' | ')
++  if (!text) return false
++  return SALES_SHIPMENT_STATUS_MARKERS.some((marker) => text.includes(marker))
++}
++
+ function salesRowNeedsFboBackfill(row: any): boolean {
+   if (!row || typeof row !== 'object') return false
+   const model = String(row?.delivery_model ?? '').trim().toUpperCase()
+@@ -682,8 +1054,20 @@
+   return false
+ }
+ 
++function salesRowNeedsShipmentRebuild(row: any): boolean {
++  if (!row || typeof row !== 'object') return false
++
++  const shipmentDate = String(row?.shipment_date ?? '').trim()
++  if (shipmentDate) return salesRowNeedsFboBackfill(row)
++
++  const model = String(row?.delivery_model ?? '').trim().toUpperCase()
++  if (model !== 'FBS' && model !== 'RFBS' && model !== 'FBO') return false
++
++  return hasSalesShipmentStatusSignal(row) || salesRowNeedsFboBackfill(row)
++}
++
+ function salesRowsNeedFboBackfill(rows: any[]): boolean {
+-  return rows.some((row) => salesRowNeedsFboBackfill(row))
++  return rows.some((row) => salesRowNeedsShipmentRebuild(row))
+ }
+ 
+ export async function ensureLocalSalesSnapshotFromApiIfMissing(
+@@ -712,18 +1096,19 @@
+ 
+   if (hasLocalCoverage) {
+     const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId, requestedPeriod)
++    const rowsWithReport = applySalesShipmentReportForScope(storeClientId, requestedPeriod, rows)
+     persistDatasetSnapshot({
+       storeClientId,
+       dataset: 'sales',
+       scopeKey: buildDatasetScopeKey(requestedPeriod),
+       period: requestedPeriod,
+-      rows,
++      rows: rowsWithReport,
+       sourceKind: 'api-raw-cache',
+       sourceEndpoints,
+     })
+     return {
+       refreshed: false,
+-      rowsCount: rows.length,
++      rowsCount: rowsWithReport.length,
+     }
+   }
+ 
+@@ -743,39 +1128,59 @@
+   const scopeKey = buildDatasetScopeKey(requestedPeriod)
+ 
+   if (dataset === 'sales') {
++    const cacheByEndpoint = getSalesSnapshotMap(storeClientId ?? null)
++    const hasLocalCoverage = isRequestedSalesPeriodCoveredByRawCache(cacheByEndpoint, requestedPeriod)
++
+     const exactSnapshotRows = readScopedSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
+-    if (exactSnapshotRows) return exactSnapshotRows
++    if (exactSnapshotRows) {
++      if (!salesRowsNeedFboBackfill(exactSnapshotRows) || !hasLocalCoverage || cacheByEndpoint.size === 0) {
++        return applySalesShipmentReportForScope(storeClientId ?? null, requestedPeriod, exactSnapshotRows)
++      }
++
++      const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, requestedPeriod)
++      const rowsWithReport = applySalesShipmentReportForScope(storeClientId ?? null, requestedPeriod, rows)
++      persistDatasetSnapshot({
++        storeClientId,
++        dataset,
++        scopeKey,
++        period: requestedPeriod,
++        rows: rowsWithReport,
++        sourceKind: 'api-raw-cache-rebuild',
++        sourceEndpoints,
++      })
++      return rowsWithReport
++    }
+ 
+     if (scopeKey && isDefaultRollingSalesPeriod(requestedPeriod)) {
+       const rollingRows = readRollingSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
+       if (rollingRows && rollingRows.length > 0) {
++        const rollingRowsWithReport = applySalesShipmentReportForScope(storeClientId ?? null, requestedPeriod, rollingRows)
+         persistDatasetSnapshot({
+           storeClientId,
+           dataset,
+           scopeKey,
+           period: requestedPeriod,
+-          rows: rollingRows,
++          rows: rollingRowsWithReport,
+           sourceKind: 'dataset-snapshot-default-window',
+           sourceEndpoints: [],
+         })
+-        return rollingRows
++        return rollingRowsWithReport
+       }
+     }
+ 
+-    const cacheByEndpoint = getSalesSnapshotMap(storeClientId ?? null)
+-    const hasLocalCoverage = isRequestedSalesPeriodCoveredByRawCache(cacheByEndpoint, requestedPeriod)
+     if (cacheByEndpoint.size > 0 && hasLocalCoverage) {
+       const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, requestedPeriod)
++      const rowsWithReport = applySalesShipmentReportForScope(storeClientId ?? null, requestedPeriod, rows)
+       persistDatasetSnapshot({
+         storeClientId,
+         dataset,
+         scopeKey,
+         period: requestedPeriod,
+-        rows,
++        rows: rowsWithReport,
+         sourceKind: 'api-raw-cache',
+         sourceEndpoints,
+       })
+-      return rows
++      return rowsWithReport
+     }
+ 
+     if (scopeKey) {
+@@ -786,7 +1191,7 @@
+   const fromSnapshot = dbGetDatasetSnapshotRows({ storeClientId: storeClientId ?? null, dataset, scopeKey })
+   if (Array.isArray(fromSnapshot)) {
+     if (dataset === 'sales') {
+-      return filterSalesRowsStrictByPeriod(fromSnapshot, options?.period ?? null)
++      return applySalesShipmentReportForScope(storeClientId ?? null, options?.period ?? null, filterSalesRowsStrictByPeriod(fromSnapshot, options?.period ?? null))
+     }
+     return fromSnapshot
+   }
+diff -ruN /mnt/data/ozorig/Ozonator-main/electron/main/ozon.ts /mnt/data/ozrepo/Ozonator-main/electron/main/ozon.ts
+--- /mnt/data/ozorig/Ozonator-main/electron/main/ozon.ts	2026-04-10 08:00:39.000000000 +0000
++++ /mnt/data/ozrepo/Ozonator-main/electron/main/ozon.ts	2026-04-10 09:00:31.998572221 +0000
+@@ -847,6 +847,18 @@
+   return ozonPost(secrets, '/v2/posting/fbo/list', body ?? buildPostingListBody())
+ }
+ 
++
++export async function ozonPostingFbsActList(secrets: Secrets, body?: any) {
++  return ozonPost(secrets, '/v2/posting/fbs/act/list', body ?? { limit: 1000 })
++}
++
++export async function ozonPostingFbsActGetPostings(secrets: Secrets, id: number | string) {
++  const normalizedId = Number(id)
++  if (!Number.isFinite(normalizedId) || normalizedId <= 0) throw new Error('Не указан id акта')
++  return ozonPost(secrets, '/v2/posting/fbs/act/get-postings', { id: Math.trunc(normalizedId) })
++}
++
++
+ function buildPostingGetBody(postingNumber: string, includeExtendedFields = false) {
+   const normalizedPostingNumber = String(postingNumber ?? '').trim()
+   if (!normalizedPostingNumber) throw new Error('Не указан posting_number')
+diff -ruN /mnt/data/ozorig/Ozonator-main/electron/main/sales-sync.ts /mnt/data/ozrepo/Ozonator-main/electron/main/sales-sync.ts
+--- /mnt/data/ozorig/Ozonator-main/electron/main/sales-sync.ts	2026-04-10 08:00:39.000000000 +0000
++++ /mnt/data/ozrepo/Ozonator-main/electron/main/sales-sync.ts	2026-04-10 08:45:05.038588038 +0000
+@@ -633,16 +633,8 @@
+   }
+ 
+   if (endpointKind === 'FBS') {
+-    const deliveryModel = buildDeliveryModelValue(posting, detailPosting, '/v3/posting/fbs/get')
+-    if (deliveryModel === 'rFBS') {
+-      return normalizeDateValue(pickFirstPresentFromSources([
+-        'delivering_date',
+-        'shipment_date_actual',
+-        'shipped_at',
+-      ], detailPosting, posting))
+-    }
+-
+     return normalizeDateValue(pickFirstPresentFromSources([
++      'delivering_date',
+       'shipment_date_actual',
+       'shipped_at',
+     ], detailPosting, posting))
+diff -ruN /mnt/data/ozorig/Ozonator-main/electron/main/storage/paths.ts /mnt/data/ozrepo/Ozonator-main/electron/main/storage/paths.ts
+--- /mnt/data/ozorig/Ozonator-main/electron/main/storage/paths.ts	2026-04-10 08:00:39.000000000 +0000
++++ /mnt/data/ozrepo/Ozonator-main/electron/main/storage/paths.ts	2026-04-10 09:00:15.000149327 +0000
+@@ -47,3 +47,20 @@
+     }
+   }
+ }
++
++
++function sanitizeFilePart(value: string | null | undefined): string {
++  const raw = String(value ?? '').trim()
++  const cleaned = raw.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '')
++  return cleaned || 'default'
++}
++
++export function getPersistentReportsDir() {
++  return join(getPersistentRootDir(), 'reports')
++}
++
++export function getSalesShipmentReportPath(storeClientId: string | null | undefined, scopeKey?: string | null) {
++  const storePart = sanitizeFilePart(storeClientId)
++  const scopePart = sanitizeFilePart(scopeKey)
++  return join(getPersistentReportsDir(), `sales-shipment-report-${storePart}-${scopePart}.csv`)
++}
+diff -ruN /mnt/data/ozorig/Ozonator-main/src/renderer/src/ui/pages/products/ProductsGridView.tsx /mnt/data/ozrepo/Ozonator-main/src/renderer/src/ui/pages/products/ProductsGridView.tsx
+--- /mnt/data/ozorig/Ozonator-main/src/renderer/src/ui/pages/products/ProductsGridView.tsx	2026-04-10 08:00:39.000000000 +0000
++++ /mnt/data/ozrepo/Ozonator-main/src/renderer/src/ui/pages/products/ProductsGridView.tsx	2026-04-10 08:21:31.409737231 +0000
 @@ -37,15 +37,8 @@
  
    const shipmentTs = toRowTimestamp(rawShipmentDate)
@@ -30,3 +632,18 @@ diff --git a/src/renderer/src/ui/pages/products/ProductsGridView.tsx b/src/rende
  }
  
  type Props = {
+diff -ruN /mnt/data/ozorig/Ozonator-main/src/renderer/src/ui/pages/products/shared.ts /mnt/data/ozrepo/Ozonator-main/src/renderer/src/ui/pages/products/shared.ts
+--- /mnt/data/ozorig/Ozonator-main/src/renderer/src/ui/pages/products/shared.ts	2026-04-10 08:00:39.000000000 +0000
++++ /mnt/data/ozrepo/Ozonator-main/src/renderer/src/ui/pages/products/shared.ts	2026-04-10 08:21:31.408993794 +0000
+@@ -179,10 +179,9 @@
+   if (!raw) return ''
+ 
+   const shipmentTs = toSortTimestamp(raw)
+-  if (shipmentTs == null) return ''
++  if (shipmentTs == null) return raw
+ 
+   if (shipmentTs > (nowMs + 60_000)) return ''
+-  if (!hasConfirmedShipmentSignal(row)) return ''
+ 
+   return raw
+ }
