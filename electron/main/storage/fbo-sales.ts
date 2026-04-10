@@ -1,9 +1,31 @@
 import Database from 'better-sqlite3'
 import type { SalesPayloadEnvelope } from '../sales-sync'
-import { collectSalesStateEvents, extractPostingsFromPayload, getSalesPostingDetailsKey } from '../sales-sync'
+import { collectSalesStateEvents, extractPostingsFromPayload, getSalesPostingDetailsKey, resolveFboShipmentDateFromSources } from '../sales-sync'
 import { ensurePersistentStorageReady, getPersistentDbPath } from './paths'
 
 let fboDb: Database.Database | null = null
+
+function ensurePostingStateEventsSchema(conn: Database.Database) {
+  const columns = conn.prepare("PRAGMA table_info('posting_state_events')").all() as Array<{ name?: string }>|null
+  const names = new Set((columns ?? []).map((row) => String(row?.name ?? '').trim()).filter(Boolean))
+
+  if (!names.has('event_type')) {
+    conn.exec("ALTER TABLE posting_state_events ADD COLUMN event_type TEXT NULL")
+  }
+  if (!names.has('new_state')) {
+    conn.exec("ALTER TABLE posting_state_events ADD COLUMN new_state TEXT NULL")
+  }
+
+  conn.exec(`
+    UPDATE posting_state_events
+    SET event_type = COALESCE(NULLIF(event_type, ''), 'type_state_changed')
+    WHERE event_type IS NULL OR event_type = '';
+
+    UPDATE posting_state_events
+    SET new_state = COALESCE(NULLIF(new_state, ''), state)
+    WHERE new_state IS NULL OR new_state = '';
+  `)
+}
 
 function db(): Database.Database {
   if (fboDb) return fboDb
@@ -42,13 +64,16 @@ function db(): Database.Database {
       period_key TEXT NOT NULL DEFAULT '',
       posting_number TEXT NOT NULL,
       event_key TEXT NOT NULL,
+      event_type TEXT NULL,
+      new_state TEXT NULL,
       state TEXT NOT NULL,
       changed_state_date TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (store_client_id, period_key, posting_number, event_key)
     );
-    CREATE INDEX IF NOT EXISTS idx_posting_state_events_lookup ON posting_state_events(store_client_id, period_key, posting_number, state, changed_state_date);
+    CREATE INDEX IF NOT EXISTS idx_posting_state_events_lookup ON posting_state_events(store_client_id, period_key, posting_number, event_type, new_state, changed_state_date);
   `)
+  ensurePostingStateEventsSchema(fboDb)
   return fboDb
 }
 
@@ -101,22 +126,8 @@ function orderIdOf(source: any): string {
   return text(pick(source, ['order_id', 'order_number']))
 }
 
-function normalizedStateOf(...sources: any[]): string {
-  return text(pickFromSources(['new_state', 'result.new_state', 'status', 'result.status', 'state', 'result.state'], ...sources)).toLowerCase()
-}
-
-function changedStateDateOf(...sources: any[]): string {
-  return dateText(pickFromSources(['changed_state_date', 'result.changed_state_date'], ...sources))
-}
-
-const FBO_SHIPMENT_STATES = [
-  'posting_transferring_to_delivery',
-  'posting_transfered_to_courier_service',
-  'posting_transferred_to_courier_service',
-  'posting_driver_pick_up',
-] as const
-
-const FBO_SHIPMENT_STATE_SET = new Set<string>(FBO_SHIPMENT_STATES)
+const FBO_SHIPMENT_STATE = 'posting_transferring_to_delivery'
+const FBO_STATE_CHANGED_EVENT_TYPE = 'type_state_changed'
 
 const FBO_DELIVERED_STATES = new Set<string>([
   'delivered',
@@ -125,47 +136,6 @@ const FBO_DELIVERED_STATES = new Set<string>([
   'posting_delivered',
   'posting_delivered_to_customer',
 ])
-
-function shipmentEventDateFromSource(source: any): string {
-  if (!source || typeof source !== 'object') return ''
-
-  const queue: any[] = [source]
-  const seen = new Set<any>()
-  const byState = new Map<string, string[]>()
-  for (const state of FBO_SHIPMENT_STATES) byState.set(state, [])
-
-  while (queue.length > 0) {
-    const current = queue.shift()
-    if (!current || typeof current !== 'object') continue
-    if (seen.has(current)) continue
-    seen.add(current)
-
-    const state = text(pick(current, ['new_state', 'state', 'status', 'result.new_state', 'result.state', 'result.status'])).toLowerCase()
-    const changedStateDate = dateText(pick(current, ['changed_state_date', 'result.changed_state_date']))
-    if (FBO_SHIPMENT_STATE_SET.has(state) && changedStateDate) {
-      const bucket = byState.get(state)
-      if (bucket) bucket.push(changedStateDate)
-    }
-
-    if (Array.isArray(current)) {
-      for (const item of current) {
-        if (item && typeof item === 'object') queue.push(item)
-      }
-      continue
-    }
-
-    for (const value of Object.values(current)) {
-      if (value && typeof value === 'object') queue.push(value)
-    }
-  }
-
-  for (const state of FBO_SHIPMENT_STATES) {
-    const best = (byState.get(state) ?? []).sort((left, right) => right.localeCompare(left))[0] ?? ''
-    if (best) return best
-  }
-
-  return ''
-}
 
 function itemsOf(source: any): any[] {
   if (Array.isArray(source?.products)) return source.products
@@ -213,14 +183,7 @@ function relatedOf(detail: any, posting: any, fallback: string[]): string {
 }
 
 function shipmentDateOf(detail: any, posting: any): string {
-  const exactEventDate = shipmentEventDateFromSource(detail) || shipmentEventDateFromSource(posting)
-  if (exactEventDate) return exactEventDate
-
-  const state = normalizedStateOf(detail, posting)
-  const changed = changedStateDateOf(detail, posting)
-  if (FBO_SHIPMENT_STATE_SET.has(state) && changed) return changed
-
-  return ''
+  return resolveFboShipmentDateFromSources(detail, posting)
 }
 
 function hasDeliveredStateOf(...sources: any[]): boolean {
@@ -307,8 +270,6 @@ export function buildAndPersistFboSalesSnapshot(args: {
       const orderId = orderIdOf(detail) || orderIdOf(posting)
       const fallback = orderId ? Array.from(orderPostings.get(orderId) ?? []).filter((v) => v !== postingNumber) : []
       const shipmentDate = shipmentDateOf(detail, posting)
-      const state = normalizedStateOf(detail, posting)
-      const changedStateDate = changedStateDateOf(detail, posting)
       const stateEvents = collectSalesStateEvents(detail, posting)
 
       postingRows.set(postingNumber, {
@@ -325,28 +286,21 @@ export function buildAndPersistFboSalesSnapshot(args: {
 
       if (postingNumber && stateEvents.length > 0) {
         for (const event of stateEvents) {
-          const eventKey = `${event.state}|${event.changed_state_date}`
+          const eventType = text(event.event_type) || FBO_STATE_CHANGED_EVENT_TYPE
+          const newState = text(event.new_state) || text(event.state)
+          const eventKey = `${eventType}|${newState}|${event.changed_state_date}`
           eventRows.set(`${postingNumber}|${eventKey}`, {
             store_client_id: storeClientId,
             period_key: periodKey,
             posting_number: postingNumber,
             event_key: eventKey,
-            state: event.state,
+            event_type: eventType,
+            new_state: newState,
+            state: newState,
             changed_state_date: event.changed_state_date,
             updated_at: fetchedAt,
           })
         }
-      } else if (postingNumber && state && changedStateDate) {
-        const eventKey = `${state}|${changedStateDate}`
-        eventRows.set(`${postingNumber}|${eventKey}`, {
-          store_client_id: storeClientId,
-          period_key: periodKey,
-          posting_number: postingNumber,
-          event_key: eventKey,
-          state,
-          changed_state_date: changedStateDate,
-          updated_at: fetchedAt,
-        })
       }
 
       const items = mergedItems(detail, posting)
@@ -393,9 +347,9 @@ export function buildAndPersistFboSalesSnapshot(args: {
     `)
     const insertEvent = conn.prepare(`
       INSERT INTO posting_state_events (
-        store_client_id, period_key, posting_number, event_key, state, changed_state_date, updated_at
+        store_client_id, period_key, posting_number, event_key, event_type, new_state, state, changed_state_date, updated_at
       ) VALUES (
-        @store_client_id, @period_key, @posting_number, @event_key, @state, @changed_state_date, @updated_at
+        @store_client_id, @period_key, @posting_number, @event_key, @event_type, @new_state, @state, @changed_state_date, @updated_at
       )
     `)
 
@@ -430,12 +384,8 @@ export function mergeSalesRowsWithFboLocalDb(args: {
           WHERE e.store_client_id = p.store_client_id
             AND e.period_key = p.period_key
             AND e.posting_number = p.posting_number
-            AND e.state IN (
-              'posting_transferring_to_delivery',
-              'posting_transfered_to_courier_service',
-              'posting_transferred_to_courier_service',
-              'posting_driver_pick_up'
-            )
+            AND COALESCE(NULLIF(e.event_type, ''), 'type_state_changed') = 'type_state_changed'
+            AND COALESCE(NULLIF(e.new_state, ''), e.state) = 'posting_transferring_to_delivery'
         )
       ) AS shipment_date,
       p.delivery_date,
