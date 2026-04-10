@@ -104,38 +104,8 @@ function pickFirstPresent(source: any, paths: string[]): any {
   return undefined
 }
 
-const FBO_COMPAT_SHIPMENT_STATES = new Set([
-  'posting_transferring_to_delivery',
-  'posting_transfered_to_courier_service',
-  'posting_transferred_to_courier_service',
-  'posting_driver_pick_up',
-])
-
-function normalizeSalesCompatStateKey(value: any): string {
-  return normalizeTextValue(value)
-    .toLowerCase()
-    .replace(/[|]+/g, ' ')
-    .replace(/[./\\]+/g, ' ')
-    .replace(/[:=]+/g, ' ')
-    .replace(/[_\-\s]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-}
-
 function getFboCompatShipmentDate(detail: any): string {
-  const nested = normalizeTextValue(resolveFboShipmentDateFromSources(detail))
-  if (nested) return nested
-
-  const state = normalizeSalesCompatStateKey(pickFirstPresent(detail, [
-    'new_state',
-    'result.new_state',
-    'state',
-    'result.state',
-    'status',
-    'result.status',
-  ]))
-  const changed = normalizeTextValue(pickFirstPresent(detail, ['changed_state_date', 'result.changed_state_date']))
-  if (state && changed && FBO_COMPAT_SHIPMENT_STATES.has(state)) return changed
-  return ''
+  return normalizeTextValue(resolveFboShipmentDateFromSources(detail))
 }
 
 function hasFboCompatDetail(detail: any): boolean {
@@ -254,6 +224,7 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     if (currentShipmentDate) return row
 
     const modelKey = normalizeDeliveryModelKey(row?.delivery_model)
+    if (modelKey === 'fbo') return row
     const reportShipmentDate = normalizeTextValue(
       (modelKey ? reportMap.get(`${modelKey}|${postingNumber}`) : '')
       || reportMap.get(`*|${postingNumber}`),

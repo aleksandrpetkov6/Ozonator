@@ -322,6 +322,8 @@ function pickFirstPresentFromSources(paths: string[], ...sources: any[]) {
 }
 
 export type SalesPostingStateEvent = {
+  event_type: string
+  new_state: string
   state: string
   changed_state_date: string
 }
@@ -341,23 +343,24 @@ function buildSalesStateEventCandidate(source: any): SalesPostingStateEvent | nu
 
   const explicitNewState = pickFirstPresent(source, ['new_state'])
   const eventType = normalizeSalesLookupKey(pickFirstPresent(source, ['type', 'event_type']))
-  const isExplicitStateEvent = explicitNewState !== undefined || eventType === SALES_STATE_CHANGED_EVENT_TYPE
+  const isExplicitStateEvent = eventType === SALES_STATE_CHANGED_EVENT_TYPE
   if (!isExplicitStateEvent) return null
 
-  const state = normalizeSalesLookupKey(
-    explicitNewState ?? (eventType === SALES_STATE_CHANGED_EVENT_TYPE
-      ? pickFirstPresent(source, ['state', 'status'])
-      : undefined),
+  const newState = normalizeSalesLookupKey(
+    explicitNewState ?? pickFirstPresent(source, ['state', 'status']),
   )
   const changedStateDate = normalizeDateValue(
     pickFirstPresent(source, ['changed_state_date'])
-      ?? (eventType === SALES_STATE_CHANGED_EVENT_TYPE
-        ? pickFirstPresent(source, ['date', 'created_at'])
-        : undefined),
+      ?? pickFirstPresent(source, ['date', 'created_at']),
   )
 
-  if (!state || !changedStateDate) return null
-  return { state, changed_state_date: changedStateDate }
+  if (!newState || !changedStateDate) return null
+  return {
+    event_type: SALES_STATE_CHANGED_EVENT_TYPE,
+    new_state: newState,
+    state: newState,
+    changed_state_date: changedStateDate,
+  }
 }
 
 export function collectSalesStateEvents(...sources: any[]): SalesPostingStateEvent[] {
@@ -398,7 +401,7 @@ export function collectSalesStateEvents(...sources: any[]): SalesPostingStateEve
 
 export function resolveFboShipmentDateFromSources(...sources: any[]): string {
   return collectSalesStateEvents(...sources)
-    .filter((event) => FBO_SHIPMENT_STATE_SET.has(event.state))
+    .filter((event) => event.event_type === SALES_STATE_CHANGED_EVENT_TYPE && event.new_state === FBO_SHIPMENT_STATE)
     .map((event) => event.changed_state_date)
     .sort((left, right) => right.localeCompare(left))[0] ?? ''
 }
