@@ -229,14 +229,14 @@ function buildSalesShipmentReportRowsFromSnapshotMap(
   const useSnapshot = sameSalesPeriod(snapshotPeriod, normalizedRequestedPeriod) || Boolean(snapshot?.rows)
   if (!useSnapshot) return []
 
-  const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : []
+  const rows: any[] = Array.isArray(snapshot?.rows) ? snapshot.rows : []
   return rows
-    .map((row) => ({
+    .map((row: any): SalesShipmentReportRow => ({
       posting_number: normalizeTextValue(row?.posting_number),
       delivery_schema: normalizeTextValue(row?.delivery_schema),
       shipment_date: normalizeTextValue(row?.shipment_date),
     }))
-    .filter((row) => row.posting_number && row.shipment_date)
+    .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number && row.shipment_date))
 }
 
 function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentReportRow[]): any[] {
