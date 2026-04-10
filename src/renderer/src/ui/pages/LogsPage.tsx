@@ -79,6 +79,10 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
       if (typeof m?.fboRowsWithShipmentDate === 'number') parts.push(`строк с датой: ${m.fboRowsWithShipmentDate}`)
       if (typeof m?.salesRowsCount === 'number') parts.push(`строк продаж: ${m.salesRowsCount}`)
       if (typeof m?.reportRowsCount === 'number') parts.push(`строк отчёта: ${m.reportRowsCount}`)
+      if (typeof m?.incomingEventsCount === 'number') parts.push(`push событий: ${m.incomingEventsCount}`)
+      if (typeof m?.acceptedPushEventCount === 'number') parts.push(`push принято: ${m.acceptedPushEventCount}`)
+      const pushSamples = Array.isArray(m?.samplePostingNumbers) ? m.samplePostingNumbers : []
+      if (pushSamples.length > 0) parts.push(`push: ${pushSamples.slice(0, 3).join(', ')}`)
       if (m?.trace && typeof m.trace === 'object') {
         if (typeof m.trace?.postingsWithDetail === 'number') parts.push(`с деталями: ${m.trace.postingsWithDetail}`)
         if (typeof m.trace?.postingsWithShipmentTransferEvent === 'number') parts.push(`с event даты: ${m.trace.postingsWithShipmentTransferEvent}`)

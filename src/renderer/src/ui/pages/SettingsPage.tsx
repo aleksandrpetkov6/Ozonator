@@ -8,6 +8,11 @@ type SettingsDraft = {
   apiKey?: string
 }
 
+type LocalServerInfo = {
+  baseUrl?: string
+  webhookUrlLocal?: string
+}
+
 function readSettingsDraft(): SettingsDraft {
   try {
     const raw = localStorage.getItem(SETTINGS_DRAFT_LS_KEY)
@@ -53,13 +58,17 @@ export default function SettingsPage() {
   const [clientId, setClientId] = useState(() => bootDraft.clientId ?? '')
   const [apiKey, setApiKey] = useState(() => bootDraft.apiKey ?? '')
   const [storeName, setStoreName] = useState<string>('')
+  const [localServerInfo, setLocalServerInfo] = useState<LocalServerInfo>({})
 
   const [status, setStatus] = useState<string>('')
   const [err, setErr] = useState<string>('')
 
   async function load() {
     try {
-      const resp = await window.api.loadSecrets()
+      const [resp, serverResp] = await Promise.all([
+        window.api.loadSecrets(),
+        window.api.localServerConfig().catch(() => ({ ok: false })),
+      ])
       if (resp.ok) {
         setClientId((prev) => prev.trim() ? prev : (resp.secrets.clientId ?? ''))
         setApiKey((prev) => prev.trim() ? prev : (resp.secrets.apiKey ?? ''))
@@ -69,7 +78,6 @@ export default function SettingsPage() {
           if (cleaned) {
             setStoreName(cleaned)
           } else {
-            // fallback: localStorage (если storeName не сохраняется в secrets)
             try {
               const ls = (localStorage.getItem(STORE_NAME_LS_KEY) ?? '').trim()
               if (ls) setStoreName(ls)
@@ -78,6 +86,12 @@ export default function SettingsPage() {
             }
           }
         }
+      }
+      if (serverResp && serverResp.ok) {
+        setLocalServerInfo({
+          baseUrl: typeof serverResp.baseUrl === 'string' ? serverResp.baseUrl : '',
+          webhookUrlLocal: typeof serverResp.webhookUrlLocal === 'string' ? serverResp.webhookUrlLocal : '',
+        })
       }
     } catch {
       // ignore
@@ -174,6 +188,17 @@ export default function SettingsPage() {
         <div className="col field" style={{ minWidth: 220 }}>
           <label>Api-Key</label>
           <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="например 9c70..." />
+        </div>
+      </div>
+
+      <div className="row" style={{ marginTop: 16, gap: 16, flexWrap: 'wrap' }}>
+        <div className="col field" style={{ minWidth: 280 }}>
+          <label>Локальный HTTP сервер</label>
+          <input value={localServerInfo.baseUrl ?? ''} readOnly placeholder="запускается автоматически" />
+        </div>
+        <div className="col field" style={{ minWidth: 420, flex: 1 }}>
+          <label>Локальный webhook для FBO push</label>
+          <input value={localServerInfo.webhookUrlLocal ?? ''} readOnly placeholder="нужен внешний HTTPS-туннель до этого адреса" />
         </div>
       </div>
 
