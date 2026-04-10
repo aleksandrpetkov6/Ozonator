@@ -400,6 +400,38 @@ function buildSalesPostingDetailsFromSnapshotMap(
   return out
 }
 
+function salesRelatedPostingPrefix(value: unknown): string {
+  const postingNumber = String(value ?? '').trim()
+  if (!postingNumber) return ''
+  const firstDash = postingNumber.indexOf('-')
+  if (firstDash < 0) return ''
+  const secondDash = postingNumber.indexOf('-', firstDash + 1)
+  if (secondDash < 0) return postingNumber
+  return postingNumber.slice(0, secondDash).trim()
+}
+
+function applySalesRelatedPostingPrefix(rows: any[]): any[] {
+  if (!Array.isArray(rows) || rows.length === 0) return Array.isArray(rows) ? rows : []
+
+  const prefixCounts = new Map<string, number>()
+  for (const row of rows) {
+    const prefix = salesRelatedPostingPrefix((row as any)?.posting_number)
+    if (!prefix) continue
+    prefixCounts.set(prefix, (prefixCounts.get(prefix) ?? 0) + 1)
+  }
+
+  return rows.map((row) => {
+    const prefix = salesRelatedPostingPrefix((row as any)?.posting_number)
+    if (!prefix) {
+      return { ...row, related_postings: '' }
+    }
+    return {
+      ...row,
+      related_postings: (prefixCounts.get(prefix) ?? 0) > 1 ? prefix : '',
+    }
+  })
+}
+
 function buildSalesRowsFromPayloads(
   storeClientId: string | null | undefined,
   requestedPeriod: SalesPeriod | null | undefined,
@@ -421,7 +453,8 @@ function buildSalesRowsFromPayloads(
     periodKey: buildDatasetScopeKey(requestedPeriod),
   })
   const strictRows = filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
-  return { rows: strictRows, sourceEndpoints: Array.from(sourceEndpoints) }
+  const normalizedRows = applySalesRelatedPostingPrefix(strictRows)
+  return { rows: normalizedRows, sourceEndpoints: Array.from(sourceEndpoints) }
 }
 
 function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefined, requestedPeriod: SalesPeriod | null | undefined) {
