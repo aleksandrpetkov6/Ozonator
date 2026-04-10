@@ -165,7 +165,13 @@ function normalizePushEventType(value: unknown): string {
 }
 
 function normalizePushState(value: unknown): string {
-  return normalizeTextValue(value).toLowerCase().trim()
+  const raw = normalizeTextValue(value)
+  if (!raw) return ''
+  return raw
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .toLowerCase()
+    .replace(/^_+|_+$/g, '')
 }
 
 function normalizePushChangedStateDate(value: unknown): string {
@@ -188,28 +194,56 @@ function collectPostingNumbersFromObject(source: any): string[] {
   const paths = [
     'posting_number',
     'postingNumber',
+    'posting.number',
     'posting.posting_number',
     'posting.postingNumber',
+    'posting.number',
     'result.posting_number',
     'result.postingNumber',
+    'result.posting.number',
     'data.posting_number',
     'data.postingNumber',
+    'data.posting.number',
     'payload.posting_number',
     'payload.postingNumber',
+    'payload.posting.number',
     'message.posting_number',
     'message.postingNumber',
+    'message.posting.number',
+    'event.posting_number',
+    'event.postingNumber',
+    'event.posting.number',
   ]
   for (const path of paths) pushOne(getByPath(source, path))
 
   const lists = [
     getByPath(source, 'posting_numbers'),
     getByPath(source, 'postingNumbers'),
+    getByPath(source, 'postings'),
     getByPath(source, 'data.posting_numbers'),
+    getByPath(source, 'data.postingNumbers'),
+    getByPath(source, 'data.postings'),
     getByPath(source, 'payload.posting_numbers'),
+    getByPath(source, 'payload.postingNumbers'),
+    getByPath(source, 'payload.postings'),
+    getByPath(source, 'message.posting_numbers'),
+    getByPath(source, 'message.postingNumbers'),
+    getByPath(source, 'message.postings'),
+    getByPath(source, 'event.posting_numbers'),
+    getByPath(source, 'event.postingNumbers'),
+    getByPath(source, 'event.postings'),
   ]
   for (const list of lists) {
     if (!Array.isArray(list)) continue
-    for (const item of list) pushOne(item)
+    for (const item of list) {
+      if (item && typeof item === 'object') {
+        pushOne(getByPath(item, 'posting_number'))
+        pushOne(getByPath(item, 'postingNumber'))
+        pushOne(getByPath(item, 'number'))
+      } else {
+        pushOne(item)
+      }
+    }
   }
 
   return out
@@ -226,10 +260,37 @@ function collectFboShipmentPushEvents(payload: any): FboPushShipmentEvent[] {
     visited.add(value)
 
     const postingNumbers = Array.from(new Set([...inheritedPostingNumbers, ...collectPostingNumbersFromObject(value)]))
-    const eventType = normalizePushEventType(pickFirstPresent(value, ['event_type', 'type']))
-    const nextState = normalizePushState(pickFirstPresent(value, ['new_state', 'state', 'status']))
+    const eventType = normalizePushEventType(pickFirstPresent(value, [
+      'event_type',
+      'eventType',
+      'type',
+      'event.event_type',
+      'event.eventType',
+      'event.type',
+    ]))
+    const nextState = normalizePushState(pickFirstPresent(value, [
+      'new_state',
+      'newState',
+      'state',
+      'status',
+      'event.new_state',
+      'event.newState',
+      'event.state',
+      'event.status',
+    ]))
     const changedStateDate = normalizePushChangedStateDate(
-      pickFirstPresent(value, ['changed_state_date', 'date', 'created_at']),
+      pickFirstPresent(value, [
+        'changed_state_date',
+        'changedStateDate',
+        'date',
+        'created_at',
+        'createdAt',
+        'event.changed_state_date',
+        'event.changedStateDate',
+        'event.date',
+        'event.created_at',
+        'event.createdAt',
+      ]),
     )
 
     if ((eventType === 'type_state_changed' || eventType === 'state_changed') && nextState == 'posting_transferring_to_delivery' && changedStateDate && postingNumbers) {
@@ -938,6 +999,7 @@ export async function ingestOzonFboPushPayload(args: {
       meta: {
         incomingEventsCount: pushEvents.length,
         samplePostingNumbers,
+        payloadTopLevelKeys: args.payload && typeof args.payload === 'object' ? Object.keys(args.payload).slice(0, 20) : [],
       },
     })
 
