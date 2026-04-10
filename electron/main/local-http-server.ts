@@ -3,12 +3,15 @@ import { randomBytes } from 'crypto'
 
 export type LocalHttpServerConfig = {
   baseUrl: string
+  healthUrlLocal: string
   host: string
   port: number
   token: string
   webhookToken: string
   webhookPath: string
   webhookUrlLocal: string
+  webhookProbePath: string
+  webhookProbeUrlLocal: string
   startedAt: string
 }
 
@@ -25,6 +28,12 @@ export type LocalHttpServerHandlers = {
   getSyncLog: () => Promise<any>
   clearLogs: () => Promise<any>
   ingestOzonPush: (payload: any, meta: {
+    pathname: string
+    searchParams: URLSearchParams
+    headers: http.IncomingHttpHeaders
+    remoteAddress: string | null
+  }) => Promise<any>
+  probeOzonPush: (meta: {
     pathname: string
     searchParams: URLSearchParams
     headers: http.IncomingHttpHeaders
@@ -89,10 +98,12 @@ export async function startLocalHttpServer(args: {
   const webhookToken = String(args.webhookToken ?? '').trim() || randomBytes(24).toString('base64url')
   const desiredPort = Number(args.port ?? 0)
   const port = Number.isFinite(desiredPort) && desiredPort >= 0 ? Math.trunc(desiredPort) : 0
+  const healthPath = '/health'
   const webhookPath = `/webhooks/ozon/fbo-state/${encodeURIComponent(webhookToken)}`
+  const webhookProbePath = `${webhookPath}/ping`
 
   const routes: Record<string, { method: string; handler: RouteHandler }> = {
-    '/health': { method: 'GET', handler: async () => ok({ status: 'ok' }) },
+    [healthPath]: { method: 'GET', handler: async () => ok({ status: 'ok' }) },
 
     '/sync/products': { method: 'POST', handler: async (payload) => args.handlers.syncProducts(payload ?? {}) },
     '/sync/sales': { method: 'POST', handler: async (payload) => args.handlers.refreshSales(payload ?? {}) },
@@ -121,6 +132,16 @@ export async function startLocalHttpServer(args: {
       if (method === 'POST' && pathname === webhookPath) {
         const payload = await readRequestBody(req)
         const out = await args.handlers.ingestOzonPush(payload, {
+          pathname,
+          searchParams: url.searchParams,
+          headers: req.headers,
+          remoteAddress: req.socket?.remoteAddress ?? null,
+        })
+        return sendJson(res, 200, out ?? ok({ accepted: true }))
+      }
+
+      if (method === 'GET' && pathname === webhookProbePath) {
+        const out = await args.handlers.probeOzonPush({
           pathname,
           searchParams: url.searchParams,
           headers: req.headers,
@@ -160,12 +181,15 @@ export async function startLocalHttpServer(args: {
 
   const config: LocalHttpServerConfig = {
     baseUrl: `http://${host}:${actualPort}`,
+    healthUrlLocal: `http://${host}:${actualPort}${healthPath}`,
     host,
     port: actualPort,
     token,
     webhookToken,
     webhookPath,
     webhookUrlLocal: `http://${host}:${actualPort}${webhookPath}`,
+    webhookProbePath,
+    webhookProbeUrlLocal: `http://${host}:${actualPort}${webhookProbePath}`,
     startedAt: new Date().toISOString(),
   }
 

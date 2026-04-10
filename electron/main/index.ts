@@ -6,7 +6,7 @@ import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMar
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
-import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, ingestOzonFboPushPayload, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
+import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, ingestOzonFboPushPayload, logFboShipmentTrace, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 import { getPersistentRootDir } from './storage/paths'
 import { startLocalHttpServer, type LocalHttpServerHandle } from './local-http-server'
 let mainWindow: BrowserWindow | null = null
@@ -19,6 +19,7 @@ const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
 const LOCAL_SERVER_PORT_KEY = 'local_server.port'
 const LOCAL_SERVER_TOKEN_KEY = 'local_server.token'
 const LOCAL_SERVER_WEBHOOK_TOKEN_KEY = 'local_server.webhook_token'
+const LOCAL_SERVER_WEBHOOK_DIAG_KEY = 'local_server.webhook_diag'
 const DEFAULT_LOCAL_SERVER_PORT = 45711
 const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
 const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
@@ -55,6 +56,37 @@ function getOrCreateLocalServerRuntimeConfig() {
   }
 
   return { port, token, webhookToken }
+}
+
+type LocalServerWebhookDiag = {
+  serverStartedAt?: string
+  lastProbeAt?: string
+  lastPushHitAt?: string
+  lastPushAcceptedAt?: string
+  lastPushAcceptedEvents?: number
+  lastRemoteAddress?: string
+  lastPathname?: string
+  lastProbePathname?: string
+}
+
+function readLocalServerWebhookDiag(): LocalServerWebhookDiag {
+  try {
+    const raw = String(dbGetAppSetting(LOCAL_SERVER_WEBHOOK_DIAG_KEY) ?? '').trim()
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function mergeLocalServerWebhookDiag(patch: Partial<LocalServerWebhookDiag>) {
+  const next = {
+    ...readLocalServerWebhookDiag(),
+    ...patch,
+  }
+  dbSetAppSetting(LOCAL_SERVER_WEBHOOK_DIAG_KEY, JSON.stringify(next))
+  return next
 }
 
 function getInstallerMarkerDir() {
@@ -366,6 +398,12 @@ try {
       },
       ingestOzonPush: async (payload, meta) => {
         try {
+          mergeLocalServerWebhookDiag({
+            lastPushHitAt: new Date().toISOString(),
+            lastRemoteAddress: meta?.remoteAddress ?? undefined,
+            lastPathname: meta?.pathname ?? undefined,
+          })
+
           const secrets = loadSecrets()
           const resp = await ingestOzonFboPushPayload({
             storeClientId: secrets.clientId,
@@ -373,10 +411,39 @@ try {
             pathname: meta?.pathname ?? null,
             remoteAddress: meta?.remoteAddress ?? null,
           })
+
+          mergeLocalServerWebhookDiag({
+            lastPushAcceptedAt: new Date().toISOString(),
+            lastPushAcceptedEvents: Number(resp?.acceptedEventsCount ?? 0),
+          })
+
           if (mainWindow && !mainWindow.isDestroyed()) {
             void mainWindow.webContents.executeJavaScript("try { window.dispatchEvent(new Event('ozon:logs-updated')) } catch {}", true).catch(() => {})
           }
           return resp
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e) }
+        }
+      },
+      probeOzonPush: async (meta) => {
+        try {
+          const now = new Date().toISOString()
+          mergeLocalServerWebhookDiag({
+            lastProbeAt: now,
+            lastRemoteAddress: meta?.remoteAddress ?? undefined,
+            lastProbePathname: meta?.pathname ?? undefined,
+          })
+          logFboShipmentTrace('webhook.probe.received', {
+            storeClientId: getActiveStoreClientIdSafe(),
+            itemsCount: 1,
+            meta: {
+              probeAt: now,
+              pathname: meta?.pathname ?? null,
+              remoteAddress: meta?.remoteAddress ?? null,
+              source: 'local-webhook-ping',
+            },
+          })
+          return { ok: true, status: 'probe_received', probeAt: now }
         } catch (e: any) {
           return { ok: false, error: e?.message ?? String(e) }
         }
@@ -390,7 +457,20 @@ try {
       },
     },
   })
-  startupLog('local-http-server.started', { baseUrl: localHttpServer.config.baseUrl, webhookUrlLocal: localHttpServer.config.webhookUrlLocal })
+  mergeLocalServerWebhookDiag({ serverStartedAt: localHttpServer.config.startedAt })
+  logFboShipmentTrace('webhook.server.status', {
+    storeClientId: getActiveStoreClientIdSafe(),
+    itemsCount: 1,
+    meta: {
+      baseUrl: localHttpServer.config.baseUrl,
+      healthUrlLocal: localHttpServer.config.healthUrlLocal,
+      webhookUrlLocal: localHttpServer.config.webhookUrlLocal,
+      webhookProbeUrlLocal: localHttpServer.config.webhookProbeUrlLocal,
+      startedAt: localHttpServer.config.startedAt,
+      source: 'server-start',
+    },
+  })
+  startupLog('local-http-server.started', { baseUrl: localHttpServer.config.baseUrl, webhookUrlLocal: localHttpServer.config.webhookUrlLocal, webhookProbeUrlLocal: localHttpServer.config.webhookProbeUrlLocal })
 } catch (e: any) {
   startupLog('local-http-server.failed', { error: e?.message ?? String(e) })
 }
@@ -871,7 +951,25 @@ async function handleClearLogs() {
 ipcMain.handle('local-server:getConfig', async () => {
   try {
     if (!localHttpServer) return { ok: false, error: 'local server not started' }
-    return { ok: true, ...localHttpServer.config }
+    return { ok: true, ...localHttpServer.config, ...readLocalServerWebhookDiag() }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
+})
+
+ipcMain.handle('local-server:probe', async () => {
+  try {
+    if (!localHttpServer) return { ok: false, error: 'local server not started' }
+    const resp = await fetch(localHttpServer.config.webhookProbeUrlLocal, { method: 'GET' })
+    const text = await resp.text()
+    let parsed: any = null
+    try { parsed = JSON.parse(text) } catch { parsed = { ok: false, error: 'Invalid JSON from local webhook probe', __raw_text: text } }
+    return {
+      ok: Boolean(parsed?.ok),
+      ...parsed,
+      httpStatus: resp.status,
+      webhookProbeUrlLocal: localHttpServer.config.webhookProbeUrlLocal,
+    }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) }
   }

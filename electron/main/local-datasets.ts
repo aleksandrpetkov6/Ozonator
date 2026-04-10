@@ -41,6 +41,8 @@ const FBO_SHIPMENT_TRACE_STAGE_LABELS: Record<string, string> = {
   'push.ingest.received': 'FBO дата отгрузки: push получен',
   'push.ingest.persisted': 'FBO дата отгрузки: push записан в локальную БД',
   'push.ingest.error': 'FBO дата отгрузки: ошибка обработки push',
+  'webhook.server.status': 'FBO дата отгрузки: webhook-контур активен',
+  'webhook.probe.received': 'FBO дата отгрузки: ping webhook получен',
 } as const
 
 export type LocalDatasetName = string
@@ -323,7 +325,7 @@ function collectFboShipmentPushEvents(payload: any): FboPushShipmentEvent[] {
   return out
 }
 
-function logFboShipmentTrace(stage: string, args: {
+export function logFboShipmentTrace(stage: string, args: {
   storeClientId?: string | null
   period?: SalesPeriod | null | undefined
   status?: 'success' | 'error'
