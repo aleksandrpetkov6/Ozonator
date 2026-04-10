@@ -1,0 +1,32 @@
+diff --git a/src/renderer/src/ui/pages/products/shared.ts b/src/renderer/src/ui/pages/products/shared.ts
+@@ -179,10 +179,9 @@
+   if (!raw) return ''
+ 
+   const shipmentTs = toSortTimestamp(raw)
+-  if (shipmentTs == null) return ''
++  if (shipmentTs == null) return raw
+ 
+   if (shipmentTs > (nowMs + 60_000)) return ''
+-  if (!hasConfirmedShipmentSignal(row)) return ''
+ 
+   return raw
+ }
+
+diff --git a/src/renderer/src/ui/pages/products/ProductsGridView.tsx b/src/renderer/src/ui/pages/products/ProductsGridView.tsx
+@@ -37,15 +37,8 @@
+ 
+   const shipmentTs = toRowTimestamp(rawShipmentDate)
+   if (shipmentTs != null && shipmentTs > (Date.now() + 60_000)) return false
+-  if (toRowTimestamp(row.delivery_date) != null) return true
+ 
+-  const signalText = [row.status, row.status_details, row.carrier_status_details]
+-    .map((value) => toRowText(value).toLowerCase())
+-    .filter(Boolean)
+-    .join(' | ')
+-
+-  if (!signalText) return false
+-  return SALES_SHIPMENT_CONFIRMED_MARKERS.some((marker) => signalText.includes(marker))
++  return true
+ }
+ 
+ type Props = {
