@@ -520,10 +520,37 @@ function buildSalesRowsFromPayloads(
   return { rows: normalizedRows, sourceEndpoints: Array.from(sourceEndpoints) }
 }
 
+function persistFboLocalSnapshotFromRawCache(
+  storeClientId: string | null | undefined,
+  requestedPeriod: SalesPeriod | null | undefined,
+  payloads: Array<{ endpoint: string; payload: any }>,
+  postingDetailsByKey: Map<string, any>,
+) {
+  const normalizedStoreClientId = normalizeTextValue(storeClientId)
+  if (!normalizedStoreClientId) return
+
+  const fboPayloads = payloads.filter((payload) => String(payload?.endpoint ?? '').includes('/posting/fbo/'))
+  if (fboPayloads.length === 0) return
+
+  buildAndPersistFboSalesSnapshot({
+    storeClientId: normalizedStoreClientId,
+    periodKey: buildDatasetScopeKey(requestedPeriod),
+    fboPayloads,
+    postingDetailsByKey,
+    fetchedAt: new Date().toISOString(),
+  })
+}
+
 function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefined, requestedPeriod: SalesPeriod | null | undefined) {
   const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
   const payloads = buildSalesPayloadsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
-  const postingDetailsByKey = buildSalesPostingDetailsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
+  const snapshotPostingDetailsByKey = buildSalesPostingDetailsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
+  const rawCachePostingDetailsByKey = getSalesPostingDetailsFromRawCache(storeClientId)
+  const postingDetailsByKey = new Map<string, any>(rawCachePostingDetailsByKey)
+  for (const [key, payload] of snapshotPostingDetailsByKey.entries()) {
+    if (postingDetailsByKey.has(key)) continue
+    postingDetailsByKey.set(key, payload)
+  }
   const reportRows = buildSalesShipmentReportRowsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
 
   if (payloads.length === 0 && cacheByEndpoint.size === 0) {
@@ -532,6 +559,8 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
       payloads.push({ endpoint, payload })
     }
   }
+
+  persistFboLocalSnapshotFromRawCache(storeClientId, requestedPeriod, payloads, postingDetailsByKey)
 
   return buildSalesRowsFromPayloads(storeClientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
 }
