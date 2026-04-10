@@ -127,6 +127,7 @@ function orderIdOf(source: any): string {
 }
 
 const FBO_STATE_CHANGED_EVENT_TYPE = 'type_state_changed'
+const FBO_SHIPMENT_PUSH_PERIOD_KEY = '__push__'
 
 const FBO_DELIVERED_STATES = new Set<string>([
   'delivered',
@@ -189,6 +190,19 @@ function pushTraceSample(target: string[], value: string, limit = 10) {
 function countBySql(conn: Database.Database, sql: string, ...params: any[]): number {
   const row = conn.prepare(sql).get(...params) as { cnt?: number } | undefined
   return Number(row?.cnt ?? 0)
+}
+
+function getPersistedShipmentDateForPosting(storeClientId: string, postingNumber: string, periodKey: string): string {
+  const row = db().prepare(`
+    SELECT MAX(changed_state_date) AS shipment_date
+    FROM posting_state_events
+    WHERE store_client_id = ?
+      AND posting_number = ?
+      AND period_key IN (?, ?)
+      AND COALESCE(NULLIF(event_type, ''), 'type_state_changed') = 'type_state_changed'
+      AND COALESCE(NULLIF(new_state, ''), state) = 'posting_transferring_to_delivery'
+  `).get(storeClientId, postingNumber, periodKey, FBO_SHIPMENT_PUSH_PERIOD_KEY) as { shipment_date?: string | null } | undefined
+  return text(row?.shipment_date)
 }
 
 function shipmentDateOf(detail: any, posting: any): string {
@@ -308,7 +322,7 @@ export function buildAndPersistFboSalesSnapshot(args: {
       const postingNumber = postingNumberOf(detail) || basePostingNumber
       const orderId = orderIdOf(detail) || orderIdOf(posting)
       const fallback = orderId ? Array.from(orderPostings.get(orderId) ?? []).filter((v) => v !== postingNumber) : []
-      const shipmentDate = shipmentDateOf(detail, posting)
+      const shipmentDate = shipmentDateOf(detail, posting) || getPersistedShipmentDateForPosting(storeClientId, postingNumber, periodKey)
       const stateEvents = collectSalesStateEvents(detail, posting)
       const shipmentTransferEvents = stateEvents.filter((event) => (
         text(event?.event_type) === FBO_STATE_CHANGED_EVENT_TYPE
@@ -480,6 +494,138 @@ export function buildAndPersistFboSalesSnapshot(args: {
   }
 }
 
+
+export function persistFboPushShipmentEvents(args: {
+  storeClientId: string
+  events: Array<{
+    posting_number: string
+    event_type?: string | null
+    new_state?: string | null
+    state?: string | null
+    changed_state_date: string
+  }>
+  fetchedAt?: string
+}) {
+  const storeClientId = text(args.storeClientId)
+  const fetchedAt = text(args.fetchedAt) || new Date().toISOString()
+  if (!storeClientId) {
+    return {
+      acceptedEventsCount: 0,
+      shipmentTransferEventCount: 0,
+      shipmentDateCount: 0,
+      samplePostingNumbers: [] as string[],
+    }
+  }
+
+  const normalizedEvents = (Array.isArray(args.events) ? args.events : [])
+    .map((event) => {
+      const postingNumber = text((event as any)?.posting_number)
+      const changedStateDate = dateText((event as any)?.changed_state_date)
+      const eventType = text((event as any)?.event_type) || FBO_STATE_CHANGED_EVENT_TYPE
+      const newState = text((event as any)?.new_state || (event as any)?.state) || 'posting_transferring_to_delivery'
+      if (!postingNumber || !changedStateDate) return null
+      return {
+        store_client_id: storeClientId,
+        period_key: FBO_SHIPMENT_PUSH_PERIOD_KEY,
+        posting_number: postingNumber,
+        event_key: `${eventType}|${newState}|${changedStateDate}`,
+        event_type: eventType,
+        new_state: newState,
+        state: newState,
+        changed_state_date: changedStateDate,
+        updated_at: fetchedAt,
+      }
+    })
+    .filter((event): event is {
+      store_client_id: string
+      period_key: string
+      posting_number: string
+      event_key: string
+      event_type: string
+      new_state: string
+      state: string
+      changed_state_date: string
+      updated_at: string
+    } => Boolean(event))
+
+  if (normalizedEvents.length === 0) {
+    return {
+      acceptedEventsCount: 0,
+      shipmentTransferEventCount: 0,
+      shipmentDateCount: 0,
+      samplePostingNumbers: [] as string[],
+    }
+  }
+
+  const conn = db()
+  const insertEvent = conn.prepare(`
+    INSERT INTO posting_state_events (
+      store_client_id, period_key, posting_number, event_key, event_type, new_state, state, changed_state_date, updated_at
+    ) VALUES (
+      @store_client_id, @period_key, @posting_number, @event_key, @event_type, @new_state, @state, @changed_state_date, @updated_at
+    )
+    ON CONFLICT(store_client_id, period_key, posting_number, event_key) DO UPDATE SET
+      event_type = excluded.event_type,
+      new_state = excluded.new_state,
+      state = excluded.state,
+      changed_state_date = excluded.changed_state_date,
+      updated_at = excluded.updated_at
+  `)
+  const updatePostingShipmentDate = conn.prepare(`
+    UPDATE fbo_postings
+    SET shipment_date = CASE
+          WHEN shipment_date IS NULL OR shipment_date = '' OR shipment_date < @changed_state_date THEN @changed_state_date
+          ELSE shipment_date
+        END,
+        updated_at = @updated_at
+    WHERE store_client_id = @store_client_id
+      AND posting_number = @posting_number
+  `)
+
+  const tx = conn.transaction((rows: typeof normalizedEvents) => {
+    for (const row of rows) {
+      insertEvent.run(row)
+      if (text(row.new_state) === 'posting_transferring_to_delivery') {
+        updatePostingShipmentDate.run(row)
+      }
+    }
+  })
+  tx(normalizedEvents)
+
+  const shipmentTransferEventCount = countBySql(
+    conn,
+    `SELECT COUNT(*) AS cnt
+       FROM posting_state_events
+      WHERE store_client_id = ?
+        AND period_key = ?
+        AND COALESCE(NULLIF(event_type, ''), 'type_state_changed') = 'type_state_changed'
+        AND COALESCE(NULLIF(new_state, ''), state) = 'posting_transferring_to_delivery'`,
+    storeClientId,
+    FBO_SHIPMENT_PUSH_PERIOD_KEY,
+  )
+  const shipmentDateCount = countBySql(
+    conn,
+    `SELECT COUNT(*) AS cnt
+       FROM fbo_postings
+      WHERE store_client_id = ?
+        AND shipment_date IS NOT NULL
+        AND shipment_date <> ''`,
+    storeClientId,
+  )
+
+  const samplePostingNumbers: string[] = []
+  for (const row of normalizedEvents) {
+    pushTraceSample(samplePostingNumbers, row.posting_number, 10)
+  }
+
+  return {
+    acceptedEventsCount: normalizedEvents.length,
+    shipmentTransferEventCount,
+    shipmentDateCount,
+    samplePostingNumbers,
+  }
+}
+
 export function mergeSalesRowsWithFboLocalDb(args: {
   rows: any[]
   storeClientId?: string | null
@@ -500,8 +646,8 @@ export function mergeSalesRowsWithFboLocalDb(args: {
           SELECT MAX(e.changed_state_date)
           FROM posting_state_events e
           WHERE e.store_client_id = p.store_client_id
-            AND e.period_key = p.period_key
             AND e.posting_number = p.posting_number
+            AND e.period_key IN (p.period_key, '__push__')
             AND COALESCE(NULLIF(e.event_type, ''), 'type_state_changed') = 'type_state_changed'
             AND COALESCE(NULLIF(e.new_state, ''), e.state) = 'posting_transferring_to_delivery'
         )

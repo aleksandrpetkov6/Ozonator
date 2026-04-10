@@ -73,6 +73,15 @@ function setSettingValue(key: string, value: string) {
   `).run(key, value, new Date().toISOString())
 }
 
+
+export function dbGetAppSetting(key: string): string | null {
+  return getSettingValue(key)
+}
+
+export function dbSetAppSetting(key: string, value: string) {
+  setSettingValue(key, value)
+}
+
 function parsePositiveInt(value: unknown, fallback: number): number {
   const n = Number(value)
   if (!Number.isFinite(n)) return fallback
