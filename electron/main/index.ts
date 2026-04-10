@@ -1,11 +1,12 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
+import { randomBytes } from 'crypto'
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'fs'
-import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbReplaceProductPlacementsForStore, dbGetGridColumns, dbSaveGridColumns, dbRecordApiRawResponse } from './storage/db'
+import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbReplaceProductPlacementsForStore, dbGetGridColumns, dbSaveGridColumns, dbRecordApiRawResponse, dbGetAppSetting, dbSetAppSetting } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
-import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
+import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, ingestOzonFboPushPayload, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 import { getPersistentRootDir } from './storage/paths'
 import { startLocalHttpServer, type LocalHttpServerHandle } from './local-http-server'
 let mainWindow: BrowserWindow | null = null
@@ -15,6 +16,10 @@ let backgroundSyncTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let syncProductsInFlight: Promise<any> | null = null
 const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
+const LOCAL_SERVER_PORT_KEY = 'local_server.port'
+const LOCAL_SERVER_TOKEN_KEY = 'local_server.token'
+const LOCAL_SERVER_WEBHOOK_TOKEN_KEY = 'local_server.webhook_token'
+const DEFAULT_LOCAL_SERVER_PORT = 45711
 const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
 const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
 let installerShutdownInFlight: Promise<void> | null = null
@@ -27,6 +32,29 @@ app.quit()
 
 function delay(ms: number) {
 return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function getOrCreateLocalServerRuntimeConfig() {
+  const storedPort = Number(dbGetAppSetting(LOCAL_SERVER_PORT_KEY) ?? DEFAULT_LOCAL_SERVER_PORT)
+  const port = Number.isFinite(storedPort) && storedPort > 0 ? Math.trunc(storedPort) : DEFAULT_LOCAL_SERVER_PORT
+
+  let token = String(dbGetAppSetting(LOCAL_SERVER_TOKEN_KEY) ?? '').trim()
+  if (!token) {
+    token = randomBytes(24).toString('base64url')
+    dbSetAppSetting(LOCAL_SERVER_TOKEN_KEY, token)
+  }
+
+  let webhookToken = String(dbGetAppSetting(LOCAL_SERVER_WEBHOOK_TOKEN_KEY) ?? '').trim()
+  if (!webhookToken) {
+    webhookToken = randomBytes(24).toString('base64url')
+    dbSetAppSetting(LOCAL_SERVER_WEBHOOK_TOKEN_KEY, webhookToken)
+  }
+
+  if (String(dbGetAppSetting(LOCAL_SERVER_PORT_KEY) ?? '').trim() !== String(port)) {
+    dbSetAppSetting(LOCAL_SERVER_PORT_KEY, String(port))
+  }
+
+  return { port, token, webhookToken }
 }
 
 function getInstallerMarkerDir() {
@@ -272,9 +300,12 @@ startupLog('safeStorage.unavailable')
 ensureDb()
 startupLog('ensureDb.ok')
 try {
+  const localServerRuntime = getOrCreateLocalServerRuntimeConfig()
   localHttpServer = await startLocalHttpServer({
     host: '127.0.0.1',
-    port: 0,
+    port: localServerRuntime.port,
+    token: localServerRuntime.token,
+    webhookToken: localServerRuntime.webhookToken,
     handlers: {
       syncProducts: async (payload: { salesPeriod?: SalesPeriod | null } | null | undefined) => await performProductsSync({ salesPeriod: payload?.salesPeriod ?? null }),
       refreshSales: async (payload: { period?: SalesPeriod | null } | null | undefined) => await handleRefreshSales(payload?.period ?? null),
@@ -333,6 +364,23 @@ try {
           return { ok: false, error: e?.message ?? String(e), logs: [] }
         }
       },
+      ingestOzonPush: async (payload, meta) => {
+        try {
+          const secrets = loadSecrets()
+          const resp = await ingestOzonFboPushPayload({
+            storeClientId: secrets.clientId,
+            payload,
+            pathname: meta?.pathname ?? null,
+            remoteAddress: meta?.remoteAddress ?? null,
+          })
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            void mainWindow.webContents.executeJavaScript("try { window.dispatchEvent(new Event('ozon:logs-updated')) } catch {}", true).catch(() => {})
+          }
+          return resp
+        } catch (e: any) {
+          return { ok: false, error: e?.message ?? String(e) }
+        }
+      },
       clearLogs: async () => {
         try {
           return await handleClearLogs()
@@ -342,7 +390,7 @@ try {
       },
     },
   })
-  startupLog('local-http-server.started', { baseUrl: localHttpServer.config.baseUrl })
+  startupLog('local-http-server.started', { baseUrl: localHttpServer.config.baseUrl, webhookUrlLocal: localHttpServer.config.webhookUrlLocal })
 } catch (e: any) {
   startupLog('local-http-server.failed', { error: e?.message ?? String(e) })
 }

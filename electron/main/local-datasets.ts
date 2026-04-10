@@ -1,7 +1,7 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
 import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
 import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbLogEvent, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
-import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
+import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPushShipmentEvents } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
 import { fetchSalesPostingsReportRows, type SalesPostingsReportRow } from './postings-report'
 import type { Secrets } from './types'
@@ -38,6 +38,9 @@ const FBO_SHIPMENT_TRACE_STAGE_LABELS: Record<string, string> = {
   'raw-cache.rebuild.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена из raw-cache',
   'raw-cache.rebuild.rows.built': 'FBO дата отгрузки: строки продаж собраны из raw-cache',
   'raw-cache.rebuild.error': 'FBO дата отгрузки: ошибка пересборки из raw-cache',
+  'push.ingest.received': 'FBO дата отгрузки: push получен',
+  'push.ingest.persisted': 'FBO дата отгрузки: push записан в локальную БД',
+  'push.ingest.error': 'FBO дата отгрузки: ошибка обработки push',
 } as const
 
 export type LocalDatasetName = string
@@ -133,6 +136,7 @@ function countPostingDetailsByKind(postingDetailsByKey: Map<string, any>, kind: 
   return count
 }
 
+
 function getFboPostingNumbersFromPayloads(payloads: Array<{ endpoint: string; payload: any }>): string[] {
   const out: string[] = []
   const seen = new Set<string>()
@@ -145,6 +149,116 @@ function getFboPostingNumbersFromPayloads(payloads: Array<{ endpoint: string; pa
       out.push(postingNumber)
     }
   }
+  return out
+}
+
+type FboPushShipmentEvent = {
+  posting_number: string
+  event_type: 'type_state_changed'
+  new_state: 'posting_transferring_to_delivery'
+  state: 'posting_transferring_to_delivery'
+  changed_state_date: string
+}
+
+function normalizePushEventType(value: unknown): string {
+  return normalizeTextValue(value).toLowerCase().replace(/[^a-z_]/g, '')
+}
+
+function normalizePushState(value: unknown): string {
+  return normalizeTextValue(value).toLowerCase().trim()
+}
+
+function normalizePushChangedStateDate(value: unknown): string {
+  const raw = normalizeTextValue(value)
+  if (!raw) return ''
+  const parsed = new Date(raw)
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString()
+}
+
+function collectPostingNumbersFromObject(source: any): string[] {
+  const out: string[] = []
+  const pushOne = (value: any) => {
+    const postingNumber = normalizeTextValue(value)
+    if (!postingNumber || out.includes(postingNumber)) return
+    out.push(postingNumber)
+  }
+
+  if (!source || typeof source !== 'object') return out
+
+  const paths = [
+    'posting_number',
+    'postingNumber',
+    'posting.posting_number',
+    'posting.postingNumber',
+    'result.posting_number',
+    'result.postingNumber',
+    'data.posting_number',
+    'data.postingNumber',
+    'payload.posting_number',
+    'payload.postingNumber',
+    'message.posting_number',
+    'message.postingNumber',
+  ]
+  for (const path of paths) pushOne(getByPath(source, path))
+
+  const lists = [
+    getByPath(source, 'posting_numbers'),
+    getByPath(source, 'postingNumbers'),
+    getByPath(source, 'data.posting_numbers'),
+    getByPath(source, 'payload.posting_numbers'),
+  ]
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue
+    for (const item of list) pushOne(item)
+  }
+
+  return out
+}
+
+function collectFboShipmentPushEvents(payload: any): FboPushShipmentEvent[] {
+  const out: FboPushShipmentEvent[] = []
+  const seen = new Set<string>()
+  const visited = new Set<any>()
+
+  const walk = (value: any, inheritedPostingNumbers: string[]) => {
+    if (!value || typeof value !== 'object') return
+    if (visited.has(value)) return
+    visited.add(value)
+
+    const postingNumbers = Array.from(new Set([...inheritedPostingNumbers, ...collectPostingNumbersFromObject(value)]))
+    const eventType = normalizePushEventType(pickFirstPresent(value, ['event_type', 'type']))
+    const nextState = normalizePushState(pickFirstPresent(value, ['new_state', 'state', 'status']))
+    const changedStateDate = normalizePushChangedStateDate(
+      pickFirstPresent(value, ['changed_state_date', 'date', 'created_at']),
+    )
+
+    if ((eventType === 'type_state_changed' || eventType === 'state_changed') && nextState == 'posting_transferring_to_delivery' && changedStateDate && postingNumbers) {
+      for (const postingNumber of postingNumbers) {
+        const key = `${postingNumber}|${changedStateDate}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({
+          posting_number: postingNumber,
+          event_type: 'type_state_changed',
+          new_state: 'posting_transferring_to_delivery',
+          state: 'posting_transferring_to_delivery',
+          changed_state_date: changedStateDate,
+        })
+      }
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, postingNumbers)
+      return
+    }
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      if (!nested || typeof nested !== 'object') continue
+      walk(nested, postingNumbers)
+    }
+  }
+
+  walk(payload, collectPostingNumbersFromObject(payload))
+  out.sort((left, right) => right.changed_state_date.localeCompare(left.changed_state_date))
   return out
 }
 
@@ -715,7 +829,12 @@ function readScopedSalesSnapshotRows(
   })
 
   if (!Array.isArray(rows)) return null
-  return filterSalesRowsStrictByPeriod(rows, requestedPeriod)
+  const mergedRows = mergeSalesRowsWithFboLocalDb({
+    rows,
+    storeClientId: storeClientId ?? null,
+    periodKey: buildDatasetScopeKey(requestedPeriod),
+  })
+  return filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
 }
 
 function readRollingSalesSnapshotRows(
@@ -729,7 +848,12 @@ function readRollingSalesSnapshotRows(
   })
 
   if (!Array.isArray(rows)) return null
-  return filterSalesRowsStrictByPeriod(rows, requestedPeriod)
+  const mergedRows = mergeSalesRowsWithFboLocalDb({
+    rows,
+    storeClientId: storeClientId ?? null,
+    periodKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+  })
+  return filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
 }
 
 function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): string {
@@ -776,6 +900,84 @@ export function refreshCoreLocalDatasetSnapshots(storeClientId: string | null | 
   return {
     productsRowsCount: productsRows.length,
     stocksRowsCount: stocksRows.length,
+  }
+}
+
+
+export async function ingestOzonFboPushPayload(args: {
+  storeClientId: string
+  payload: any
+  pathname?: string | null
+  remoteAddress?: string | null
+}) {
+  const storeClientId = normalizeTextValue(args.storeClientId)
+  try {
+    const fetchedAt = new Date().toISOString()
+    const pushEvents = collectFboShipmentPushEvents(args.payload)
+    const samplePostingNumbers = uniqueSample(pushEvents.map((event) => event.posting_number), 10)
+
+    dbRecordApiRawResponse({
+      storeClientId: storeClientId || null,
+      method: 'PUSH',
+      endpoint: '/__incoming__/ozon/fbo-state',
+      requestBody: {
+        pathname: normalizeTextValue(args.pathname),
+        remoteAddress: normalizeTextValue(args.remoteAddress),
+        acceptedEventsCount: pushEvents.length,
+        samplePostingNumbers,
+      },
+      responseBody: args.payload,
+      httpStatus: 202,
+      isSuccess: true,
+      fetchedAt,
+    })
+
+    logFboShipmentTrace('push.ingest.received', {
+      storeClientId,
+      itemsCount: pushEvents.length,
+      meta: {
+        incomingEventsCount: pushEvents.length,
+        samplePostingNumbers,
+      },
+    })
+
+    const persisted = persistFboPushShipmentEvents({
+      storeClientId,
+      events: pushEvents,
+      fetchedAt,
+    })
+
+    logFboShipmentTrace('push.ingest.persisted', {
+      storeClientId,
+      itemsCount: Number(persisted?.acceptedEventsCount ?? pushEvents.length),
+      meta: {
+        incomingEventsCount: pushEvents.length,
+        acceptedPushEventCount: Number(persisted?.acceptedEventsCount ?? 0),
+        persisted: {
+          shipmentTransferEventCount: Number(persisted?.shipmentTransferEventCount ?? 0),
+          shipmentDateCount: Number(persisted?.shipmentDateCount ?? 0),
+        },
+        samplePostingNumbers: Array.isArray(persisted?.samplePostingNumbers) ? persisted.samplePostingNumbers : samplePostingNumbers,
+      },
+    })
+
+    return {
+      ok: true,
+      acceptedEventsCount: Number(persisted?.acceptedEventsCount ?? 0),
+      shipmentTransferEventCount: Number(persisted?.shipmentTransferEventCount ?? 0),
+      shipmentDateCount: Number(persisted?.shipmentDateCount ?? 0),
+      samplePostingNumbers: Array.isArray(persisted?.samplePostingNumbers) ? persisted.samplePostingNumbers : samplePostingNumbers,
+    }
+  } catch (e: any) {
+    logFboShipmentTrace('push.ingest.error', {
+      storeClientId,
+      status: 'error',
+      errorMessage: e?.message ?? String(e),
+      meta: {
+        stack: e?.stack ?? null,
+      },
+    })
+    throw e
   }
 }
 

@@ -6,6 +6,9 @@ export type LocalHttpServerConfig = {
   host: string
   port: number
   token: string
+  webhookToken: string
+  webhookPath: string
+  webhookUrlLocal: string
   startedAt: string
 }
 
@@ -21,6 +24,12 @@ export type LocalHttpServerHandlers = {
   saveGridColumns: (payload: { dataset: string; cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }> }) => Promise<any>
   getSyncLog: () => Promise<any>
   clearLogs: () => Promise<any>
+  ingestOzonPush: (payload: any, meta: {
+    pathname: string
+    searchParams: URLSearchParams
+    headers: http.IncomingHttpHeaders
+    remoteAddress: string | null
+  }) => Promise<any>
 }
 
 export type LocalHttpServerHandle = {
@@ -48,7 +57,6 @@ function sendJson(res: http.ServerResponse, status: number, body: any) {
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
-  // CORS for in-app fetch (renderer/preload)
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'content-type,x-ozonator-token')
@@ -74,11 +82,14 @@ export async function startLocalHttpServer(args: {
   host?: string | null
   port?: number | null
   token?: string | null
+  webhookToken?: string | null
 }): Promise<LocalHttpServerHandle> {
   const host = normalizeHost(args.host)
   const token = String(args.token ?? '').trim() || randomBytes(24).toString('base64url')
+  const webhookToken = String(args.webhookToken ?? '').trim() || randomBytes(24).toString('base64url')
   const desiredPort = Number(args.port ?? 0)
   const port = Number.isFinite(desiredPort) && desiredPort >= 0 ? Math.trunc(desiredPort) : 0
+  const webhookPath = `/webhooks/ozon/fbo-state/${encodeURIComponent(webhookToken)}`
 
   const routes: Record<string, { method: string; handler: RouteHandler }> = {
     '/health': { method: 'GET', handler: async () => ok({ status: 'ok' }) },
@@ -107,12 +118,22 @@ export async function startLocalHttpServer(args: {
 
       if (method === 'OPTIONS') return sendJson(res, 200, ok({}))
 
+      if (method === 'POST' && pathname === webhookPath) {
+        const payload = await readRequestBody(req)
+        const out = await args.handlers.ingestOzonPush(payload, {
+          pathname,
+          searchParams: url.searchParams,
+          headers: req.headers,
+          remoteAddress: req.socket?.remoteAddress ?? null,
+        })
+        return sendJson(res, 200, out ?? ok({ accepted: true }))
+      }
+
       const route = routes[pathname]
       if (!route || route.method !== method) {
         return sendJson(res, 404, fail('Not found'))
       }
 
-      // Auth: everything кроме /health требует токен.
       if (pathname !== '/health') {
         const provided = String(req.headers['x-ozonator-token'] ?? '').trim()
         if (!provided || provided !== token) {
@@ -142,6 +163,9 @@ export async function startLocalHttpServer(args: {
     host,
     port: actualPort,
     token,
+    webhookToken,
+    webhookPath,
+    webhookUrlLocal: `http://${host}:${actualPort}${webhookPath}`,
     startedAt: new Date().toISOString(),
   }
 
