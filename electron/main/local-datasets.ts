@@ -1,6 +1,6 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
 import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
-import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
+import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbLogEvent, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
 import { fetchSalesPostingsReportRows, type SalesPostingsReportRow } from './postings-report'
@@ -24,6 +24,21 @@ const SALES_LEGACY_ENDPOINTS = ['/v3/posting/fbs/list', '/v2/posting/fbo/list'] 
 const DEFAULT_UI_SALES_DAYS = 30
 const SALES_DEFAULT_ROLLING_SCOPE_KEY = '__sales_default_30d__'
 const MOSCOW_TIME_ZONE = 'Europe/Moscow'
+const FBO_SHIPMENT_TRACE_LOG_TYPE = 'sales_fbo_shipment_trace' as const
+
+const FBO_SHIPMENT_TRACE_STAGE_LABELS: Record<string, string> = {
+  'api.refresh.begin': 'FBO дата отгрузки: старт API-обновления',
+  'api.refresh.list.loaded': 'FBO дата отгрузки: list-данные загружены',
+  'api.refresh.details.loaded': 'FBO дата отгрузки: детали загружены',
+  'api.refresh.compat.loaded': 'FBO дата отгрузки: compat-детали загружены',
+  'api.refresh.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена',
+  'api.refresh.rows.built': 'FBO дата отгрузки: строки продаж собраны',
+  'api.refresh.error': 'FBO дата отгрузки: ошибка API-обновления',
+  'raw-cache.rebuild.begin': 'FBO дата отгрузки: старт пересборки из raw-cache',
+  'raw-cache.rebuild.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена из raw-cache',
+  'raw-cache.rebuild.rows.built': 'FBO дата отгрузки: строки продаж собраны из raw-cache',
+  'raw-cache.rebuild.error': 'FBO дата отгрузки: ошибка пересборки из raw-cache',
+} as const
 
 export type LocalDatasetName = string
 
@@ -83,6 +98,76 @@ function normalizeTextValue(value: any): string {
   if (typeof value === 'string') return value.trim()
   if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
   return ''
+}
+
+function uniqueSample(values: unknown[], limit = 10): string[] {
+  const out: string[] = []
+  for (const value of values) {
+    const normalized = normalizeTextValue(value)
+    if (!normalized || out.includes(normalized)) continue
+    out.push(normalized)
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+function countRowsByDeliveryModel(rows: any[], modelRaw: string): number {
+  const model = normalizeDeliveryModelKey(modelRaw)
+  return (Array.isArray(rows) ? rows : []).filter((row) => normalizeDeliveryModelKey(row?.delivery_model) === model).length
+}
+
+function countRowsByDeliveryModelWithShipmentDate(rows: any[], modelRaw: string): number {
+  const model = normalizeDeliveryModelKey(modelRaw)
+  return (Array.isArray(rows) ? rows : []).filter((row) => (
+    normalizeDeliveryModelKey(row?.delivery_model) === model
+    && Boolean(normalizeTextValue(row?.shipment_date))
+  )).length
+}
+
+function countPostingDetailsByKind(postingDetailsByKey: Map<string, any>, kind: 'FBO' | 'FBS'): number {
+  let count = 0
+  const prefix = `${kind}|`
+  for (const key of postingDetailsByKey.keys()) {
+    if (String(key).startsWith(prefix)) count += 1
+  }
+  return count
+}
+
+function getFboPostingNumbersFromPayloads(payloads: Array<{ endpoint: string; payload: any }>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const payload of payloads) {
+    if (!String(payload?.endpoint ?? '').includes('/posting/fbo/')) continue
+    for (const posting of extractPostingsFromPayload(payload?.payload)) {
+      const postingNumber = normalizeTextValue(posting?.posting_number ?? posting?.postingNumber)
+      if (!postingNumber || seen.has(postingNumber)) continue
+      seen.add(postingNumber)
+      out.push(postingNumber)
+    }
+  }
+  return out
+}
+
+function logFboShipmentTrace(stage: string, args: {
+  storeClientId?: string | null
+  period?: SalesPeriod | null | undefined
+  status?: 'success' | 'error'
+  itemsCount?: number | null
+  errorMessage?: string | null
+  meta?: Record<string, any>
+}) {
+  dbLogEvent(FBO_SHIPMENT_TRACE_LOG_TYPE, {
+    status: args.status ?? 'success',
+    itemsCount: typeof args.itemsCount === 'number' ? args.itemsCount : null,
+    errorMessage: args.errorMessage ?? null,
+    storeClientId: args.storeClientId ?? null,
+    meta: {
+      stage,
+      stageRu: FBO_SHIPMENT_TRACE_STAGE_LABELS[stage] ?? stage,
+      period: normalizeSalesPeriod(args.period ?? null),
+      ...(args.meta ?? {}),
+    },
+  })
 }
 
 function getByPath(source: any, path: string): any {
@@ -527,12 +612,12 @@ function persistFboLocalSnapshotFromRawCache(
   postingDetailsByKey: Map<string, any>,
 ) {
   const normalizedStoreClientId = normalizeTextValue(storeClientId)
-  if (!normalizedStoreClientId) return
+  if (!normalizedStoreClientId) return null
 
   const fboPayloads = payloads.filter((payload) => String(payload?.endpoint ?? '').includes('/posting/fbo/'))
-  if (fboPayloads.length === 0) return
+  if (fboPayloads.length === 0) return null
 
-  buildAndPersistFboSalesSnapshot({
+  return buildAndPersistFboSalesSnapshot({
     storeClientId: normalizedStoreClientId,
     periodKey: buildDatasetScopeKey(requestedPeriod),
     fboPayloads,
@@ -542,27 +627,81 @@ function persistFboLocalSnapshotFromRawCache(
 }
 
 function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefined, requestedPeriod: SalesPeriod | null | undefined) {
-  const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
-  const payloads = buildSalesPayloadsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
-  const snapshotPostingDetailsByKey = buildSalesPostingDetailsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
-  const rawCachePostingDetailsByKey = getSalesPostingDetailsFromRawCache(storeClientId)
-  const postingDetailsByKey = new Map<string, any>(rawCachePostingDetailsByKey)
-  for (const [key, payload] of snapshotPostingDetailsByKey.entries()) {
-    if (postingDetailsByKey.has(key)) continue
-    postingDetailsByKey.set(key, payload)
-  }
-  const reportRows = buildSalesShipmentReportRowsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
-
-  if (payloads.length === 0 && cacheByEndpoint.size === 0) {
-    const legacyPayloads = getLegacySalesPayloadMap(storeClientId)
-    for (const [endpoint, payload] of legacyPayloads.entries()) {
-      payloads.push({ endpoint, payload })
+  try {
+    const cacheByEndpoint = getSalesSnapshotMap(storeClientId)
+    const payloads = buildSalesPayloadsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
+    const snapshotPostingDetailsByKey = buildSalesPostingDetailsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
+    const rawCachePostingDetailsByKey = getSalesPostingDetailsFromRawCache(storeClientId)
+    const postingDetailsByKey = new Map<string, any>(rawCachePostingDetailsByKey)
+    for (const [key, payload] of snapshotPostingDetailsByKey.entries()) {
+      if (postingDetailsByKey.has(key)) continue
+      postingDetailsByKey.set(key, payload)
     }
+    const reportRows = buildSalesShipmentReportRowsFromSnapshotMap(cacheByEndpoint, requestedPeriod)
+
+    if (payloads.length === 0 && cacheByEndpoint.size === 0) {
+      const legacyPayloads = getLegacySalesPayloadMap(storeClientId)
+      for (const [endpoint, payload] of legacyPayloads.entries()) {
+        payloads.push({ endpoint, payload })
+      }
+    }
+
+    const fboPostingNumbers = getFboPostingNumbersFromPayloads(payloads)
+    logFboShipmentTrace('raw-cache.rebuild.begin', {
+      storeClientId,
+      period: requestedPeriod,
+      itemsCount: fboPostingNumbers.length,
+      meta: {
+        snapshotEndpointCount: cacheByEndpoint.size,
+        payloadCount: payloads.length,
+        fboPostingCount: fboPostingNumbers.length,
+        rawCacheFboDetailCount: countPostingDetailsByKind(rawCachePostingDetailsByKey, 'FBO'),
+        snapshotFboDetailCount: countPostingDetailsByKind(snapshotPostingDetailsByKey, 'FBO'),
+        mergedFboDetailCount: countPostingDetailsByKind(postingDetailsByKey, 'FBO'),
+        reportRowsCount: reportRows.length,
+        reportFboShipmentDateIgnored: true,
+        samplePostingNumbers: uniqueSample(fboPostingNumbers, 10),
+      },
+    })
+
+    const persistResult = persistFboLocalSnapshotFromRawCache(storeClientId, requestedPeriod, payloads, postingDetailsByKey)
+    if (persistResult) {
+      logFboShipmentTrace('raw-cache.rebuild.snapshot.persisted', {
+        storeClientId,
+        period: requestedPeriod,
+        itemsCount: Number(persistResult?.persisted?.shipmentDateCount ?? persistResult?.trace?.postingsWithResolvedShipmentDate ?? 0),
+        meta: {
+          ...persistResult,
+        },
+      })
+    }
+
+    const result = buildSalesRowsFromPayloads(storeClientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
+    logFboShipmentTrace('raw-cache.rebuild.rows.built', {
+      storeClientId,
+      period: requestedPeriod,
+      itemsCount: countRowsByDeliveryModelWithShipmentDate(result.rows, 'FBO'),
+      meta: {
+        salesRowsCount: result.rows.length,
+        fboRowsCount: countRowsByDeliveryModel(result.rows, 'FBO'),
+        fboRowsWithShipmentDate: countRowsByDeliveryModelWithShipmentDate(result.rows, 'FBO'),
+        sourceEndpoints: result.sourceEndpoints,
+      },
+    })
+
+    return result
+  } catch (e: any) {
+    logFboShipmentTrace('raw-cache.rebuild.error', {
+      storeClientId,
+      period: requestedPeriod,
+      status: 'error',
+      errorMessage: e?.message ?? String(e),
+      meta: {
+        stack: e?.stack ?? null,
+      },
+    })
+    throw e
   }
-
-  persistFboLocalSnapshotFromRawCache(storeClientId, requestedPeriod, payloads, postingDetailsByKey)
-
-  return buildSalesRowsFromPayloads(storeClientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
 }
 
 function readScopedSalesSnapshotRows(
@@ -645,137 +784,222 @@ export async function refreshSalesRawSnapshotFromApi(
   requestedPeriod: SalesPeriod | null | undefined,
 ) {
   const normalizedRequestedPeriod = normalizeSalesPeriod(requestedPeriod)
-  const fbsPayloads = await fetchSalesEndpointPages(
-    (body) => ozonPostingFbsList(secrets, body),
-    requestedPeriod,
-    '/v3/posting/fbs/list',
-  )
-  const fboPayloads = await fetchSalesEndpointPages(
-    (body) => ozonPostingFboList(secrets, body),
-    requestedPeriod,
-    '/v2/posting/fbo/list',
-  )
-  const payloads = [...fbsPayloads, ...fboPayloads]
-  const cachedPostingDetailsByKey = getSalesPostingDetailsFromRawCache(secrets.clientId)
-  const postingDetailsByKey = payloads.length > 0
-    ? await fetchSalesPostingDetails(secrets, payloads, cachedPostingDetailsByKey)
-    : new Map<string, any>(cachedPostingDetailsByKey)
-  const compatFboPostingNumbers = collectFboPostingNumbersNeedingCompat(fboPayloads, postingDetailsByKey)
-  if (compatFboPostingNumbers.length > 0) {
-    const compatDetails = await fetchFboPostingDetailsCompat(secrets, compatFboPostingNumbers)
-    for (const [postingNumber, payload] of compatDetails.entries()) {
-      postingDetailsByKey.set(getSalesPostingDetailsKey('FBO', postingNumber), payload)
-    }
-  }
 
-  let reportRows: SalesShipmentReportRow[] = []
   try {
-    const report = await fetchSalesPostingsReportRows(secrets, requestedPeriod)
-    reportRows = report.rows
-      .map((row) => ({
-        posting_number: normalizeTextValue(row?.posting_number),
-        delivery_schema: normalizeTextValue(row?.delivery_schema),
-        shipment_date: normalizeTextValue(row?.shipment_date),
-      }))
-      .filter((row) => row.posting_number && row.shipment_date)
-  } catch {
-    reportRows = []
-  }
-
-  const fetchedAt = new Date().toISOString()
-
-  buildAndPersistFboSalesSnapshot({
-    storeClientId: secrets.clientId,
-    periodKey: buildDatasetScopeKey(requestedPeriod),
-    fboPayloads,
-    postingDetailsByKey,
-    fetchedAt,
-  })
-
-  const trimListPayload = (payload: any) => {
-    const postings = extractPostingsFromPayload(payload)
-    if (Array.isArray(postings) && postings.length > 0) return { result: { postings } }
-    return payload
-  }
-
-  const MAX_DETAILS_ITEMS = 2000
-  const detailsItems: Array<{ key: string; payload: any }> = []
-  const seenDetailKeys = new Set<string>()
-  for (const env of payloads) {
-    const endpointKind = String(env.endpoint).includes('/fbs/') ? 'FBS' : 'FBO'
-    for (const posting of extractPostingsFromPayload(env.payload)) {
-      const postingNumber = String((posting as any)?.posting_number ?? (posting as any)?.postingNumber ?? '').trim()
-      if (!postingNumber) continue
-      const key = getSalesPostingDetailsKey(endpointKind, postingNumber)
-      if (seenDetailKeys.has(key)) continue
-      const payload = postingDetailsByKey.get(key)
-      if (!payload) continue
-      detailsItems.push({ key, payload })
-      seenDetailKeys.add(key)
-      if (detailsItems.length >= MAX_DETAILS_ITEMS) break
-    }
-    if (detailsItems.length >= MAX_DETAILS_ITEMS) break
-  }
-
-  const persistRawSnapshot = (endpoint: string, responseBody: any) => {
-    dbRecordApiRawResponse({
+    logFboShipmentTrace('api.refresh.begin', {
       storeClientId: secrets.clientId,
-      method: 'LOCAL',
-      endpoint,
-      requestBody: {
-        mode: 'sales-cache-snapshot',
-        period: normalizedRequestedPeriod,
+      period: requestedPeriod,
+      meta: {
+        requestedPeriod: normalizedRequestedPeriod,
       },
-      responseBody,
-      httpStatus: 200,
-      isSuccess: true,
+    })
+
+    const fbsPayloads = await fetchSalesEndpointPages(
+      (body) => ozonPostingFbsList(secrets, body),
+      requestedPeriod,
+      '/v3/posting/fbs/list',
+    )
+    const fboPayloads = await fetchSalesEndpointPages(
+      (body) => ozonPostingFboList(secrets, body),
+      requestedPeriod,
+      '/v2/posting/fbo/list',
+    )
+    const payloads = [...fbsPayloads, ...fboPayloads]
+    const fboPostingNumbers = getFboPostingNumbersFromPayloads(fboPayloads)
+
+    logFboShipmentTrace('api.refresh.list.loaded', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      itemsCount: fboPostingNumbers.length,
+      meta: {
+        fbsPayloadCount: fbsPayloads.length,
+        fboPayloadCount: fboPayloads.length,
+        payloadCount: payloads.length,
+        fboPostingCount: fboPostingNumbers.length,
+        samplePostingNumbers: uniqueSample(fboPostingNumbers, 10),
+      },
+    })
+
+    const cachedPostingDetailsByKey = getSalesPostingDetailsFromRawCache(secrets.clientId)
+    const postingDetailsByKey = payloads.length > 0
+      ? await fetchSalesPostingDetails(secrets, payloads, cachedPostingDetailsByKey)
+      : new Map<string, any>(cachedPostingDetailsByKey)
+
+    logFboShipmentTrace('api.refresh.details.loaded', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      itemsCount: countPostingDetailsByKind(postingDetailsByKey, 'FBO'),
+      meta: {
+        cachedFboDetailCount: countPostingDetailsByKind(cachedPostingDetailsByKey, 'FBO'),
+        mergedFboDetailCount: countPostingDetailsByKind(postingDetailsByKey, 'FBO'),
+      },
+    })
+
+    const compatFboPostingNumbers = collectFboPostingNumbersNeedingCompat(fboPayloads, postingDetailsByKey)
+    let compatLoadedCount = 0
+    if (compatFboPostingNumbers.length > 0) {
+      const compatDetails = await fetchFboPostingDetailsCompat(secrets, compatFboPostingNumbers)
+      compatLoadedCount = compatDetails.size
+      for (const [postingNumber, payload] of compatDetails.entries()) {
+        postingDetailsByKey.set(getSalesPostingDetailsKey('FBO', postingNumber), payload)
+      }
+    }
+
+    logFboShipmentTrace('api.refresh.compat.loaded', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      itemsCount: compatLoadedCount,
+      meta: {
+        compatRequestedCount: compatFboPostingNumbers.length,
+        compatLoadedCount,
+        compatSamplePostingNumbers: uniqueSample(compatFboPostingNumbers, 10),
+        mergedFboDetailCountAfterCompat: countPostingDetailsByKind(postingDetailsByKey, 'FBO'),
+      },
+    })
+
+    let reportRows: SalesShipmentReportRow[] = []
+    try {
+      const report = await fetchSalesPostingsReportRows(secrets, requestedPeriod)
+      reportRows = report.rows
+        .map((row) => ({
+          posting_number: normalizeTextValue(row?.posting_number),
+          delivery_schema: normalizeTextValue(row?.delivery_schema),
+          shipment_date: normalizeTextValue(row?.shipment_date),
+        }))
+        .filter((row) => row.posting_number && row.shipment_date)
+    } catch {
+      reportRows = []
+    }
+
+    const fetchedAt = new Date().toISOString()
+
+    const persistResult = buildAndPersistFboSalesSnapshot({
+      storeClientId: secrets.clientId,
+      periodKey: buildDatasetScopeKey(requestedPeriod),
+      fboPayloads,
+      postingDetailsByKey,
       fetchedAt,
     })
-  }
 
-  persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs, {
-    sourceEndpoint: '/v3/posting/fbs/list',
-    period: normalizedRequestedPeriod,
-    payloads: fbsPayloads.map((item) => trimListPayload(item.payload)),
-  })
-  persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo, {
-    sourceEndpoint: '/v2/posting/fbo/list',
-    period: normalizedRequestedPeriod,
-    payloads: fboPayloads.map((item) => trimListPayload(item.payload)),
-  })
-  persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.details, {
-    period: normalizedRequestedPeriod,
-    items: detailsItems,
-  })
-  persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport, {
-    period: normalizedRequestedPeriod,
-    rows: reportRows,
-  })
+    logFboShipmentTrace('api.refresh.snapshot.persisted', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      itemsCount: Number(persistResult?.persisted?.shipmentDateCount ?? persistResult?.trace?.postingsWithResolvedShipmentDate ?? 0),
+      meta: {
+        reportRowsCount: reportRows.length,
+        reportFboShipmentDateIgnored: true,
+        ...persistResult,
+      },
+    })
 
-  const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
-  persistDatasetSnapshot({
-    storeClientId: secrets.clientId,
-    dataset: 'sales',
-    scopeKey: buildDatasetScopeKey(requestedPeriod),
-    period: requestedPeriod,
-    rows,
-    sourceKind: 'api-live',
-    sourceEndpoints,
-  })
+    const trimListPayload = (payload: any) => {
+      const postings = extractPostingsFromPayload(payload)
+      if (Array.isArray(postings) && postings.length > 0) return { result: { postings } }
+      return payload
+    }
 
-  if (isDefaultRollingSalesPeriod(requestedPeriod)) {
+    const MAX_DETAILS_ITEMS = 2000
+    const detailsItems: Array<{ key: string; payload: any }> = []
+    const seenDetailKeys = new Set<string>()
+    for (const env of payloads) {
+      const endpointKind = String(env.endpoint).includes('/fbs/') ? 'FBS' : 'FBO'
+      for (const posting of extractPostingsFromPayload(env.payload)) {
+        const postingNumber = String((posting as any)?.posting_number ?? (posting as any)?.postingNumber ?? '').trim()
+        if (!postingNumber) continue
+        const key = getSalesPostingDetailsKey(endpointKind, postingNumber)
+        if (seenDetailKeys.has(key)) continue
+        const payload = postingDetailsByKey.get(key)
+        if (!payload) continue
+        detailsItems.push({ key, payload })
+        seenDetailKeys.add(key)
+        if (detailsItems.length >= MAX_DETAILS_ITEMS) break
+      }
+      if (detailsItems.length >= MAX_DETAILS_ITEMS) break
+    }
+
+    const persistRawSnapshot = (endpoint: string, responseBody: any) => {
+      dbRecordApiRawResponse({
+        storeClientId: secrets.clientId,
+        method: 'LOCAL',
+        endpoint,
+        requestBody: {
+          mode: 'sales-cache-snapshot',
+          period: normalizedRequestedPeriod,
+        },
+        responseBody,
+        httpStatus: 200,
+        isSuccess: true,
+        fetchedAt,
+      })
+    }
+
+    persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbs, {
+      sourceEndpoint: '/v3/posting/fbs/list',
+      period: normalizedRequestedPeriod,
+      payloads: fbsPayloads.map((item) => trimListPayload(item.payload)),
+    })
+    persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.fbo, {
+      sourceEndpoint: '/v2/posting/fbo/list',
+      period: normalizedRequestedPeriod,
+      payloads: fboPayloads.map((item) => trimListPayload(item.payload)),
+    })
+    persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.details, {
+      period: normalizedRequestedPeriod,
+      items: detailsItems,
+    })
+    persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport, {
+      period: normalizedRequestedPeriod,
+      rows: reportRows,
+    })
+
+    const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
+    logFboShipmentTrace('api.refresh.rows.built', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      itemsCount: countRowsByDeliveryModelWithShipmentDate(rows, 'FBO'),
+      meta: {
+        salesRowsCount: rows.length,
+        fboRowsCount: countRowsByDeliveryModel(rows, 'FBO'),
+        fboRowsWithShipmentDate: countRowsByDeliveryModelWithShipmentDate(rows, 'FBO'),
+        sourceEndpoints,
+      },
+    })
+
     persistDatasetSnapshot({
       storeClientId: secrets.clientId,
       dataset: 'sales',
-      scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+      scopeKey: buildDatasetScopeKey(requestedPeriod),
       period: requestedPeriod,
       rows,
-      sourceKind: 'api-live-default-window',
+      sourceKind: 'api-live',
       sourceEndpoints,
     })
-  }
 
-  return { rowsCount: rows.length }
+    if (isDefaultRollingSalesPeriod(requestedPeriod)) {
+      persistDatasetSnapshot({
+        storeClientId: secrets.clientId,
+        dataset: 'sales',
+        scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+        period: requestedPeriod,
+        rows,
+        sourceKind: 'api-live-default-window',
+        sourceEndpoints,
+      })
+    }
+
+    return { rowsCount: rows.length }
+  } catch (e: any) {
+    logFboShipmentTrace('api.refresh.error', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      status: 'error',
+      errorMessage: e?.message ?? String(e),
+      meta: {
+        stack: e?.stack ?? null,
+      },
+    })
+    throw e
+  }
 }
 
 function salesRowNeedsFboBackfill(row: any): boolean {
