@@ -1,9 +1,11 @@
-import { ozonDownloadReportFile, ozonReportInfo, ozonReportPostingsCreate } from './ozon'
 import type { Secrets } from './types'
 
+const OZON_API_BASE_URL = 'https://api-seller.ozon.ru'
 const REPORT_INFO_POLL_ATTEMPTS = 25
 const REPORT_INFO_POLL_DELAY_MS = 1500
 const CSV_MOSCOW_OFFSET_MS = 3 * 60 * 60 * 1000
+
+type JsonRecord = Record<string, unknown>
 
 export type ReportPeriodInput = {
   from?: string | null
@@ -69,6 +71,65 @@ function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefi
   }
 }
 
+async function ozonPost(secrets: Secrets, endpoint: string, body: unknown): Promise<JsonRecord> {
+  const res = await fetch(`${OZON_API_BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Client-Id': secrets.clientId,
+      'Api-Key': secrets.apiKey,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body ?? {}),
+  })
+
+  const rawText = await res.text()
+  let parsed: JsonRecord = {}
+  if (rawText.trim()) {
+    try {
+      parsed = JSON.parse(rawText) as JsonRecord
+    } catch {
+      throw new Error(`Ozon API error: invalid JSON for ${endpoint} (HTTP ${res.status})`)
+    }
+  }
+
+  if (!res.ok) {
+    const message = text((parsed as any)?.message) || text((parsed as any)?.error) || `HTTP ${res.status}`
+    throw new Error(`Ozon API error ${endpoint}: ${message}`)
+  }
+
+  return parsed
+}
+
+async function ozonReportPostingsCreate(secrets: Secrets, body: unknown) {
+  return ozonPost(secrets, '/v1/report/postings/create', body ?? {})
+}
+
+async function ozonReportInfo(secrets: Secrets, code: string) {
+  const normalizedCode = text(code)
+  if (!normalizedCode) throw new Error('Не указан code отчёта')
+  return ozonPost(secrets, '/v1/report/info', { code: normalizedCode })
+}
+
+async function ozonDownloadReportFile(fileUrl: string): Promise<Uint8Array> {
+  const normalizedUrl = text(fileUrl)
+  if (!normalizedUrl) throw new Error('Не указан URL отчёта')
+
+  const res = await fetch(normalizedUrl, {
+    method: 'GET',
+    headers: {
+      Accept: 'text/csv,application/octet-stream;q=0.9,*/*;q=0.8',
+    },
+  })
+
+  if (!res.ok) {
+    throw new Error(`Ozon report download error: HTTP ${res.status}`)
+  }
+
+  const buffer = await res.arrayBuffer()
+  return new Uint8Array(buffer)
+}
+
 function normalizeReportStatus(value: unknown): string {
   return text(value).toLowerCase().replace(/\s+/g, '_')
 }
@@ -88,7 +149,7 @@ function decodeCsvBytes(bytes: Uint8Array): string {
 
   const tryDecode = (encoding: string) => {
     try {
-      return new TextDecoder(encoding as any).decode(bytes)
+      return new TextDecoder(encoding).decode(bytes)
     } catch {
       return ''
     }
@@ -259,38 +320,13 @@ function normalizeDeliverySchema(value: unknown): string {
 }
 
 function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsReportRow | null {
-  const postingNumber = pickRowValue(row, [
-    'Номер отправления',
-    'Отправление',
-    'posting_number',
-    'posting number',
-  ])
+  const postingNumber = pickRowValue(row, ['Номер отправления', 'Отправление', 'posting_number', 'posting number'])
   if (!postingNumber) return null
 
-  const orderNumber = pickRowValue(row, [
-    'Номер заказа',
-    'order_number',
-    'order number',
-  ])
-
-  const deliverySchema = normalizeDeliverySchema(pickRowValue(row, [
-    'Метод доставки',
-    'Схема доставки',
-    'delivery_schema',
-    'delivery schema',
-  ]))
-
-  const shipmentDate = parseOzonLocalDateToIso(pickRowValue(row, [
-    'Дата отгрузки',
-    'shipment_date',
-    'shipment date',
-  ]))
-
-  const deliveryDate = parseOzonLocalDateToIso(pickRowValue(row, [
-    'Дата доставки',
-    'delivery_date',
-    'delivery date',
-  ]))
+  const orderNumber = pickRowValue(row, ['Номер заказа', 'order_number', 'order number'])
+  const deliverySchema = normalizeDeliverySchema(pickRowValue(row, ['Метод доставки', 'Схема доставки', 'delivery_schema', 'delivery schema']))
+  const shipmentDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата отгрузки', 'shipment_date', 'shipment date']))
+  const deliveryDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата доставки', 'delivery_date', 'delivery date']))
 
   return {
     posting_number: postingNumber,
