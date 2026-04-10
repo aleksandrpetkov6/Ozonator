@@ -126,12 +126,6 @@ function orderIdOf(source: any): string {
   return text(pick(source, ['order_id', 'order_number']))
 }
 
-const FBO_SHIPMENT_STATES = [
-  'posting_transferring_to_delivery',
-  'posting_transfered_to_courier_service',
-  'posting_transferred_to_courier_service',
-  'posting_driver_pick_up',
-] as const
 const FBO_STATE_CHANGED_EVENT_TYPE = 'type_state_changed'
 
 const FBO_DELIVERED_STATES = new Set<string>([
@@ -390,12 +384,7 @@ export function mergeSalesRowsWithFboLocalDb(args: {
             AND e.period_key = p.period_key
             AND e.posting_number = p.posting_number
             AND COALESCE(NULLIF(e.event_type, ''), 'type_state_changed') = 'type_state_changed'
-            AND COALESCE(NULLIF(e.new_state, ''), e.state) IN (
-              'posting_transferring_to_delivery',
-              'posting_transfered_to_courier_service',
-              'posting_transferred_to_courier_service',
-              'posting_driver_pick_up'
-            )
+            AND COALESCE(NULLIF(e.new_state, ''), e.state) = 'posting_transferring_to_delivery'
         )
       ) AS shipment_date,
       p.delivery_date,
