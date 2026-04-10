@@ -776,6 +776,7 @@ function persistFboLocalSnapshotFromRawCache(
   requestedPeriod: SalesPeriod | null | undefined,
   payloads: Array<{ endpoint: string; payload: any }>,
   postingDetailsByKey: Map<string, any>,
+  reportRows: SalesShipmentReportRow[] = [],
 ) {
   const normalizedStoreClientId = normalizeTextValue(storeClientId)
   if (!normalizedStoreClientId) return null
@@ -788,6 +789,7 @@ function persistFboLocalSnapshotFromRawCache(
     periodKey: buildDatasetScopeKey(requestedPeriod),
     fboPayloads,
     postingDetailsByKey,
+    reportRows,
     fetchedAt: new Date().toISOString(),
   })
 }
@@ -830,7 +832,7 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
       },
     })
 
-    const persistResult = persistFboLocalSnapshotFromRawCache(storeClientId, requestedPeriod, payloads, postingDetailsByKey)
+    const persistResult = persistFboLocalSnapshotFromRawCache(storeClientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
     if (persistResult) {
       logFboShipmentTrace('raw-cache.rebuild.snapshot.persisted', {
         storeClientId,
@@ -1133,6 +1135,7 @@ export async function refreshSalesRawSnapshotFromApi(
       periodKey: buildDatasetScopeKey(requestedPeriod),
       fboPayloads,
       postingDetailsByKey,
+      reportRows,
       fetchedAt,
     })
 

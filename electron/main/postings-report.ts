@@ -325,7 +325,15 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
 
   const orderNumber = pickRowValue(row, ['Номер заказа', 'order_number', 'order number'])
   const deliverySchema = normalizeDeliverySchema(pickRowValue(row, ['Метод доставки', 'Схема доставки', 'delivery_schema', 'delivery schema']))
-  const shipmentDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата отгрузки', 'shipment_date', 'shipment date']))
+  const shipmentDateRaw = pickRowValue(row, [
+    'Фактическая дата передачи в доставку',
+    'Передан в доставку',
+    'Дата отгрузки',
+    'shipment_date_actual',
+    'shipment_date',
+    'shipment date',
+  ])
+  const shipmentDate = parseOzonLocalDateToIso(shipmentDateRaw)
   const deliveryDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата доставки', 'delivery_date', 'delivery date']))
 
   return {
