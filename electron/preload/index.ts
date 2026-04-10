@@ -3,10 +3,18 @@ import { contextBridge, ipcRenderer } from 'electron'
 type LocalServerConfig = {
   ok: boolean
   baseUrl?: string
+  healthUrlLocal?: string
   token?: string
   webhookPath?: string
   webhookUrlLocal?: string
+  webhookProbePath?: string
+  webhookProbeUrlLocal?: string
   webhookToken?: string
+  serverStartedAt?: string
+  lastProbeAt?: string
+  lastPushHitAt?: string
+  lastPushAcceptedAt?: string
+  lastPushAcceptedEvents?: number
 }
 
 let localCfg: LocalServerConfig | null = null
@@ -21,10 +29,18 @@ async function getLocalServerConfig(): Promise<LocalServerConfig | null> {
           return {
             ok: true,
             baseUrl: resp.baseUrl,
+            healthUrlLocal: typeof resp.healthUrlLocal === 'string' ? resp.healthUrlLocal : undefined,
             token: resp.token,
             webhookPath: typeof resp.webhookPath === 'string' ? resp.webhookPath : undefined,
             webhookUrlLocal: typeof resp.webhookUrlLocal === 'string' ? resp.webhookUrlLocal : undefined,
+            webhookProbePath: typeof resp.webhookProbePath === 'string' ? resp.webhookProbePath : undefined,
+            webhookProbeUrlLocal: typeof resp.webhookProbeUrlLocal === 'string' ? resp.webhookProbeUrlLocal : undefined,
             webhookToken: typeof resp.webhookToken === 'string' ? resp.webhookToken : undefined,
+            serverStartedAt: typeof resp.serverStartedAt === 'string' ? resp.serverStartedAt : undefined,
+            lastProbeAt: typeof resp.lastProbeAt === 'string' ? resp.lastProbeAt : undefined,
+            lastPushHitAt: typeof resp.lastPushHitAt === 'string' ? resp.lastPushHitAt : undefined,
+            lastPushAcceptedAt: typeof resp.lastPushAcceptedAt === 'string' ? resp.lastPushAcceptedAt : undefined,
+            lastPushAcceptedEvents: typeof resp.lastPushAcceptedEvents === 'number' ? resp.lastPushAcceptedEvents : undefined,
           }
         }
         return null
@@ -60,6 +76,7 @@ async function tryCallLocalServer(method: 'GET' | 'POST', path: string, body?: a
 
 contextBridge.exposeInMainWorld('api', {
   localServerConfig: () => ipcRenderer.invoke('local-server:getConfig'),
+  localServerProbe: () => ipcRenderer.invoke('local-server:probe'),
 
   secretsStatus: () => ipcRenderer.invoke('secrets:status'),
   saveSecrets: (secrets: { storeName?: string; clientId: string; apiKey: string }) => ipcRenderer.invoke('secrets:save', secrets),
