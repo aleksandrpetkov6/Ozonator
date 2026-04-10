@@ -4,6 +4,9 @@ type LocalServerConfig = {
   ok: boolean
   baseUrl?: string
   token?: string
+  webhookPath?: string
+  webhookUrlLocal?: string
+  webhookToken?: string
 }
 
 let localCfg: LocalServerConfig | null = null
@@ -15,7 +18,14 @@ async function getLocalServerConfig(): Promise<LocalServerConfig | null> {
     localCfgPromise = ipcRenderer.invoke('local-server:getConfig')
       .then((resp: any) => {
         if (resp && resp.ok && typeof resp.baseUrl === 'string' && typeof resp.token === 'string') {
-          return { ok: true, baseUrl: resp.baseUrl, token: resp.token }
+          return {
+            ok: true,
+            baseUrl: resp.baseUrl,
+            token: resp.token,
+            webhookPath: typeof resp.webhookPath === 'string' ? resp.webhookPath : undefined,
+            webhookUrlLocal: typeof resp.webhookUrlLocal === 'string' ? resp.webhookUrlLocal : undefined,
+            webhookToken: typeof resp.webhookToken === 'string' ? resp.webhookToken : undefined,
+          }
         }
         return null
       })
