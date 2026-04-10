@@ -72,6 +72,7 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
     const parts: string[] = []
     if (type === 'sales_fbo_shipment_trace') {
       const parts: string[] = []
+      const stage = String(m?.stage ?? '')
       if (m?.stageRu || m?.stage) parts.push(String(m?.stageRu ?? m?.stage))
       if (typeof m?.fboPostingCount === 'number') parts.push(`FBO отправлений: ${m.fboPostingCount}`)
       if (typeof m?.mergedFboDetailCount === 'number') parts.push(`деталей FBO: ${m.mergedFboDetailCount}`)
@@ -81,8 +82,21 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
       if (typeof m?.reportRowsCount === 'number') parts.push(`строк отчёта: ${m.reportRowsCount}`)
       if (typeof m?.incomingEventsCount === 'number') parts.push(`push событий: ${m.incomingEventsCount}`)
       if (typeof m?.acceptedPushEventCount === 'number') parts.push(`push принято: ${m.acceptedPushEventCount}`)
-      const pushSamples = Array.isArray(m?.samplePostingNumbers) ? m.samplePostingNumbers : []
-      if (pushSamples.length > 0) parts.push(`push: ${pushSamples.slice(0, 3).join(', ')}`)
+      const samplePostingNumbers = Array.isArray(m?.samplePostingNumbers) ? m.samplePostingNumbers : []
+      if (samplePostingNumbers.length > 0) {
+        const label = stage.startsWith('push.ingest') ? 'push sample' : 'FBO sample'
+        parts.push(`${label}: ${samplePostingNumbers.slice(0, 3).join(', ')}`)
+      }
+      if (stage === 'webhook.server.status') {
+        if (typeof m?.baseUrl === 'string' && m.baseUrl) parts.push(`сервер: ${m.baseUrl}`)
+        if (typeof m?.webhookUrlLocal === 'string' && m.webhookUrlLocal) parts.push(`webhook: ${m.webhookUrlLocal}`)
+        if (typeof m?.webhookProbeUrlLocal === 'string' && m.webhookProbeUrlLocal) parts.push(`ping: ${m.webhookProbeUrlLocal}`)
+      }
+      if (stage === 'webhook.probe.received') {
+        if (typeof m?.probeAt === 'string' && m.probeAt) parts.push(`время ping: ${m.probeAt}`)
+        if (typeof m?.pathname === 'string' && m.pathname) parts.push(`путь: ${m.pathname}`)
+      }
+      if (Array.isArray(m?.payloadTopLevelKeys) && m.payloadTopLevelKeys.length > 0) parts.push(`payload keys: ${m.payloadTopLevelKeys.slice(0, 6).join(', ')}`)
       if (m?.trace && typeof m.trace === 'object') {
         if (typeof m.trace?.postingsWithDetail === 'number') parts.push(`с деталями: ${m.trace.postingsWithDetail}`)
         if (typeof m.trace?.postingsWithShipmentTransferEvent === 'number') parts.push(`с event даты: ${m.trace.postingsWithShipmentTransferEvent}`)
