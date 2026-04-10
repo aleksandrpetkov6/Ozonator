@@ -401,7 +401,10 @@ export function collectSalesStateEvents(...sources: any[]): SalesPostingStateEve
 
 export function resolveFboShipmentDateFromSources(...sources: any[]): string {
   return collectSalesStateEvents(...sources)
-    .filter((event) => event.event_type === SALES_STATE_CHANGED_EVENT_TYPE && event.new_state === FBO_SHIPMENT_STATE)
+    .filter((event) => (
+      event.event_type === SALES_STATE_CHANGED_EVENT_TYPE
+      && FBO_SHIPMENT_STATE_SET.has(event.new_state)
+    ))
     .map((event) => event.changed_state_date)
     .sort((left, right) => right.localeCompare(left))[0] ?? ''
 }

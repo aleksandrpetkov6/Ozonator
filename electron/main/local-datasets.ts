@@ -224,7 +224,6 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     if (currentShipmentDate) return row
 
     const modelKey = normalizeDeliveryModelKey(row?.delivery_model)
-    if (modelKey === 'fbo') return row
     const reportShipmentDate = normalizeTextValue(
       (modelKey ? reportMap.get(`${modelKey}|${postingNumber}`) : '')
       || reportMap.get(`*|${postingNumber}`),
