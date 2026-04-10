@@ -26,6 +26,7 @@ const TYPE_RU: Record<string, string> = {
   app_reinstall: 'Переустановка программы',
   app_uninstall: 'Удаление программы',
   admin_settings: 'Настройки Админ',
+  sales_fbo_shipment_trace: 'Трассировка FBO даты отгрузки',
 }
 
 const STATUS_RU: Record<string, string> = {
@@ -69,6 +70,30 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
       return parts.join(', ') || meta
     }
     const parts: string[] = []
+    if (type === 'sales_fbo_shipment_trace') {
+      const parts: string[] = []
+      if (m?.stageRu || m?.stage) parts.push(String(m?.stageRu ?? m?.stage))
+      if (typeof m?.fboPostingCount === 'number') parts.push(`FBO отправлений: ${m.fboPostingCount}`)
+      if (typeof m?.mergedFboDetailCount === 'number') parts.push(`деталей FBO: ${m.mergedFboDetailCount}`)
+      if (typeof m?.compatLoadedCount === 'number') parts.push(`compat: ${m.compatLoadedCount}`)
+      if (typeof m?.fboRowsWithShipmentDate === 'number') parts.push(`строк с датой: ${m.fboRowsWithShipmentDate}`)
+      if (typeof m?.salesRowsCount === 'number') parts.push(`строк продаж: ${m.salesRowsCount}`)
+      if (typeof m?.reportRowsCount === 'number') parts.push(`строк отчёта: ${m.reportRowsCount}`)
+      if (m?.trace && typeof m.trace === 'object') {
+        if (typeof m.trace?.postingsWithDetail === 'number') parts.push(`с деталями: ${m.trace.postingsWithDetail}`)
+        if (typeof m.trace?.postingsWithShipmentTransferEvent === 'number') parts.push(`с event даты: ${m.trace.postingsWithShipmentTransferEvent}`)
+        if (typeof m.trace?.postingsWithResolvedShipmentDate === 'number') parts.push(`дата извлечена: ${m.trace.postingsWithResolvedShipmentDate}`)
+      }
+      if (m?.persisted && typeof m.persisted === 'object') {
+        if (typeof m.persisted?.shipmentTransferEventCount === 'number') parts.push(`event в БД: ${m.persisted.shipmentTransferEventCount}`)
+        if (typeof m.persisted?.shipmentDateCount === 'number') parts.push(`дат в БД: ${m.persisted.shipmentDateCount}`)
+      }
+      const missing = Array.isArray(m?.trace?.missingShipmentDatePostingNumbers) ? m.trace.missingShipmentDatePostingNumbers : []
+      if (missing.length > 0) parts.push(`без даты: ${missing.slice(0, 3).join(', ')}`)
+      const missingDetails = Array.isArray(m?.trace?.missingDetailPostingNumbers) ? m.trace.missingDetailPostingNumbers : []
+      if (missingDetails.length > 0) parts.push(`без detail: ${missingDetails.slice(0, 3).join(', ')}`)
+      return parts.length ? parts.join(', ') : meta
+    }
     if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
     if (typeof m?.infoBatches === 'number') parts.push(`батчей: ${m.infoBatches}`)
     if (typeof m?.infoFetched === 'number') parts.push(`расширено: ${m.infoFetched}`)
