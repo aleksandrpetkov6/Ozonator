@@ -1,5 +1,5 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
-import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
+import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, type SalesPeriod } from './sales-sync'
 import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbLogEvent, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPushShipmentEvents } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
@@ -366,20 +366,13 @@ function pickFirstPresent(source: any, paths: string[]): any {
   return undefined
 }
 
-function getFboCompatShipmentDate(detail: any): string {
-  return normalizeTextValue(resolveFboShipmentDateFromSources(detail))
-}
-
 function hasFboCompatDetail(detail: any): boolean {
-  const cluster = normalizeTextValue(pickFirstPresent(detail, [
+  return Boolean(normalizeTextValue(pickFirstPresent(detail, [
     'financial_data.cluster_to',
     'result.financial_data.cluster_to',
     'cluster_to',
     'result.cluster_to',
-  ]))
-  if (!cluster) return false
-
-  return Boolean(getFboCompatShipmentDate(detail))
+  ])))
 }
 
 function collectFboPostingNumbersNeedingCompat(
@@ -482,19 +475,15 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     const postingNumber = normalizeTextValue(row?.posting_number)
     if (!postingNumber) return row
 
-    // КС П: для FBO «Дата отгрузки» берётся только из TYPE_STATE_CHANGED/new_state=posting_transferring_to_delivery.
-    // Поэтому для FBO запрещено добирать shipment_date из CSV-отчёта.
-    if (normalizeDeliveryModelKey(row?.delivery_model) === 'fbo') return row
-
     const currentShipmentDate = normalizeTextValue(row?.shipment_date)
-    if (currentShipmentDate) return row
-
     const modelKey = normalizeDeliveryModelKey(row?.delivery_model)
     const reportShipmentDate = normalizeTextValue(
       (modelKey ? reportMap.get(`${modelKey}|${postingNumber}`) : '')
       || reportMap.get(`*|${postingNumber}`),
     )
     if (!reportShipmentDate) return row
+    if (currentShipmentDate === reportShipmentDate) return row
+
 
     return {
       ...row,
@@ -836,7 +825,7 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
         snapshotFboDetailCount: countPostingDetailsByKind(snapshotPostingDetailsByKey, 'FBO'),
         mergedFboDetailCount: countPostingDetailsByKind(postingDetailsByKey, 'FBO'),
         reportRowsCount: reportRows.length,
-        reportFboShipmentDateIgnored: true,
+        reportFboShipmentDateIgnored: false,
         samplePostingNumbers: uniqueSample(fboPostingNumbers, 10),
       },
     })
@@ -1153,7 +1142,7 @@ export async function refreshSalesRawSnapshotFromApi(
       itemsCount: Number(persistResult?.persisted?.shipmentDateCount ?? persistResult?.trace?.postingsWithResolvedShipmentDate ?? 0),
       meta: {
         reportRowsCount: reportRows.length,
-        reportFboShipmentDateIgnored: true,
+        reportFboShipmentDateIgnored: false,
         ...persistResult,
       },
     })
