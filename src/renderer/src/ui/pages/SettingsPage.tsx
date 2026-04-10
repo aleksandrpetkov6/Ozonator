@@ -13,6 +13,24 @@ type LocalServerInfo = {
   webhookUrlLocal?: string
 }
 
+type LocalServerConfigResponse = Awaited<ReturnType<Window['api']['localServerConfig']>>
+
+async function loadLocalServerConfigSafe(): Promise<LocalServerConfigResponse> {
+  try {
+    return await window.api.localServerConfig()
+  } catch {
+    return {
+      ok: false,
+      baseUrl: undefined,
+      token: undefined,
+      webhookPath: undefined,
+      webhookUrlLocal: undefined,
+      webhookToken: undefined,
+      error: undefined,
+    }
+  }
+}
+
 function readSettingsDraft(): SettingsDraft {
   try {
     const raw = localStorage.getItem(SETTINGS_DRAFT_LS_KEY)
@@ -67,7 +85,7 @@ export default function SettingsPage() {
     try {
       const [resp, serverResp] = await Promise.all([
         window.api.loadSecrets(),
-        window.api.localServerConfig().catch(() => ({ ok: false })),
+        loadLocalServerConfigSafe(),
       ])
       if (resp.ok) {
         setClientId((prev) => prev.trim() ? prev : (resp.secrets.clientId ?? ''))
