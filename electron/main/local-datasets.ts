@@ -1,5 +1,5 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
-import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
+import { buildSalesPaidByCustomerTrace, extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
 import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbLogEvent, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPostingsReport, persistFboPushShipmentEvents } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
@@ -43,10 +43,12 @@ const FBO_SHIPMENT_TRACE_STAGE_LABELS: Record<string, string> = {
   'api.refresh.report.error': 'FBO дата отгрузки: ошибка отчёта postings',
   'api.refresh.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена',
   'api.refresh.rows.built': 'FBO дата отгрузки: строки продаж собраны',
+  'api.refresh.paid_by_customer.trace': 'Оплачено покупателем: диагностика собрана',
   'api.refresh.error': 'FBO дата отгрузки: ошибка API-обновления',
   'raw-cache.rebuild.begin': 'FBO дата отгрузки: старт пересборки из raw-cache',
   'raw-cache.rebuild.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена из raw-cache',
   'raw-cache.rebuild.rows.built': 'FBO дата отгрузки: строки продаж собраны из raw-cache',
+  'raw-cache.rebuild.paid_by_customer.trace': 'Оплачено покупателем: диагностика собрана из raw-cache',
   'raw-cache.rebuild.error': 'FBO дата отгрузки: ошибка пересборки из raw-cache',
   'push.ingest.received': 'FBO дата отгрузки: push получен',
   'push.ingest.persisted': 'FBO дата отгрузки: push записан в локальную БД',
@@ -362,6 +364,25 @@ export function logFboShipmentTrace(stage: string, args: {
       stageRu: FBO_SHIPMENT_TRACE_STAGE_LABELS[stage] ?? stage,
       period: normalizeSalesPeriod(args.period ?? null),
       ...(args.meta ?? {}),
+    },
+  })
+}
+
+function logPaidByCustomerTrace(stage: string, args: {
+  storeClientId?: string | null
+  period?: SalesPeriod | null | undefined
+  rows?: any[]
+  payloads: Array<{ endpoint: string; payload: any }>
+  postingDetailsByKey: Map<string, any>
+}) {
+  const trace = buildSalesPaidByCustomerTrace(args.payloads, args.postingDetailsByKey, args.rows as any)
+  logFboShipmentTrace(stage, {
+    storeClientId: args.storeClientId ?? null,
+    period: args.period,
+    itemsCount: trace.finalRowsWithPaidByCustomer,
+    meta: {
+      traceKind: 'paid_by_customer',
+      ...trace,
     },
   })
 }
@@ -898,6 +919,13 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
         sourceEndpoints: result.sourceEndpoints,
       },
     })
+    logPaidByCustomerTrace('raw-cache.rebuild.paid_by_customer.trace', {
+      storeClientId,
+      period: requestedPeriod,
+      rows: result.rows,
+      payloads,
+      postingDetailsByKey,
+    })
 
     return result
   } catch (e: any) {
@@ -1431,6 +1459,13 @@ export async function refreshSalesRawSnapshotFromApi(
         fboRowsWithShipmentDate: countRowsByDeliveryModelWithShipmentDate(rows, 'FBO'),
         sourceEndpoints,
       },
+    })
+    logPaidByCustomerTrace('api.refresh.paid_by_customer.trace', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      rows,
+      payloads,
+      postingDetailsByKey,
     })
 
     persistDatasetSnapshot({

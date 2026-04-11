@@ -26,6 +26,23 @@ export type SalesPayloadEnvelope = {
   payload: any
 }
 
+export type SalesPaidByCustomerTrace = {
+  totalPostingCount: number
+  totalItemCount: number
+  postingsWithDetailCount: number
+  listItemDirectValueCount: number
+  listFinancialValueCount: number
+  detailItemDirectValueCount: number
+  detailFinancialValueCount: number
+  finalRowsCount: number
+  finalRowsWithPaidByCustomer: number
+  finalRowsWithoutPaidByCustomer: number
+  fbsRowsWithPaidByCustomer: number
+  fboRowsWithPaidByCustomer: number
+  rfbsRowsWithPaidByCustomer: number
+  missingPostingNumbers: string[]
+}
+
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
@@ -258,14 +275,14 @@ function extractFinancialProducts(source: any): any[] {
   return Array.isArray(direct) ? direct : []
 }
 
-function findSalesProductIdByItem(item: any, detailPosting: any, posting: any): string {
+function findSalesProductIdByItemInSources(item: any, sources: any[]): string {
   const directProductId = normalizeTextValue(pickFirstPresent(item, ['product_id', 'productId']))
   if (directProductId) return directProductId
 
   const offerId = normalizeTextValue(pickFirstPresent(item, ['offer_id', 'offerId', 'article']))
   const sku = normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
 
-  for (const source of [detailPosting, posting]) {
+  for (const source of sources) {
     for (const candidate of extractPostingItems(source)) {
       const candidateProductId = normalizeTextValue(pickFirstPresent(candidate, ['product_id', 'productId']))
       if (!candidateProductId) continue
@@ -281,12 +298,35 @@ function findSalesProductIdByItem(item: any, detailPosting: any, posting: any): 
   return ''
 }
 
-function findSalesFinancialProduct(item: any, detailPosting: any, posting: any): any {
-  const productId = findSalesProductIdByItem(item, detailPosting, posting)
+function findSalesProductIdByItem(item: any, detailPosting: any, posting: any): string {
+  return findSalesProductIdByItemInSources(item, [detailPosting, posting])
+}
+
+function findMatchingSalesItemInSource(item: any, source: any): any {
+  const directProductId = normalizeTextValue(pickFirstPresent(item, ['product_id', 'productId']))
   const offerId = normalizeTextValue(pickFirstPresent(item, ['offer_id', 'offerId', 'article']))
   const sku = normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
 
-  for (const source of [detailPosting, posting]) {
+  for (const candidate of extractPostingItems(source)) {
+    const candidateProductId = normalizeTextValue(pickFirstPresent(candidate, ['product_id', 'productId']))
+    if (directProductId && candidateProductId && candidateProductId === directProductId) return candidate
+
+    const candidateOfferId = normalizeTextValue(pickFirstPresent(candidate, ['offer_id', 'offerId', 'article']))
+    if (offerId && candidateOfferId && candidateOfferId === offerId) return candidate
+
+    const candidateSku = normalizeTextValue(pickFirstPresent(candidate, ['sku', 'sku_id', 'id']))
+    if (sku && candidateSku && candidateSku === sku) return candidate
+  }
+
+  return null
+}
+
+function findSalesFinancialProductInSources(item: any, sources: any[]): any {
+  const productId = findSalesProductIdByItemInSources(item, sources)
+  const offerId = normalizeTextValue(pickFirstPresent(item, ['offer_id', 'offerId', 'article']))
+  const sku = normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
+
+  for (const source of sources) {
     const financialProducts = extractFinancialProducts(source)
     if (financialProducts.length === 0) continue
 
@@ -309,6 +349,10 @@ function findSalesFinancialProduct(item: any, detailPosting: any, posting: any):
   }
 
   return null
+}
+
+function findSalesFinancialProduct(item: any, detailPosting: any, posting: any): any {
+  return findSalesFinancialProductInSources(item, [detailPosting, posting])
 }
 
 function resolveSalesItemPriceValue(item: any): number | '' {
@@ -967,4 +1011,85 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
     if (aPosting !== bPosting) return bPosting.localeCompare(aPosting)
     return String(b?.sku ?? '').localeCompare(String(a?.sku ?? ''))
   })
+}
+
+export function buildSalesPaidByCustomerTrace(
+  payloads: SalesPayloadEnvelope[],
+  postingDetailsByKey?: Map<string, any>,
+  rows?: SalesRow[],
+): SalesPaidByCustomerTrace {
+  const postingKeys = new Set<string>()
+  const postingsWithDetail = new Set<string>()
+  let totalItemCount = 0
+  let listItemDirectValueCount = 0
+  let listFinancialValueCount = 0
+  let detailItemDirectValueCount = 0
+  let detailFinancialValueCount = 0
+
+  for (const envelope of payloads) {
+    const endpointKind = normalizeSalesEndpointName(envelope.endpoint)
+    if (endpointKind !== 'FBS' && endpointKind !== 'FBO') continue
+
+    for (const posting of extractPostingsFromPayload(envelope.payload)) {
+      const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
+      if (!postingNumber) continue
+
+      const postingKey = getSalesPostingDetailsKey(endpointKind, postingNumber)
+      postingKeys.add(postingKey)
+      const detailPosting = postingDetailsByKey?.get(postingKey) ?? null
+      if (detailPosting) postingsWithDetail.add(postingKey)
+
+      for (const item of extractPostingItems(posting)) {
+        totalItemCount += 1
+
+        const listDirectValue = normalizeNumberValue(pickFirstPresent(item, ['client_price', 'clientPrice', 'paid_by_customer', 'paidByCustomer']))
+        if (listDirectValue !== '') listItemDirectValueCount += 1
+
+        const listFinancialProduct = findSalesFinancialProductInSources(item, [posting])
+        const listFinancialValue = normalizeNumberValue(pickFirstPresent(listFinancialProduct, ['client_price', 'clientPrice']))
+        if (listFinancialValue !== '') listFinancialValueCount += 1
+
+        if (detailPosting) {
+          const detailItem = findMatchingSalesItemInSource(item, detailPosting)
+          const detailDirectValue = normalizeNumberValue(pickFirstPresent(detailItem, ['client_price', 'clientPrice', 'paid_by_customer', 'paidByCustomer']))
+          if (detailDirectValue !== '') detailItemDirectValueCount += 1
+
+          const detailFinancialProduct = findSalesFinancialProductInSources(item, [detailPosting])
+          const detailFinancialValue = normalizeNumberValue(pickFirstPresent(detailFinancialProduct, ['client_price', 'clientPrice']))
+          if (detailFinancialValue !== '') detailFinancialValueCount += 1
+        }
+      }
+    }
+  }
+
+  const finalRows = Array.isArray(rows) ? rows : []
+  const rowsWithPaid = finalRows.filter((row) => normalizeNumberValue(row?.paid_by_customer) !== '')
+  const rowsWithoutPaid = finalRows.filter((row) => normalizeNumberValue(row?.paid_by_customer) === '')
+  const uniqueMissingPostingNumbers = Array.from(new Set(
+    rowsWithoutPaid
+      .map((row) => normalizeTextValue(row?.posting_number))
+      .filter(Boolean),
+  ))
+
+  const countRowsWithPaidByModel = (modelRaw: string): number => {
+    const model = normalizeTextValue(modelRaw).toUpperCase()
+    return rowsWithPaid.filter((row) => normalizeTextValue(row?.delivery_model).toUpperCase() === model).length
+  }
+
+  return {
+    totalPostingCount: postingKeys.size,
+    totalItemCount,
+    postingsWithDetailCount: postingsWithDetail.size,
+    listItemDirectValueCount,
+    listFinancialValueCount,
+    detailItemDirectValueCount,
+    detailFinancialValueCount,
+    finalRowsCount: finalRows.length,
+    finalRowsWithPaidByCustomer: rowsWithPaid.length,
+    finalRowsWithoutPaidByCustomer: rowsWithoutPaid.length,
+    fbsRowsWithPaidByCustomer: countRowsWithPaidByModel('FBS'),
+    fboRowsWithPaidByCustomer: countRowsWithPaidByModel('FBO'),
+    rfbsRowsWithPaidByCustomer: rowsWithPaid.filter((row) => normalizeTextValue(row?.delivery_model) === 'rFBS').length,
+    missingPostingNumbers: uniqueMissingPostingNumbers.slice(0, 10),
+  }
 }
