@@ -5,6 +5,15 @@ import { ensurePersistentStorageReady, getPersistentDbPath } from './paths'
 
 let fboDb: Database.Database | null = null
 
+export type FboPostingsReportRow = {
+  posting_number: string
+  order_number?: string | null
+  delivery_schema?: string | null
+  shipment_date?: string | null
+  delivery_date?: string | null
+  raw_row?: Record<string, string> | null
+}
+
 function ensurePostingStateEventsSchema(conn: Database.Database) {
   const columns = conn.prepare("PRAGMA table_info('posting_state_events')").all() as Array<{ name?: string }>|null
   const names = new Set((columns ?? []).map((row) => String(row?.name ?? '').trim()).filter(Boolean))
@@ -72,6 +81,20 @@ function db(): Database.Database {
       PRIMARY KEY (store_client_id, period_key, posting_number, event_key)
     );
     CREATE INDEX IF NOT EXISTS idx_posting_state_events_lookup ON posting_state_events(store_client_id, period_key, posting_number, event_type, new_state, changed_state_date);
+
+    CREATE TABLE IF NOT EXISTS fbo_postings_report (
+      store_client_id TEXT NOT NULL,
+      period_key TEXT NOT NULL DEFAULT '',
+      posting_number TEXT NOT NULL,
+      order_number TEXT NULL,
+      delivery_schema TEXT NULL,
+      shipment_date TEXT NULL,
+      delivery_date TEXT NULL,
+      raw_row_json TEXT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (store_client_id, period_key, posting_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fbo_postings_report_lookup ON fbo_postings_report(store_client_id, period_key, posting_number, shipment_date);
   `)
   ensurePostingStateEventsSchema(fboDb)
   return fboDb
@@ -192,6 +215,31 @@ function countBySql(conn: Database.Database, sql: string, ...params: any[]): num
   return Number(row?.cnt ?? 0)
 }
 
+function safeJsonStringify(value: unknown): string | null {
+  if (value == null) return null
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return null
+  }
+}
+
+function buildFboReportShipmentDateMap(rows: FboPostingsReportRow[] | null | undefined): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const deliverySchema = text(row?.delivery_schema).toLowerCase().replace(/[^a-z]/g, '')
+    if (deliverySchema && deliverySchema !== 'fbo') continue
+
+    const postingNumber = text(row?.posting_number)
+    const shipmentDate = dateText(row?.shipment_date)
+    if (!postingNumber || !shipmentDate) continue
+
+    const prev = text(out.get(postingNumber))
+    if (!prev || shipmentDate > prev) out.set(postingNumber, shipmentDate)
+  }
+  return out
+}
+
 function getPersistedShipmentDateForPosting(storeClientId: string, postingNumber: string, periodKey: string): string {
   const row = db().prepare(`
     SELECT MAX(changed_state_date) AS shipment_date
@@ -259,6 +307,7 @@ export function buildAndPersistFboSalesSnapshot(args: {
   periodKey?: string | null
   fboPayloads: SalesPayloadEnvelope[]
   postingDetailsByKey: Map<string, any>
+  reportRows?: FboPostingsReportRow[] | null
   fetchedAt?: string
 }) {
   const storeClientId = text(args.storeClientId)
@@ -287,6 +336,7 @@ export function buildAndPersistFboSalesSnapshot(args: {
   }
   const periodKey = text(args.periodKey)
   const fetchedAt = text(args.fetchedAt) || new Date().toISOString()
+  const reportShipmentDateByPosting = buildFboReportShipmentDateMap(args.reportRows ?? [])
   const orderPostings = new Map<string, Set<string>>()
   const postingRows = new Map<string, any>()
   const itemRows = new Map<string, any>()
@@ -322,7 +372,8 @@ export function buildAndPersistFboSalesSnapshot(args: {
       const postingNumber = postingNumberOf(detail) || basePostingNumber
       const orderId = orderIdOf(detail) || orderIdOf(posting)
       const fallback = orderId ? Array.from(orderPostings.get(orderId) ?? []).filter((v) => v !== postingNumber) : []
-      const shipmentDate = shipmentDateOf(detail, posting) || getPersistedShipmentDateForPosting(storeClientId, postingNumber, periodKey)
+      const reportShipmentDate = text(reportShipmentDateByPosting.get(postingNumber) ?? reportShipmentDateByPosting.get(basePostingNumber) ?? '')
+      const shipmentDate = reportShipmentDate || shipmentDateOf(detail, posting) || getPersistedShipmentDateForPosting(storeClientId, postingNumber, periodKey)
       const stateEvents = collectSalesStateEvents(detail, posting)
       const shipmentTransferEvents = stateEvents.filter((event) => (
         text(event?.event_type) === FBO_STATE_CHANGED_EVENT_TYPE
@@ -492,6 +543,88 @@ export function buildAndPersistFboSalesSnapshot(args: {
       shipmentTransferEventCount: persistedShipmentTransferEventCount,
     },
   }
+}
+
+
+export function persistFboPostingsReport(args: {
+  storeClientId: string
+  periodKey?: string | null
+  rows: FboPostingsReportRow[]
+  fetchedAt?: string
+}) {
+  const storeClientId = text(args.storeClientId)
+  if (!storeClientId) {
+    return { rowsCount: 0, shipmentDateCount: 0 }
+  }
+
+  const periodKey = text(args.periodKey)
+  const fetchedAt = text(args.fetchedAt) || new Date().toISOString()
+  const rows = Array.isArray(args.rows) ? args.rows : []
+  const normalizedRows = new Map<string, any>()
+
+  for (const rawRow of rows) {
+    const postingNumber = text(rawRow?.posting_number)
+    if (!postingNumber) continue
+
+    const deliverySchemaRaw = text(rawRow?.delivery_schema)
+    const deliverySchema = deliverySchemaRaw.toLowerCase().replace(/[^a-z]/g, '')
+    if (deliverySchema && deliverySchema !== 'fbo') continue
+
+    const shipmentDate = dateText(rawRow?.shipment_date)
+    const deliveryDate = dateText(rawRow?.delivery_date)
+    const prev = normalizedRows.get(postingNumber)
+    if (prev && text(prev.shipment_date) && (!shipmentDate || text(prev.shipment_date) >= shipmentDate)) continue
+
+    normalizedRows.set(postingNumber, {
+      store_client_id: storeClientId,
+      period_key: periodKey,
+      posting_number: postingNumber,
+      order_number: text(rawRow?.order_number) || null,
+      delivery_schema: deliverySchemaRaw || 'FBO',
+      shipment_date: shipmentDate || null,
+      delivery_date: deliveryDate || null,
+      raw_row_json: safeJsonStringify(rawRow?.raw_row ?? null),
+      updated_at: fetchedAt,
+    })
+  }
+
+  const conn = db()
+  const tx = conn.transaction(() => {
+    conn.prepare('DELETE FROM fbo_postings_report WHERE store_client_id = ? AND period_key = ?').run(storeClientId, periodKey)
+
+    const insertRow = conn.prepare(`
+      INSERT INTO fbo_postings_report (
+        store_client_id, period_key, posting_number, order_number, delivery_schema,
+        shipment_date, delivery_date, raw_row_json, updated_at
+      ) VALUES (
+        @store_client_id, @period_key, @posting_number, @order_number, @delivery_schema,
+        @shipment_date, @delivery_date, @raw_row_json, @updated_at
+      )
+    `)
+
+    for (const row of normalizedRows.values()) insertRow.run(row)
+  })
+  tx()
+
+  const rowsCount = countBySql(
+    conn,
+    'SELECT COUNT(*) AS cnt FROM fbo_postings_report WHERE store_client_id = ? AND period_key = ?',
+    storeClientId,
+    periodKey,
+  )
+  const shipmentDateCount = countBySql(
+    conn,
+    `SELECT COUNT(*) AS cnt
+       FROM fbo_postings_report
+      WHERE store_client_id = ?
+        AND period_key = ?
+        AND shipment_date IS NOT NULL
+        AND shipment_date <> ''`,
+    storeClientId,
+    periodKey,
+  )
+
+  return { rowsCount, shipmentDateCount }
 }
 
 
