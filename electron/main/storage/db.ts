@@ -604,9 +604,7 @@ export function dbSaveDatasetSnapshot(args: {
   let rowsJson = '[]'
   let rowsCount = 0
   try {
-    const allRows = Array.isArray(args.rows) ? args.rows : []
-    const MAX_ROWS = dataset === 'sales' ? 5000 : 20000
-    const rows = allRows.length > MAX_ROWS ? allRows.slice(0, MAX_ROWS) : allRows
+    const rows = Array.isArray(args.rows) ? args.rows : []
     rowsJson = JSON.stringify(rows)
     rowsCount = rows.length
   } catch {
