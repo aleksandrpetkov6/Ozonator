@@ -459,6 +459,16 @@ function parseJsonTextSafe(text: string | null | undefined) {
 
 type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'order_number' | 'delivery_schema' | 'shipment_date' | 'delivery_date' | 'sku' | 'offer_id' | 'product_name' | 'price' | 'quantity' | 'paid_by_customer' | 'raw_row'>
 
+function normalizeSalesShipmentReportRawRow(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!key) continue
+    out[String(key)] = normalizeTextValue(entry)
+  }
+  return out
+}
+
 function normalizeDeliveryModelKey(value: unknown): string {
   const raw = normalizeTextValue(value).toLowerCase().replace(/[^a-z]/g, '')
   if (!raw) return ''
@@ -516,7 +526,7 @@ function buildSalesShipmentReportRowsFromSnapshotMap(
       price: typeof row?.price === 'number' ? row.price : '',
       quantity: typeof row?.quantity === 'number' ? row.quantity : '',
       paid_by_customer: typeof row?.paid_by_customer === 'number' ? row.paid_by_customer : '',
-      raw_row: row?.raw_row && typeof row.raw_row === 'object' ? row.raw_row : {},
+      raw_row: normalizeSalesShipmentReportRawRow(row?.raw_row),
     }))
     .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number))
 }
@@ -1221,7 +1231,7 @@ export async function refreshSalesRawSnapshotFromApi(
           price: typeof row?.price === 'number' ? row.price : '',
           quantity: typeof row?.quantity === 'number' ? row.quantity : '',
           paid_by_customer: typeof row?.paid_by_customer === 'number' ? row.paid_by_customer : '',
-          raw_row: row?.raw_row && typeof row.raw_row === 'object' ? row.raw_row : {},
+          raw_row: normalizeSalesShipmentReportRawRow(row?.raw_row),
         }))
         .filter((row) => row.posting_number)
 
