@@ -24,6 +24,7 @@ export type GridRow = {
   related_postings?: string | null
   delivery_model?: string | null
   shipment_date?: string | null
+  shipment_date_source?: string | null
   status?: string | null
   status_details?: string | null
   carrier_status_details?: string | null
@@ -180,6 +181,11 @@ function normalizeShipmentDateForUi(row: GridRow, nowMs: number): string {
 
   const shipmentTs = toSortTimestamp(raw)
   if (shipmentTs == null) return ''
+
+  const model = toText(row.delivery_model).trim().toLowerCase()
+  const shipmentSource = toText((row as any).shipment_date_source).trim().toLowerCase()
+  const isTrustedFboShipmentDate = model === 'fbo' && shipmentSource === 'fbo_local_db'
+  if (isTrustedFboShipmentDate) return raw
 
   if (shipmentTs > (nowMs + 60_000)) return ''
   if (!hasConfirmedShipmentSignal(row)) return ''
