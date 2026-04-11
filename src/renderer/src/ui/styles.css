@@ -1379,3 +1379,163 @@ button:disabled{
 .windowTitlebarStorePlaceholder{
   opacity: 0;
 }
+
+.logsTableWrap,
+.logsTableWrap .tableWrapX,
+.logsTableWrap .tableWrapY{
+  min-width: 0;
+}
+
+.logsTable{
+  width: 100%;
+  table-layout: fixed;
+}
+
+.logsColId{ width: 56px; }
+.logsColType{ width: 180px; }
+.logsColStatus{ width: 92px; }
+.logsColStart{ width: 132px; }
+.logsColFinish{ width: 132px; }
+.logsColDetails{ width: auto; }
+.logsColError{ width: 126px; }
+
+.logsTable td{
+  vertical-align: top;
+}
+
+.logCellWrap{
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.25;
+}
+
+.logTypeCell{
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.logTypeText{
+  min-width: 0;
+  color: rgba(28,28,30,.88);
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.logTypeTextExpandable,
+.logActionText{
+  color: rgba(10,80,180,.96);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.logTypeTextExpandable:hover,
+.logActionText:hover{
+  color: rgba(10,90,200,1);
+}
+
+.logTypeTextExpandable:focus-visible,
+.logActionText:focus-visible{
+  outline: 2px solid rgba(10,132,255,.35);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.logTypeTextExpandable.expanded{
+  font-weight: 600;
+}
+
+.logDetailsRow td{
+  padding: 0;
+  background: rgba(247,249,252,.96);
+}
+
+.logDetailsPanel{
+  padding: 10px 12px 12px;
+  border-top: 1px solid rgba(60,60,67,.10);
+}
+
+.logDetailsToolbar{
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.logDetailsTitle{
+  font-weight: 700;
+  color: rgba(28,28,30,.88);
+}
+
+.logDetailsSummary{
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: rgba(60,60,67,.82);
+}
+
+.logDetailsSummary > div{
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.logDetailsSummary span{
+  font-weight: 700;
+  color: rgba(28,28,30,.82);
+}
+
+.logTraceList{
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.logTraceItem{
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(60,60,67,.10);
+  background: rgba(255,255,255,.88);
+}
+
+.logTraceMeta{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.logTraceTime,
+.logTraceId{
+  color: rgba(60,60,67,.78);
+}
+
+.logTraceText,
+.logTraceError{
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.3;
+}
+
+.logTraceError{
+  margin-top: 4px;
+  color: var(--red);
+}
+
+@media (max-width: 980px){
+  .logDetailsSummary{
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
