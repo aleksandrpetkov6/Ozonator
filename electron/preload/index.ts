@@ -154,4 +154,6 @@ contextBridge.exposeInMainWorld('api', {
     if (resp) return resp
     return ipcRenderer.invoke('data:clearLogs')
   },
+
+  saveLogReportToDesktop: (fileName: string, content: string) => ipcRenderer.invoke('logs:saveReportToDesktop', { fileName, content }),
 })
