@@ -30,6 +30,9 @@ export type GridRow = {
   carrier_status_details?: string | null
   delivery_date?: string | null
   delivery_cluster?: string | null
+  price?: number | string | null
+  paid_by_customer?: number | string | null
+  quantity?: number | string | null
   warehouse_id?: number | null
   warehouse_name?: string | null
   placement_zone?: string | null
@@ -68,6 +71,12 @@ export function toText(v: unknown): string {
   if (typeof v === 'string') return v
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   try { return JSON.stringify(v) } catch { return String(v) }
+}
+
+function toSortNumber(value: unknown): number | '' {
+  if (value == null || value === '') return ''
+  const num = Number(value)
+  return Number.isFinite(num) ? num : ''
 }
 
 export function visibilityReasonText(v: unknown): string {
@@ -333,6 +342,9 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
       asMainCol({ id: 'posting_number', title: 'Номер отправления', w: 220, visible: true }),
       asMainCol({ id: 'related_postings', title: 'Связанные отправления', w: 300, visible: true }),
       asMainCol({ id: 'delivery_model', title: 'Метод доставки', w: 150, visible: true }),
+      asMainCol({ id: 'price', title: 'Ваша цена', w: 130, visible: true, getSortValue: (row) => toSortNumber(row.price) }),
+      asMainCol({ id: 'paid_by_customer', title: 'Оплачено покупателем', w: 180, visible: true, getSortValue: (row) => toSortNumber(row.paid_by_customer) }),
+      asMainCol({ id: 'quantity', title: 'Количество', w: 120, visible: true, getSortValue: (row) => toSortNumber(row.quantity) }),
       asMainCol({ id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.shipment_date) ?? '' }),
       asMainCol({ id: 'status', title: 'Статус', w: 180, visible: true }),
       asMainCol({ id: 'status_details', title: 'Детали статуса', w: 260, visible: true }),
