@@ -1,24 +1,22 @@
---- a/electron/main/storage/fbo-sales.ts
-+++ b/electron/main/storage/fbo-sales.ts
+--- a/tsconfig.json
++++ b/tsconfig.json
 @@
--import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPushShipmentEvents } from './storage/fbo-sales.ts';
-+// NOTE: The `persistFboPushShipmentEvents` function was previously defined
-+// internally but never exported. The `local-datasets.ts` module imports it
-+// directly, causing a build failure. Export the function to match the
-+// expected public API.
-+
-+export { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPushShipmentEvents };
-+
-+// The rest of the file remains unchanged. If the function is defined later
-+// in this file, it will now be exported correctly. If it is defined in a
-+// different module, adjust the import path accordingly.
-+
-+// eslint-disable-next-line @typescript-eslint/no-unused-vars
-+export function persistFboPushShipmentEvents(...args: any[]): any {
-+  // Implementation placeholder – the actual logic is defined elsewhere in
-+  // this module. This export ensures that the symbol is available to
-+  // consumers such as `local-datasets.ts`.
-+  // The real implementation should be moved here if it is not already.
-+  return;
-+}
-*** End of File ***
+   "compilerOptions": {
+     "target": "ES2020",
+     "module": "ESNext",
+     "moduleResolution": "Node",
+     "strict": true,
+     "esModuleInterop": true,
+     "forceConsistentCasingInFileNames": true,
+     "skipLibCheck": true
+   },
+   "include": [
+     "src",
+     "electron",
+     "tests"
+   ],
+   "exclude": [
+     "node_modules",
+     "dist"
+   ]
+ }
