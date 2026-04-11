@@ -144,6 +144,9 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
         if (typeof m?.listFinancialValueCount === 'number') parts.push(`list financial: ${m.listFinancialValueCount}`)
         if (typeof m?.detailItemDirectValueCount === 'number') parts.push(`detail item: ${m.detailItemDirectValueCount}`)
         if (typeof m?.detailFinancialValueCount === 'number') parts.push(`detail financial: ${m.detailFinancialValueCount}`)
+        if (typeof m?.detailWithFinancialDataObjectCount === 'number') parts.push(`detail financial_data obj: ${m.detailWithFinancialDataObjectCount}`)
+        if (typeof m?.detailWithFinancialProductsArrayCount === 'number') parts.push(`detail financial_data.products arr: ${m.detailWithFinancialProductsArrayCount}`)
+        if (typeof m?.detailWithNonEmptyFinancialProductsCount === 'number') parts.push(`detail financial products > 0: ${m.detailWithNonEmptyFinancialProductsCount}`)
         if (typeof m?.finalRowsCount === 'number') parts.push(`строк продаж: ${m.finalRowsCount}`)
         if (typeof m?.finalRowsWithPaidByCustomer === 'number') parts.push(`с оплачено покупателем: ${m.finalRowsWithPaidByCustomer}`)
         if (typeof m?.finalRowsWithoutPaidByCustomer === 'number') parts.push(`без оплачено покупателем: ${m.finalRowsWithoutPaidByCustomer}`)
@@ -152,6 +155,8 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
         if (typeof m?.rfbsRowsWithPaidByCustomer === 'number') parts.push(`rFBS заполнено: ${m.rfbsRowsWithPaidByCustomer}`)
         const missingPaid = Array.isArray(m?.missingPostingNumbers) ? m.missingPostingNumbers : []
         if (missingPaid.length > 0) parts.push(`пример без значения: ${missingPaid.slice(0, 5).join(', ')}`)
+        const detailShapeSamples = Array.isArray(m?.detailShapeSamples) ? m.detailShapeSamples : []
+        if (detailShapeSamples.length > 0) parts.push(`shape sample: ${detailShapeSamples.slice(0, 3).join(' || ')}`)
       }
       return parts.length ? parts.join(', ') : meta
     }
