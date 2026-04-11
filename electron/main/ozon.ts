@@ -1162,7 +1162,7 @@ export async function ozonProductList(secrets: Secrets, opts: { lastId: string; 
       NaN
 
     return {
-      offer_id: String(x.offer_id ?? ''),
+      offer_id: String(x.offer_id ?? x.offerId ?? ''),
       product_id: Number.isFinite(pidNum) ? pidNum : undefined,
       sku: (typeof x.sku === 'string' || typeof x.sku === 'number') ? String(x.sku) : undefined,
       archived: (typeof x.archived === 'boolean') ? x.archived : undefined,
@@ -1212,7 +1212,7 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
     const items = await fetchInfoChunk(ids)
 
     for (const x of items) {
-      const pid = Number(x.id ?? x.product_id)
+      const pid = Number(x.id ?? x.product_id ?? (x as any).productId)
       if (!pid) continue
 
       const barcode = (x.barcode && String(x.barcode)) || (Array.isArray(x.barcodes) && x.barcodes[0]) || null
@@ -1241,10 +1241,10 @@ export async function ozonProductInfoList(secrets: Secrets, productIds: number[]
 
       out.push({
         product_id: pid,
-        offer_id: String(x.offer_id ?? ''),
+        offer_id: String(x.offer_id ?? (x as any).offerId ?? ''),
         sku: skuFields.ozon_sku ?? (x.sku != null ? String(x.sku) : null),
         ozon_sku: skuFields.ozon_sku ?? (x.sku != null ? String(x.sku) : null),
-        seller_sku: skuFields.seller_sku ?? String(x.offer_id ?? ''),
+        seller_sku: skuFields.seller_sku ?? String(x.offer_id ?? (x as any).offerId ?? ''),
         fbo_sku: skuFields.fbo_sku,
         fbs_sku: skuFields.fbs_sku,
         barcode,

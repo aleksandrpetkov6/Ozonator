@@ -697,7 +697,11 @@ if (next === lastId) break
 lastId = next
 if (typeof totalMaybe === 'number' && total >= totalMaybe) break
 }
-dbDeleteProductsMissingForStore(secrets.clientId, Array.from(incomingOfferIds))
+const incomingOfferIdsList = Array.from(incomingOfferIds)
+const shouldPruneMissingProducts = incomingOfferIdsList.length > 0 || existingOfferIds.size === 0
+if (shouldPruneMissingProducts) {
+dbDeleteProductsMissingForStore(secrets.clientId, incomingOfferIdsList)
+}
 const syncedCount = dbCountProducts(secrets.clientId)
 let placementRowsCount = 0
 let placementSyncError: string | null = null
