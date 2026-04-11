@@ -1396,18 +1396,18 @@ export function getLocalDatasetRows(
     }
   }
 
+  if (dataset === 'products') {
+    const rows = dbGetProducts(storeClientId ?? null)
+    persistDatasetSnapshot({ storeClientId, dataset, rows, sourceKind: 'db-table' })
+    return rows
+  }
+
   const fromSnapshot = dbGetDatasetSnapshotRows({ storeClientId: storeClientId ?? null, dataset, scopeKey })
   if (Array.isArray(fromSnapshot)) {
     if (dataset === 'sales') {
       return filterSalesRowsStrictByPeriod(fromSnapshot, options?.period ?? null)
     }
     return fromSnapshot
-  }
-
-  if (dataset === 'products') {
-    const rows = dbGetProducts(storeClientId ?? null)
-    persistDatasetSnapshot({ storeClientId, dataset, rows, sourceKind: 'db-table' })
-    return rows
   }
 
   if (dataset === 'stocks') {
