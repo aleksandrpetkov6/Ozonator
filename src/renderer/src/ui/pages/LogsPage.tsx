@@ -80,6 +80,15 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
       if (typeof m?.fboRowsWithShipmentDate === 'number') parts.push(`строк с датой: ${m.fboRowsWithShipmentDate}`)
       if (typeof m?.salesRowsCount === 'number') parts.push(`строк продаж: ${m.salesRowsCount}`)
       if (typeof m?.reportRowsCount === 'number') parts.push(`строк отчёта: ${m.reportRowsCount}`)
+      if (typeof m?.reportStrategy === 'string' && m.reportStrategy) {
+        const strategyLabel = m.reportStrategy === 'chunked-1d'
+          ? 'отчёт по дням'
+          : (m.reportStrategy === 'chunked-7d' ? 'отчёт по неделям' : 'один отчёт')
+        parts.push(`стратегия: ${strategyLabel}`)
+      }
+      if (typeof m?.reportSegmentsTotal === 'number') parts.push(`сегментов: ${m.reportSegmentsTotal}`)
+      if (typeof m?.reportSegmentsSucceeded === 'number') parts.push(`успешно: ${m.reportSegmentsSucceeded}`)
+      if (typeof m?.reportSegmentsFailed === 'number') parts.push(`ошибок сегм.: ${m.reportSegmentsFailed}`)
       if (typeof m?.incomingEventsCount === 'number') parts.push(`push событий: ${m.incomingEventsCount}`)
       if (typeof m?.acceptedPushEventCount === 'number') parts.push(`push принято: ${m.acceptedPushEventCount}`)
       const samplePostingNumbers = Array.isArray(m?.samplePostingNumbers) ? m.samplePostingNumbers : []
@@ -106,6 +115,19 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
         if (typeof m.persisted?.shipmentTransferEventCount === 'number') parts.push(`event в БД: ${m.persisted.shipmentTransferEventCount}`)
         if (typeof m.persisted?.shipmentDateCount === 'number') parts.push(`дат в БД: ${m.persisted.shipmentDateCount}`)
       }
+      const failedSegments = Array.isArray(m?.failedSegmentSample) ? m.failedSegmentSample : []
+      if (failedSegments.length > 0) {
+        const sample = failedSegments
+          .slice(0, 2)
+          .map((item: any) => {
+            const label = typeof item?.label === 'string' ? item.label : ''
+            const error = typeof item?.error === 'string' ? item.error : ''
+            return [label, error].filter(Boolean).join(' → ')
+          })
+          .filter(Boolean)
+        if (sample.length > 0) parts.push(`fail: ${sample.join(' | ')}`)
+      }
+      if (typeof m?.reportBuildError === 'string' && m.reportBuildError) parts.push(`ошибка отчёта: ${m.reportBuildError}`)
       const missing = Array.isArray(m?.trace?.missingShipmentDatePostingNumbers) ? m.trace.missingShipmentDatePostingNumbers : []
       if (missing.length > 0) parts.push(`без даты: ${missing.slice(0, 3).join(', ')}`)
       const missingDetails = Array.isArray(m?.trace?.missingDetailPostingNumbers) ? m.trace.missingDetailPostingNumbers : []
