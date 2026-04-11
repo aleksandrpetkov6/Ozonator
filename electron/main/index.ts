@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, safeStorage, net, dialog } from 'electron'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { appendFileSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMarkers, dbGetProducts, dbGetSyncLog, dbClearLogs, dbLogFinish, dbLogStart, dbUpsertProducts, dbDeleteProductsMissingForStore, dbCountProducts, dbReplaceProductPlacementsForStore, dbGetGridColumns, dbSaveGridColumns, dbRecordApiRawResponse, dbGetAppSetting, dbSetAppSetting } from './storage/db'
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
@@ -33,6 +33,21 @@ app.quit()
 
 function delay(ms: number) {
 return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function buildUniqueDesktopFilePath(fileName: string): string {
+  const desktopDir = app.getPath('desktop')
+  const dotIndex = fileName.lastIndexOf('.')
+  const baseName = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName
+  const extension = dotIndex > 0 ? fileName.slice(dotIndex) : ''
+
+  let attempt = 0
+  let candidate = join(desktopDir, fileName)
+  while (existsSync(candidate)) {
+    attempt += 1
+    candidate = join(desktopDir, `${baseName} (${attempt})${extension}`)
+  }
+  return candidate
 }
 
 function getOrCreateLocalServerRuntimeConfig() {
@@ -1101,5 +1116,20 @@ ipcMain.handle('data:clearLogs', async () => {
     return await handleClearLogs()
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) }
+  }
+})
+
+
+ipcMain.handle('logs:saveReportToDesktop', async (_e, args?: { fileName?: string; content?: string }) => {
+  try {
+    const fileName = String(args?.fileName ?? '').trim()
+    const content = typeof args?.content === 'string' ? args.content : ''
+    if (!fileName) return { ok: false, error: 'EMPTY_FILE_NAME' }
+
+    const filePath = buildUniqueDesktopFilePath(fileName)
+    writeFileSync(filePath, content, 'utf8')
+    return { ok: true, path: filePath }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e ?? 'SAVE_REPORT_FAILED') }
   }
 })
