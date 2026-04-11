@@ -34,6 +34,9 @@ export type SalesPaidByCustomerTrace = {
   listFinancialValueCount: number
   detailItemDirectValueCount: number
   detailFinancialValueCount: number
+  detailWithFinancialDataObjectCount: number
+  detailWithFinancialProductsArrayCount: number
+  detailWithNonEmptyFinancialProductsCount: number
   finalRowsCount: number
   finalRowsWithPaidByCustomer: number
   finalRowsWithoutPaidByCustomer: number
@@ -41,6 +44,7 @@ export type SalesPaidByCustomerTrace = {
   fboRowsWithPaidByCustomer: number
   rfbsRowsWithPaidByCustomer: number
   missingPostingNumbers: string[]
+  detailShapeSamples: string[]
 }
 
 function chunk<T>(arr: T[], size: number): T[][] {
@@ -273,6 +277,30 @@ function extractPostingItems(source: any): any[] {
 function extractFinancialProducts(source: any): any[] {
   const direct = pickFirstPresent(source, ['financial_data.products', 'result.financial_data.products'])
   return Array.isArray(direct) ? direct : []
+}
+
+function sampleObjectKeys(value: any, limit = 8): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  return Object.keys(value).slice(0, limit)
+}
+
+function summarizePaidByCustomerDetailShape(postingNumber: string, detailPosting: any): string {
+  const rootKeys = sampleObjectKeys(detailPosting)
+  const financialData = pickFirstPresent(detailPosting, ['financial_data', 'result.financial_data'])
+  const financialKeys = sampleObjectKeys(financialData)
+  const financialProducts = extractFinancialProducts(detailPosting)
+  const itemSample = extractPostingItems(detailPosting)[0] ?? null
+  const financialProductSample = financialProducts[0] ?? null
+  const parts = [
+    postingNumber,
+    `root=[${rootKeys.join('|') || '-'}]`,
+    `financial=${financialData && typeof financialData === 'object' ? 'yes' : 'no'}`,
+    `financialKeys=[${financialKeys.join('|') || '-'}]`,
+    `financialProducts=${financialProducts.length}`,
+    `itemKeys=[${sampleObjectKeys(itemSample).join('|') || '-'}]`,
+    `finProductKeys=[${sampleObjectKeys(financialProductSample).join('|') || '-'}]`,
+  ]
+  return parts.join(', ')
 }
 
 function findSalesProductIdByItemInSources(item: any, sources: any[]): string {
@@ -1020,11 +1048,16 @@ export function buildSalesPaidByCustomerTrace(
 ): SalesPaidByCustomerTrace {
   const postingKeys = new Set<string>()
   const postingsWithDetail = new Set<string>()
+  const sampledDetailKeys = new Set<string>()
+  const detailShapeSamples: string[] = []
   let totalItemCount = 0
   let listItemDirectValueCount = 0
   let listFinancialValueCount = 0
   let detailItemDirectValueCount = 0
   let detailFinancialValueCount = 0
+  let detailWithFinancialDataObjectCount = 0
+  let detailWithFinancialProductsArrayCount = 0
+  let detailWithNonEmptyFinancialProductsCount = 0
 
   for (const envelope of payloads) {
     const endpointKind = normalizeSalesEndpointName(envelope.endpoint)
@@ -1037,7 +1070,23 @@ export function buildSalesPaidByCustomerTrace(
       const postingKey = getSalesPostingDetailsKey(endpointKind, postingNumber)
       postingKeys.add(postingKey)
       const detailPosting = postingDetailsByKey?.get(postingKey) ?? null
-      if (detailPosting) postingsWithDetail.add(postingKey)
+      if (detailPosting) {
+        postingsWithDetail.add(postingKey)
+
+        const financialData = pickFirstPresent(detailPosting, ['financial_data', 'result.financial_data'])
+        if (financialData && typeof financialData === 'object') detailWithFinancialDataObjectCount += 1
+
+        const financialProductsRaw = pickFirstPresent(detailPosting, ['financial_data.products', 'result.financial_data.products'])
+        if (Array.isArray(financialProductsRaw)) detailWithFinancialProductsArrayCount += 1
+
+        const financialProducts = extractFinancialProducts(detailPosting)
+        if (financialProducts.length > 0) detailWithNonEmptyFinancialProductsCount += 1
+
+        if (detailShapeSamples.length < 5 && !sampledDetailKeys.has(postingKey)) {
+          sampledDetailKeys.add(postingKey)
+          detailShapeSamples.push(summarizePaidByCustomerDetailShape(postingNumber, detailPosting))
+        }
+      }
 
       for (const item of extractPostingItems(posting)) {
         totalItemCount += 1
@@ -1084,6 +1133,9 @@ export function buildSalesPaidByCustomerTrace(
     listFinancialValueCount,
     detailItemDirectValueCount,
     detailFinancialValueCount,
+    detailWithFinancialDataObjectCount,
+    detailWithFinancialProductsArrayCount,
+    detailWithNonEmptyFinancialProductsCount,
     finalRowsCount: finalRows.length,
     finalRowsWithPaidByCustomer: rowsWithPaid.length,
     finalRowsWithoutPaidByCustomer: rowsWithoutPaid.length,
@@ -1091,5 +1143,6 @@ export function buildSalesPaidByCustomerTrace(
     fboRowsWithPaidByCustomer: countRowsWithPaidByModel('FBO'),
     rfbsRowsWithPaidByCustomer: rowsWithPaid.filter((row) => normalizeTextValue(row?.delivery_model) === 'rFBS').length,
     missingPostingNumbers: uniqueMissingPostingNumbers.slice(0, 10),
+    detailShapeSamples,
   }
 }
