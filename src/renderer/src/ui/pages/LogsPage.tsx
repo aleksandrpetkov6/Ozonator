@@ -340,7 +340,14 @@ export default function LogsPage() {
     setExpandedIds((prev) => (prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]))
   }
 
-  function renderSortHeader(label: string, colId: LogSortCol) {
+  function handleTextAction(event: React.KeyboardEvent<HTMLElement>, action: () => void) {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    action()
+  }
+}
+
+function renderSortHeader(label: string, colId: LogSortCol) {
     const isSorted = sortState?.colId === colId
     return (
       <button
@@ -386,27 +393,22 @@ export default function LogsPage() {
                         <td><div className="logCellWrap" title={String(row.id)}>{row.id}</div></td>
                         <td>
                           <div className="logTypeCell">
-                            {expandable && (
-                              <button
-                                type="button"
-                                className="logExpandButton"
+                            {expandable ? (
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className={expanded ? 'logTypeText logTypeTextExpandable expanded' : 'logTypeText logTypeTextExpandable'}
                                 onClick={() => toggleExpanded(row.id)}
+                                onKeyDown={(event) => handleTextAction(event, () => toggleExpanded(row.id))}
                                 aria-expanded={expanded}
-                                aria-label={expanded ? 'Свернуть детали синхронизации' : 'Раскрыть детали синхронизации'}
-                                title={expanded ? 'Свернуть детали синхронизации' : 'Раскрыть детали синхронизации'}
+                                aria-label={expanded ? 'Свернуть детали синхронизации' : 'Показать детали синхронизации'}
+                                title={expanded ? 'Свернуть детали синхронизации' : 'Показать детали синхронизации'}
                               >
-                                <span className={expanded ? 'logExpandChevron expanded' : 'logExpandChevron'} aria-hidden="true">▸</span>
-                              </button>
+                                {typeRu(row.type)}
+                              </span>
+                            ) : (
+                              <span className="logTypeText" title={typeRu(row.type)}>{typeRu(row.type)}</span>
                             )}
-                            <button
-                              type="button"
-                              className={expandable ? 'logTypeButton isExpandable' : 'logTypeButton'}
-                              onClick={expandable ? () => toggleExpanded(row.id) : undefined}
-                              title={typeRu(row.type)}
-                              disabled={!expandable}
-                            >
-                              {typeRu(row.type)}
-                            </button>
                           </div>
                         </td>
                         <td><div className="logCellWrap"><span className={`statusText ${row.status ?? ''}`.trim()}>{statusRu(row.status)}</span></div></td>
@@ -422,17 +424,25 @@ export default function LogsPage() {
                             <div className="logDetailsPanel">
                               <div className="logDetailsToolbar">
                                 <div className="logDetailsTitle">Детали синхронизации</div>
-                                <button
-                                  type="button"
-                                  className="secondaryBtn"
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  className="logActionText"
                                   onClick={() => {
                                     void downloadSyncReport(group).catch((error: any) => {
                                       window.alert(error?.message ?? 'Не удалось сохранить отчёт на Рабочий стол')
                                     })
                                   }}
+                                  onKeyDown={(event) => handleTextAction(event, () => {
+                                    void downloadSyncReport(group).catch((error: any) => {
+                                      window.alert(error?.message ?? 'Не удалось сохранить отчёт на Рабочий стол')
+                                    })
+                                  })}
+                                  aria-label="Скачать отчёт по синхронизации"
+                                  title="Скачать отчёт по синхронизации"
                                 >
-                                  Скачать
-                                </button>
+                                  Скачать отчёт
+                                </span>
                               </div>
 
                               <div className="logDetailsSummary">
