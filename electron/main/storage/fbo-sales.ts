@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import type { SalesPayloadEnvelope } from '../sales-sync'
-import { collectSalesStateEvents, extractPostingsFromPayload, getSalesPostingDetailsKey } from '../sales-sync'
+import { collectSalesStateEvents, extractPostingsFromPayload, getSalesPostingDetailsKey, resolveFboShipmentDateFromSources } from '../sales-sync'
 import { ensurePersistentStorageReady, getPersistentDbPath } from './paths'
 
 let fboDb: Database.Database | null = null
@@ -205,6 +205,10 @@ function getPersistedShipmentDateForPosting(storeClientId: string, postingNumber
   return text(row?.shipment_date)
 }
 
+function shipmentDateOf(detail: any, posting: any): string {
+  return resolveFboShipmentDateFromSources(detail, posting)
+}
+
 function hasDeliveredStateOf(...sources: any[]): boolean {
   for (const source of sources) {
     const state = text(pick(source, [
@@ -250,24 +254,11 @@ function deliveryClusterOf(detail: any, posting: any): string {
   ], detail, posting))
 }
 
-function buildReportShipmentDateMap(rows: Array<{ posting_number?: string | null; shipment_date?: string | null }> | null | undefined) {
-  const out = new Map<string, string>()
-  for (const row of Array.isArray(rows) ? rows : []) {
-    const postingNumber = text((row as any)?.posting_number)
-    const shipmentDate = dateText((row as any)?.shipment_date)
-    if (!postingNumber || !shipmentDate) continue
-    const prev = out.get(postingNumber)
-    if (!prev || shipmentDate > prev) out.set(postingNumber, shipmentDate)
-  }
-  return out
-}
-
 export function buildAndPersistFboSalesSnapshot(args: {
   storeClientId: string
   periodKey?: string | null
   fboPayloads: SalesPayloadEnvelope[]
   postingDetailsByKey: Map<string, any>
-  reportRows?: Array<{ posting_number?: string | null; shipment_date?: string | null }>
   fetchedAt?: string
 }) {
   const storeClientId = text(args.storeClientId)
@@ -296,7 +287,6 @@ export function buildAndPersistFboSalesSnapshot(args: {
   }
   const periodKey = text(args.periodKey)
   const fetchedAt = text(args.fetchedAt) || new Date().toISOString()
-  const reportShipmentDateByPosting = buildReportShipmentDateMap(args.reportRows)
   const orderPostings = new Map<string, Set<string>>()
   const postingRows = new Map<string, any>()
   const itemRows = new Map<string, any>()
@@ -332,7 +322,7 @@ export function buildAndPersistFboSalesSnapshot(args: {
       const postingNumber = postingNumberOf(detail) || basePostingNumber
       const orderId = orderIdOf(detail) || orderIdOf(posting)
       const fallback = orderId ? Array.from(orderPostings.get(orderId) ?? []).filter((v) => v !== postingNumber) : []
-      const shipmentDate = text(reportShipmentDateByPosting.get(postingNumber))
+      const shipmentDate = shipmentDateOf(detail, posting) || getPersistedShipmentDateForPosting(storeClientId, postingNumber, periodKey)
       const stateEvents = collectSalesStateEvents(detail, posting)
       const shipmentTransferEvents = stateEvents.filter((event) => (
         text(event?.event_type) === FBO_STATE_CHANGED_EVENT_TYPE
@@ -581,10 +571,23 @@ export function persistFboPushShipmentEvents(args: {
       changed_state_date = excluded.changed_state_date,
       updated_at = excluded.updated_at
   `)
+  const updatePostingShipmentDate = conn.prepare(`
+    UPDATE fbo_postings
+    SET shipment_date = CASE
+          WHEN shipment_date IS NULL OR shipment_date = '' OR shipment_date < @changed_state_date THEN @changed_state_date
+          ELSE shipment_date
+        END,
+        updated_at = @updated_at
+    WHERE store_client_id = @store_client_id
+      AND posting_number = @posting_number
+  `)
 
   const tx = conn.transaction((rows: typeof normalizedEvents) => {
     for (const row of rows) {
       insertEvent.run(row)
+      if (text(row.new_state) === 'posting_transferring_to_delivery') {
+        updatePostingShipmentDate.run(row)
+      }
     }
   })
   tx(normalizedEvents)
@@ -637,7 +640,18 @@ export function mergeSalesRowsWithFboLocalDb(args: {
     SELECT
       p.posting_number,
       p.related_postings,
-      p.shipment_date,
+      COALESCE(
+        p.shipment_date,
+        (
+          SELECT MAX(e.changed_state_date)
+          FROM posting_state_events e
+          WHERE e.store_client_id = p.store_client_id
+            AND e.posting_number = p.posting_number
+            AND e.period_key IN (p.period_key, '__push__')
+            AND COALESCE(NULLIF(e.event_type, ''), 'type_state_changed') = 'type_state_changed'
+            AND COALESCE(NULLIF(e.new_state, ''), e.state) = 'posting_transferring_to_delivery'
+        )
+      ) AS shipment_date,
       p.delivery_date,
       p.delivery_cluster
     FROM fbo_postings p

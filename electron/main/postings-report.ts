@@ -45,10 +45,7 @@ function normalizePeriod(period: ReportPeriodInput | null | undefined): { from: 
   return { from, to }
 }
 
-function buildPostingsReportCreateBody(
-  period: ReportPeriodInput | null | undefined,
-  deliverySchema?: string | null,
-) {
+function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefined) {
   const normalized = normalizePeriod(period)
   const now = new Date()
   const fromDate = normalized.from
@@ -62,7 +59,7 @@ function buildPostingsReportCreateBody(
     filter: {
       processed_at_from: fromDate.toISOString(),
       processed_at_to: toDate.toISOString(),
-      delivery_schema: deliverySchema ? [String(deliverySchema).trim().toLowerCase()] : [],
+      delivery_schema: [],
       sku: [],
       cancel_reason_id: [],
       offer_id: '',
@@ -328,15 +325,7 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
 
   const orderNumber = pickRowValue(row, ['Номер заказа', 'order_number', 'order number'])
   const deliverySchema = normalizeDeliverySchema(pickRowValue(row, ['Метод доставки', 'Схема доставки', 'delivery_schema', 'delivery schema']))
-  const shipmentDateRaw = pickRowValue(row, [
-    'Фактическая дата передачи в доставку',
-    'Передан в доставку',
-    'Дата отгрузки',
-    'shipment_date_actual',
-    'shipment_date',
-    'shipment date',
-  ])
-  const shipmentDate = parseOzonLocalDateToIso(shipmentDateRaw)
+  const shipmentDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата отгрузки', 'shipment_date', 'shipment date']))
   const deliveryDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата доставки', 'delivery_date', 'delivery date']))
 
   return {
@@ -369,9 +358,8 @@ function parseSalesPostingsReportCsv(csvText: string): SalesPostingsReportRow[] 
 export async function fetchSalesPostingsReportRows(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
-  deliverySchema?: string | null,
 ): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[] }> {
-  const createResponse = await ozonReportPostingsCreate(secrets, buildPostingsReportCreateBody(period, deliverySchema))
+  const createResponse = await ozonReportPostingsCreate(secrets, buildPostingsReportCreateBody(period))
   const createResult = (createResponse && typeof createResponse === 'object' && 'result' in createResponse)
     ? (createResponse as any).result
     : createResponse
