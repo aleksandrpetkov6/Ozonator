@@ -1,7 +1,7 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
 import { extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
 import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbLogEvent, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
-import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPushShipmentEvents } from './storage/fbo-sales'
+import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPostingsReport, persistFboPushShipmentEvents } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
 import { fetchSalesPostingsReportRows, type SalesPostingsReportRow } from './postings-report'
 import type { Secrets } from './types'
@@ -416,7 +416,7 @@ function parseJsonTextSafe(text: string | null | undefined) {
 }
 
 
-type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'delivery_schema' | 'shipment_date'>
+type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'order_number' | 'delivery_schema' | 'shipment_date' | 'delivery_date' | 'raw_row'>
 
 function normalizeDeliveryModelKey(value: unknown): string {
   const raw = normalizeTextValue(value).toLowerCase().replace(/[^a-z]/g, '')
@@ -465,8 +465,11 @@ function buildSalesShipmentReportRowsFromSnapshotMap(
   return rows
     .map((row: any): SalesShipmentReportRow => ({
       posting_number: normalizeTextValue(row?.posting_number),
+      order_number: normalizeTextValue(row?.order_number),
       delivery_schema: normalizeTextValue(row?.delivery_schema),
       shipment_date: normalizeTextValue(row?.shipment_date),
+      delivery_date: normalizeTextValue(row?.delivery_date),
+      raw_row: row?.raw_row && typeof row.raw_row === 'object' ? row.raw_row : {},
     }))
     .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number && row.shipment_date))
 }
@@ -482,8 +485,8 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     const postingNumber = normalizeTextValue(row?.posting_number)
     if (!postingNumber) return row
 
-    // КС П: для FBO «Дата отгрузки» берётся только из TYPE_STATE_CHANGED/new_state=posting_transferring_to_delivery.
-    // Поэтому для FBO запрещено добирать shipment_date из CSV-отчёта.
+    // Для FBO «Дата отгрузки» теперь приходит через локальную БД из отчёта postings-report.
+    // Поэтому здесь прямое добирание FBO shipment_date из snapshot-CSV не делаем, чтобы не смешивать источники.
     if (normalizeDeliveryModelKey(row?.delivery_model) === 'fbo') return row
 
     const currentShipmentDate = normalizeTextValue(row?.shipment_date)
@@ -787,6 +790,7 @@ function persistFboLocalSnapshotFromRawCache(
   requestedPeriod: SalesPeriod | null | undefined,
   payloads: Array<{ endpoint: string; payload: any }>,
   postingDetailsByKey: Map<string, any>,
+  reportRows: SalesShipmentReportRow[] = [],
 ) {
   const normalizedStoreClientId = normalizeTextValue(storeClientId)
   if (!normalizedStoreClientId) return null
@@ -794,11 +798,21 @@ function persistFboLocalSnapshotFromRawCache(
   const fboPayloads = payloads.filter((payload) => String(payload?.endpoint ?? '').includes('/posting/fbo/'))
   if (fboPayloads.length === 0) return null
 
+  if (reportRows.length > 0) {
+    persistFboPostingsReport({
+      storeClientId: normalizedStoreClientId,
+      periodKey: buildDatasetScopeKey(requestedPeriod),
+      rows: reportRows,
+      fetchedAt: new Date().toISOString(),
+    })
+  }
+
   return buildAndPersistFboSalesSnapshot({
     storeClientId: normalizedStoreClientId,
     periodKey: buildDatasetScopeKey(requestedPeriod),
     fboPayloads,
     postingDetailsByKey,
+    reportRows,
     fetchedAt: new Date().toISOString(),
   })
 }
@@ -836,12 +850,12 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
         snapshotFboDetailCount: countPostingDetailsByKind(snapshotPostingDetailsByKey, 'FBO'),
         mergedFboDetailCount: countPostingDetailsByKind(postingDetailsByKey, 'FBO'),
         reportRowsCount: reportRows.length,
-        reportFboShipmentDateIgnored: true,
+        reportFboShipmentDateImportedToLocalDb: reportRows.length > 0,
         samplePostingNumbers: uniqueSample(fboPostingNumbers, 10),
       },
     })
 
-    const persistResult = persistFboLocalSnapshotFromRawCache(storeClientId, requestedPeriod, payloads, postingDetailsByKey)
+    const persistResult = persistFboLocalSnapshotFromRawCache(storeClientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
     if (persistResult) {
       logFboShipmentTrace('raw-cache.rebuild.snapshot.persisted', {
         storeClientId,
@@ -1124,13 +1138,18 @@ export async function refreshSalesRawSnapshotFromApi(
     })
 
     let reportRows: SalesShipmentReportRow[] = []
+    let reportLoaded = false
     try {
       const report = await fetchSalesPostingsReportRows(secrets, requestedPeriod)
+      reportLoaded = true
       reportRows = report.rows
         .map((row) => ({
           posting_number: normalizeTextValue(row?.posting_number),
+          order_number: normalizeTextValue(row?.order_number),
           delivery_schema: normalizeTextValue(row?.delivery_schema),
           shipment_date: normalizeTextValue(row?.shipment_date),
+          delivery_date: normalizeTextValue(row?.delivery_date),
+          raw_row: row?.raw_row && typeof row.raw_row === 'object' ? row.raw_row : {},
         }))
         .filter((row) => row.posting_number && row.shipment_date)
     } catch {
@@ -1139,11 +1158,21 @@ export async function refreshSalesRawSnapshotFromApi(
 
     const fetchedAt = new Date().toISOString()
 
+    const reportPersistResult = reportLoaded
+      ? persistFboPostingsReport({
+        storeClientId: secrets.clientId,
+        periodKey: buildDatasetScopeKey(requestedPeriod),
+        rows: reportRows,
+        fetchedAt,
+      })
+      : null
+
     const persistResult = buildAndPersistFboSalesSnapshot({
       storeClientId: secrets.clientId,
       periodKey: buildDatasetScopeKey(requestedPeriod),
       fboPayloads,
       postingDetailsByKey,
+      reportRows,
       fetchedAt,
     })
 
@@ -1153,7 +1182,9 @@ export async function refreshSalesRawSnapshotFromApi(
       itemsCount: Number(persistResult?.persisted?.shipmentDateCount ?? persistResult?.trace?.postingsWithResolvedShipmentDate ?? 0),
       meta: {
         reportRowsCount: reportRows.length,
-        reportFboShipmentDateIgnored: true,
+        reportLoaded,
+        reportPersistResult,
+        reportFboShipmentDateImportedToLocalDb: reportRows.length > 0,
         ...persistResult,
       },
     })
