@@ -33,9 +33,11 @@ const FBO_SHIPMENT_TRACE_STAGE_LABELS: Record<string, string> = {
   'api.refresh.compat.loaded': 'FBO дата отгрузки: compat-детали загружены',
   'api.refresh.report.begin': 'FBO дата отгрузки: старт отчёта postings',
   'api.refresh.report.created': 'FBO дата отгрузки: отчёт postings создан',
+  'api.refresh.report.strategy': 'FBO дата отгрузки: стратегия отчёта postings выбрана',
   'api.refresh.report.polled': 'FBO дата отгрузки: статус отчёта postings получен',
   'api.refresh.report.downloaded': 'FBO дата отгрузки: файл отчёта postings скачан',
   'api.refresh.report.parsed': 'FBO дата отгрузки: отчёт postings распарсен',
+  'api.refresh.report.partial': 'FBO дата отгрузки: отчёт postings собран частично',
   'api.refresh.report.persisted': 'FBO дата отгрузки: строки отчёта сохранены в локальную БД',
   'api.refresh.report.empty': 'FBO дата отгрузки: отчёт postings не дал дат отгрузки',
   'api.refresh.report.error': 'FBO дата отгрузки: ошибка отчёта postings',
@@ -1181,6 +1183,14 @@ export async function refreshSalesRawSnapshotFromApi(
         }))
         .filter((row) => row.posting_number)
 
+      const reportSegments = Array.isArray(reportTrace?.segments) ? reportTrace.segments : []
+      const failedSegments = reportSegments.filter((segment: any) => normalizeTextValue(segment?.error))
+      const successfulSegments = reportSegments.filter((segment: any) => !normalizeTextValue(segment?.error))
+      const failedSegmentSample = failedSegments.slice(0, 5).map((segment: any) => ({
+        label: normalizeTextValue(segment?.label) || `${normalizeTextValue(segment?.from)}..${normalizeTextValue(segment?.to)}`,
+        error: normalizeTextValue(segment?.error),
+      }))
+
       logFboShipmentTrace('api.refresh.report.created', {
         storeClientId: secrets.clientId,
         period: requestedPeriod,
@@ -1189,6 +1199,26 @@ export async function refreshSalesRawSnapshotFromApi(
           reportCode: report.reportCode,
           fileUrl: report.fileUrl,
           createBody: reportTrace?.createBody ?? null,
+          reportStrategy: reportTrace?.strategy ?? 'single',
+          reportPartial: Boolean(reportTrace?.partial),
+          reportSegmentsTotal: reportSegments.length,
+          reportSegmentsSucceeded: successfulSegments.length,
+          reportSegmentsFailed: failedSegments.length,
+          failedSegmentSample,
+        },
+      })
+
+      logFboShipmentTrace('api.refresh.report.strategy', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: successfulSegments.length,
+        meta: {
+          reportStrategy: reportTrace?.strategy ?? 'single',
+          reportPartial: Boolean(reportTrace?.partial),
+          reportSegmentsTotal: reportSegments.length,
+          reportSegmentsSucceeded: successfulSegments.length,
+          reportSegmentsFailed: failedSegments.length,
+          failedSegmentSample,
         },
       })
 
@@ -1198,6 +1228,11 @@ export async function refreshSalesRawSnapshotFromApi(
         itemsCount: Array.isArray(reportTrace?.pollAttempts) ? reportTrace.pollAttempts.length : 0,
         meta: {
           pollAttempts: reportTrace?.pollAttempts ?? [],
+          reportStrategy: reportTrace?.strategy ?? 'single',
+          reportSegmentsTotal: reportSegments.length,
+          reportSegmentsSucceeded: successfulSegments.length,
+          reportSegmentsFailed: failedSegments.length,
+          failedSegmentSample,
         },
       })
 
@@ -1207,6 +1242,10 @@ export async function refreshSalesRawSnapshotFromApi(
         itemsCount: Number(reportTrace?.download?.bytes ?? 0),
         meta: {
           download: reportTrace?.download ?? null,
+          reportStrategy: reportTrace?.strategy ?? 'single',
+          reportSegmentsTotal: reportSegments.length,
+          reportSegmentsSucceeded: successfulSegments.length,
+          reportSegmentsFailed: failedSegments.length,
         },
       })
 
@@ -1220,8 +1259,32 @@ export async function refreshSalesRawSnapshotFromApi(
           reportRowsWithShipmentDate: countRowsWithShipmentDate(reportRows),
           reportRowsFboCount: countRowsByDeliverySchema(reportRows, 'fbo'),
           reportRowsFboWithShipmentDate: (Array.isArray(reportRows) ? reportRows : []).filter((row) => normalizeDeliveryModelKey(row?.delivery_schema) === 'fbo' && Boolean(normalizeTextValue(row?.shipment_date))).length,
+          reportStrategy: reportTrace?.strategy ?? 'single',
+          reportPartial: Boolean(reportTrace?.partial),
+          reportSegmentsTotal: reportSegments.length,
+          reportSegmentsSucceeded: successfulSegments.length,
+          reportSegmentsFailed: failedSegments.length,
+          failedSegmentSample,
         },
       })
+
+      if (Boolean(reportTrace?.partial)) {
+        logFboShipmentTrace('api.refresh.report.partial', {
+          storeClientId: secrets.clientId,
+          period: requestedPeriod,
+          status: failedSegments.length > 0 ? 'error' : 'success',
+          itemsCount: countRowsWithShipmentDate(reportRows),
+          errorMessage: failedSegments.length > 0 ? failedSegments[0]?.error ?? null : null,
+          meta: {
+            reportStrategy: reportTrace?.strategy ?? 'single',
+            reportPartial: true,
+            reportSegmentsTotal: reportSegments.length,
+            reportSegmentsSucceeded: successfulSegments.length,
+            reportSegmentsFailed: failedSegments.length,
+            failedSegmentSample,
+          },
+        })
+      }
     } catch (error: any) {
       reportRows = []
       reportTrace = null
@@ -1232,6 +1295,8 @@ export async function refreshSalesRawSnapshotFromApi(
         errorMessage: error?.message ?? String(error),
         meta: {
           requestedPeriod,
+          reportStrategy: 'single',
+          reportBuildError: error?.message ?? String(error),
         },
       })
     }

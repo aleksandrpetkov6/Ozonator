@@ -5,6 +5,9 @@ const OZON_API_BASE_URL = 'https://api-seller.ozon.ru'
 const REPORT_INFO_POLL_ATTEMPTS = 25
 const REPORT_INFO_POLL_DELAY_MS = 1500
 const CSV_MOSCOW_OFFSET_MS = 3 * 60 * 60 * 1000
+const DEFAULT_REPORT_LOOKBACK_DAYS = 30
+const REPORT_PRIMARY_CHUNK_DAYS = 7
+const REPORT_FALLBACK_CHUNK_DAYS = 1
 
 type JsonRecord = Record<string, unknown>
 
@@ -22,30 +25,54 @@ export type SalesPostingsReportRow = {
   raw_row: Record<string, string>
 }
 
+type ReportPollAttempt = { attempt: number; status: string; hasFile: boolean; error: string }
+
+type ReportDownloadTrace = {
+  contentType: string
+  contentEncoding: string
+  bytes: number
+  archiveKind: 'plain' | 'gzip' | 'zip' | 'unknown'
+  extractedEntryName: string
+  extractedBytes: number
+}
+
+type ReportCsvTrace = {
+  rowsRaw: number
+  rowsMapped: number
+  rowsWithPostingNumber: number
+  rowsWithShipmentDate: number
+  rowsFbo: number
+  rowsFboWithShipmentDate: number
+  headerSample: string[]
+  samplePostingNumbers: string[]
+  sampleShipmentDates: string[]
+}
+
+export type SalesPostingsReportTraceSegment = {
+  label: string
+  from: string
+  to: string
+  reportCode: string
+  fileUrl: string
+  createBody: Record<string, unknown>
+  pollAttempts: ReportPollAttempt[]
+  download: ReportDownloadTrace | null
+  csv: ReportCsvTrace | null
+  rows: number
+  rowsWithShipmentDate: number
+  error: string
+}
+
 export type SalesPostingsReportTrace = {
   reportCode: string
   fileUrl: string
   createBody: Record<string, unknown>
-  pollAttempts: Array<{ attempt: number; status: string; hasFile: boolean; error: string }>
-  download: {
-    contentType: string
-    contentEncoding: string
-    bytes: number
-    archiveKind: 'plain' | 'gzip' | 'zip' | 'unknown'
-    extractedEntryName: string
-    extractedBytes: number
-  }
-  csv: {
-    rowsRaw: number
-    rowsMapped: number
-    rowsWithPostingNumber: number
-    rowsWithShipmentDate: number
-    rowsFbo: number
-    rowsFboWithShipmentDate: number
-    headerSample: string[]
-    samplePostingNumbers: string[]
-    sampleShipmentDates: string[]
-  }
+  pollAttempts: ReportPollAttempt[]
+  download: ReportDownloadTrace
+  csv: ReportCsvTrace
+  strategy: 'single' | 'chunked-7d' | 'chunked-1d'
+  partial: boolean
+  segments: SalesPostingsReportTraceSegment[]
 }
 
 function sleep(ms: number) {
@@ -72,30 +99,69 @@ function normalizePeriod(period: ReportPeriodInput | null | undefined): { from: 
   return { from, to }
 }
 
-function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefined) {
+function resolvePeriodBounds(period: ReportPeriodInput | null | undefined): { from: string; to: string } {
   const normalized = normalizePeriod(period)
+  if (normalized.from && normalized.to) {
+    return { from: normalized.from, to: normalized.to }
+  }
+
   const now = new Date()
-  const fromDate = normalized.from
-    ? new Date(`${normalized.from}T00:00:00.000Z`)
-    : new Date(now.getTime() - (90 * 24 * 60 * 60 * 1000))
-  const toDate = normalized.to
-    ? new Date(`${normalized.to}T23:59:59.999Z`)
-    : now
+  const toDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  const fromDate = new Date(toDate.getTime() - ((DEFAULT_REPORT_LOOKBACK_DAYS - 1) * 24 * 60 * 60 * 1000))
+  const formatDate = (value: Date) => value.toISOString().slice(0, 10)
+  return { from: formatDate(fromDate), to: formatDate(toDate) }
+}
+
+function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefined) {
+  const bounds = resolvePeriodBounds(period)
+  const fromDate = new Date(`${bounds.from}T00:00:00.000Z`)
+  const toDate = new Date(`${bounds.to}T23:59:59.999Z`)
 
   return {
     filter: {
       processed_at_from: fromDate.toISOString(),
       processed_at_to: toDate.toISOString(),
-      delivery_schema: [],
-      sku: [],
-      cancel_reason_id: [],
-      offer_id: '',
-      status_alias: [],
-      statuses: [],
-      title: '',
+      delivery_schema: ['fbo'],
     },
     language: 'DEFAULT',
   }
+}
+
+function addDays(dateTextRaw: string, days: number): string {
+  const dt = new Date(`${dateTextRaw}T00:00:00.000Z`)
+  dt.setUTCDate(dt.getUTCDate() + days)
+  return dt.toISOString().slice(0, 10)
+}
+
+function diffDaysInclusive(from: string, to: string): number {
+  const fromMs = Date.parse(`${from}T00:00:00.000Z`)
+  const toMs = Date.parse(`${to}T00:00:00.000Z`)
+  return Math.max(1, Math.floor((toMs - fromMs) / (24 * 60 * 60 * 1000)) + 1)
+}
+
+function splitPeriodIntoSegments(period: { from: string; to: string }, chunkDays: number): Array<{ from: string; to: string; label: string }> {
+  const totalDays = diffDaysInclusive(period.from, period.to)
+  if (chunkDays <= 0 || totalDays <= chunkDays) {
+    return [{ from: period.from, to: period.to, label: `${period.from}..${period.to}` }]
+  }
+
+  const out: Array<{ from: string; to: string; label: string }> = []
+  let cursor = period.from
+  while (cursor <= period.to) {
+    const tentativeTo = addDays(cursor, chunkDays - 1)
+    const segmentTo = tentativeTo < period.to ? tentativeTo : period.to
+    out.push({ from: cursor, to: segmentTo, label: `${cursor}..${segmentTo}` })
+    cursor = addDays(segmentTo, 1)
+  }
+  return out
+}
+
+function shouldFallbackToChunkedReports(error: unknown): boolean {
+  const message = text((error as any)?.message ?? error).toLowerCase()
+  return message.includes('failed to build report')
+    || message.includes('report file is not ready')
+    || message.includes('report error: failed')
+    || message.includes('failed (')
 }
 
 async function ozonPost(secrets: Secrets, endpoint: string, body: unknown): Promise<JsonRecord> {
@@ -534,10 +600,10 @@ function parseSalesPostingsReportCsv(csvText: string): {
   }
 }
 
-export async function fetchSalesPostingsReportRows(
+async function fetchSingleSalesPostingsReportRows(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
-): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace }> {
+): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: { createBody: Record<string, unknown>; pollAttempts: ReportPollAttempt[]; download: ReportDownloadTrace; csv: ReportCsvTrace } }> {
   const createBody = buildPostingsReportCreateBody(period)
   const createResponse = await ozonReportPostingsCreate(secrets, createBody)
   const createResult = (createResponse && typeof createResponse === 'object' && 'result' in createResponse)
@@ -549,7 +615,7 @@ export async function fetchSalesPostingsReportRows(
   let fileUrl = ''
   let lastStatus = ''
   let lastError = ''
-  const pollAttempts: SalesPostingsReportTrace['pollAttempts'] = []
+  const pollAttempts: ReportPollAttempt[] = []
 
   for (let attempt = 0; attempt < REPORT_INFO_POLL_ATTEMPTS; attempt += 1) {
     const infoResponse = await ozonReportInfo(secrets, reportCode)
@@ -582,8 +648,6 @@ export async function fetchSalesPostingsReportRows(
     fileUrl,
     rows: parsed.rows,
     trace: {
-      reportCode,
-      fileUrl,
       createBody: createBody as Record<string, unknown>,
       pollAttempts,
       download: {
@@ -597,4 +661,197 @@ export async function fetchSalesPostingsReportRows(
       csv: parsed.trace,
     },
   }
+}
+
+function mergeSalesPostingsReportRows(rows: SalesPostingsReportRow[]): SalesPostingsReportRow[] {
+  const out = new Map<string, SalesPostingsReportRow>()
+  for (const row of rows) {
+    const postingNumber = text(row?.posting_number)
+    if (!postingNumber) continue
+    const key = postingNumber
+    const prev = out.get(key)
+    if (!prev) {
+      out.set(key, row)
+      continue
+    }
+
+    const prevShipmentDate = text(prev.shipment_date)
+    const nextShipmentDate = text(row.shipment_date)
+    if (!prevShipmentDate && nextShipmentDate) {
+      out.set(key, row)
+      continue
+    }
+    if (prevShipmentDate && nextShipmentDate && nextShipmentDate > prevShipmentDate) {
+      out.set(key, row)
+    }
+  }
+  return Array.from(out.values())
+}
+
+function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesPostingsReportTraceSegment[]): ReportCsvTrace {
+  const headerSample: string[] = []
+  const samplePostingNumbers: string[] = []
+  const sampleShipmentDates: string[] = []
+  let rowsRaw = 0
+  let rowsMapped = 0
+  let rowsWithPostingNumber = 0
+  let rowsWithShipmentDate = 0
+  let rowsFbo = 0
+  let rowsFboWithShipmentDate = 0
+
+  for (const segment of segments) {
+    if (segment.csv) {
+      rowsRaw += Number(segment.csv.rowsRaw ?? 0)
+      rowsMapped += Number(segment.csv.rowsMapped ?? 0)
+      rowsWithPostingNumber += Number(segment.csv.rowsWithPostingNumber ?? 0)
+      rowsWithShipmentDate += Number(segment.csv.rowsWithShipmentDate ?? 0)
+      rowsFbo += Number(segment.csv.rowsFbo ?? 0)
+      rowsFboWithShipmentDate += Number(segment.csv.rowsFboWithShipmentDate ?? 0)
+      for (const key of segment.csv.headerSample ?? []) {
+        if (key && !headerSample.includes(key) && headerSample.length < 20) headerSample.push(key)
+      }
+    }
+    if (!samplePostingNumbers.length || samplePostingNumbers.length < 10) {
+      for (const item of rows) {
+        const value = text(item.posting_number)
+        if (value && !samplePostingNumbers.includes(value)) samplePostingNumbers.push(value)
+        if (samplePostingNumbers.length >= 10) break
+      }
+    }
+    if (!sampleShipmentDates.length || sampleShipmentDates.length < 10) {
+      for (const item of rows) {
+        const value = text(item.shipment_date)
+        if (value && !sampleShipmentDates.includes(value)) sampleShipmentDates.push(value)
+        if (sampleShipmentDates.length >= 10) break
+      }
+    }
+  }
+
+  return {
+    rowsRaw,
+    rowsMapped,
+    rowsWithPostingNumber,
+    rowsWithShipmentDate,
+    rowsFbo,
+    rowsFboWithShipmentDate,
+    headerSample,
+    samplePostingNumbers,
+    sampleShipmentDates,
+  }
+}
+
+function buildAggregateDownloadTrace(segments: SalesPostingsReportTraceSegment[]): ReportDownloadTrace {
+  const successful = segments.filter((segment) => !segment.error && segment.download)
+  if (successful.length === 0) {
+    return {
+      contentType: '',
+      contentEncoding: '',
+      bytes: 0,
+      archiveKind: 'unknown',
+      extractedEntryName: '',
+      extractedBytes: 0,
+    }
+  }
+
+  if (successful.length === 1 && successful[0].download) return successful[0].download
+
+  return {
+    contentType: 'multiple',
+    contentEncoding: 'multiple',
+    bytes: successful.reduce((sum, segment) => sum + Number(segment.download?.bytes ?? 0), 0),
+    archiveKind: 'unknown',
+    extractedEntryName: successful.map((segment) => segment.download?.extractedEntryName).filter(Boolean).join(', '),
+    extractedBytes: successful.reduce((sum, segment) => sum + Number(segment.download?.extractedBytes ?? 0), 0),
+  }
+}
+
+export async function fetchSalesPostingsReportRows(
+  secrets: Secrets,
+  period: ReportPeriodInput | null | undefined,
+): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace }> {
+  const bounds = resolvePeriodBounds(period)
+  const totalDays = diffDaysInclusive(bounds.from, bounds.to)
+  const strategies: Array<{ name: 'single' | 'chunked-7d' | 'chunked-1d'; segments: Array<{ from: string; to: string; label: string }> }> = [
+    { name: 'single', segments: [{ from: bounds.from, to: bounds.to, label: `${bounds.from}..${bounds.to}` }] },
+  ]
+  if (totalDays > 1) {
+    strategies.push({ name: 'chunked-7d', segments: splitPeriodIntoSegments(bounds, REPORT_PRIMARY_CHUNK_DAYS) })
+    strategies.push({ name: 'chunked-1d', segments: splitPeriodIntoSegments(bounds, REPORT_FALLBACK_CHUNK_DAYS) })
+  }
+
+  let lastError: unknown = null
+
+  for (const strategy of strategies) {
+    const segmentTraces: SalesPostingsReportTraceSegment[] = []
+    const collectedRows: SalesPostingsReportRow[] = []
+
+    for (const segment of strategy.segments) {
+      try {
+        const single = await fetchSingleSalesPostingsReportRows(secrets, segment)
+        collectedRows.push(...single.rows)
+        segmentTraces.push({
+          label: segment.label,
+          from: segment.from,
+          to: segment.to,
+          reportCode: single.reportCode,
+          fileUrl: single.fileUrl,
+          createBody: single.trace.createBody,
+          pollAttempts: single.trace.pollAttempts,
+          download: single.trace.download,
+          csv: single.trace.csv,
+          rows: single.rows.length,
+          rowsWithShipmentDate: Number(single.trace.csv.rowsWithShipmentDate ?? 0),
+          error: '',
+        })
+      } catch (error) {
+        lastError = error
+        segmentTraces.push({
+          label: segment.label,
+          from: segment.from,
+          to: segment.to,
+          reportCode: '',
+          fileUrl: '',
+          createBody: buildPostingsReportCreateBody(segment) as Record<string, unknown>,
+          pollAttempts: [],
+          download: null,
+          csv: null,
+          rows: 0,
+          rowsWithShipmentDate: 0,
+          error: text((error as any)?.message ?? error),
+        })
+
+        if (strategy.name === 'single' && shouldFallbackToChunkedReports(error)) {
+          break
+        }
+        if (strategy.name === 'single') {
+          break
+        }
+      }
+    }
+
+    const mergedRows = mergeSalesPostingsReportRows(collectedRows)
+    if (mergedRows.length > 0) {
+      const firstSuccess = segmentTraces.find((segment) => !segment.error)
+      const partial = segmentTraces.some((segment) => Boolean(segment.error))
+      return {
+        reportCode: firstSuccess?.reportCode ?? '',
+        fileUrl: firstSuccess?.fileUrl ?? '',
+        rows: mergedRows,
+        trace: {
+          reportCode: firstSuccess?.reportCode ?? '',
+          fileUrl: firstSuccess?.fileUrl ?? '',
+          createBody: (firstSuccess?.createBody ?? {}) as Record<string, unknown>,
+          pollAttempts: firstSuccess?.pollAttempts ?? [],
+          download: buildAggregateDownloadTrace(segmentTraces),
+          csv: buildAggregateCsvTrace(mergedRows, segmentTraces),
+          strategy: strategy.name,
+          partial,
+          segments: segmentTraces,
+        },
+      }
+    }
+  }
+
+  if (lastError instanceof Error) throw lastError
+  throw new Error('Ozon report error: postings report did not return any rows')
 }
