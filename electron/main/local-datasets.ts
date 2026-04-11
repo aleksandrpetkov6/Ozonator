@@ -31,6 +31,14 @@ const FBO_SHIPMENT_TRACE_STAGE_LABELS: Record<string, string> = {
   'api.refresh.list.loaded': 'FBO дата отгрузки: list-данные загружены',
   'api.refresh.details.loaded': 'FBO дата отгрузки: детали загружены',
   'api.refresh.compat.loaded': 'FBO дата отгрузки: compat-детали загружены',
+  'api.refresh.report.begin': 'FBO дата отгрузки: старт отчёта postings',
+  'api.refresh.report.created': 'FBO дата отгрузки: отчёт postings создан',
+  'api.refresh.report.polled': 'FBO дата отгрузки: статус отчёта postings получен',
+  'api.refresh.report.downloaded': 'FBO дата отгрузки: файл отчёта postings скачан',
+  'api.refresh.report.parsed': 'FBO дата отгрузки: отчёт postings распарсен',
+  'api.refresh.report.persisted': 'FBO дата отгрузки: строки отчёта сохранены в локальную БД',
+  'api.refresh.report.empty': 'FBO дата отгрузки: отчёт postings не дал дат отгрузки',
+  'api.refresh.report.error': 'FBO дата отгрузки: ошибка отчёта postings',
   'api.refresh.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена',
   'api.refresh.rows.built': 'FBO дата отгрузки: строки продаж собраны',
   'api.refresh.error': 'FBO дата отгрузки: ошибка API-обновления',
@@ -136,6 +144,15 @@ function countPostingDetailsByKind(postingDetailsByKey: Map<string, any>, kind: 
     if (String(key).startsWith(prefix)) count += 1
   }
   return count
+}
+
+function countRowsWithShipmentDate(rows: SalesShipmentReportRow[]): number {
+  return (Array.isArray(rows) ? rows : []).filter((row) => Boolean(normalizeTextValue(row?.shipment_date))).length
+}
+
+function countRowsByDeliverySchema(rows: SalesShipmentReportRow[], schemaRaw: string): number {
+  const schema = normalizeDeliveryModelKey(schemaRaw)
+  return (Array.isArray(rows) ? rows : []).filter((row) => normalizeDeliveryModelKey(row?.delivery_schema) === schema).length
 }
 
 
@@ -1139,9 +1156,20 @@ export async function refreshSalesRawSnapshotFromApi(
 
     let reportRows: SalesShipmentReportRow[] = []
     let reportLoaded = false
+    let reportTrace: any = null
+
+    logFboShipmentTrace('api.refresh.report.begin', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      meta: {
+        requestedPeriod,
+      },
+    })
+
     try {
       const report = await fetchSalesPostingsReportRows(secrets, requestedPeriod)
       reportLoaded = true
+      reportTrace = report.trace
       reportRows = report.rows
         .map((row) => ({
           posting_number: normalizeTextValue(row?.posting_number),
@@ -1151,9 +1179,61 @@ export async function refreshSalesRawSnapshotFromApi(
           delivery_date: normalizeTextValue(row?.delivery_date),
           raw_row: row?.raw_row && typeof row.raw_row === 'object' ? row.raw_row : {},
         }))
-        .filter((row) => row.posting_number && row.shipment_date)
-    } catch {
+        .filter((row) => row.posting_number)
+
+      logFboShipmentTrace('api.refresh.report.created', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: Number(reportRows.length),
+        meta: {
+          reportCode: report.reportCode,
+          fileUrl: report.fileUrl,
+          createBody: reportTrace?.createBody ?? null,
+        },
+      })
+
+      logFboShipmentTrace('api.refresh.report.polled', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: Array.isArray(reportTrace?.pollAttempts) ? reportTrace.pollAttempts.length : 0,
+        meta: {
+          pollAttempts: reportTrace?.pollAttempts ?? [],
+        },
+      })
+
+      logFboShipmentTrace('api.refresh.report.downloaded', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: Number(reportTrace?.download?.bytes ?? 0),
+        meta: {
+          download: reportTrace?.download ?? null,
+        },
+      })
+
+      logFboShipmentTrace('api.refresh.report.parsed', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: countRowsWithShipmentDate(reportRows),
+        meta: {
+          csv: reportTrace?.csv ?? null,
+          reportRowsCount: reportRows.length,
+          reportRowsWithShipmentDate: countRowsWithShipmentDate(reportRows),
+          reportRowsFboCount: countRowsByDeliverySchema(reportRows, 'fbo'),
+          reportRowsFboWithShipmentDate: (Array.isArray(reportRows) ? reportRows : []).filter((row) => normalizeDeliveryModelKey(row?.delivery_schema) === 'fbo' && Boolean(normalizeTextValue(row?.shipment_date))).length,
+        },
+      })
+    } catch (error: any) {
       reportRows = []
+      reportTrace = null
+      logFboShipmentTrace('api.refresh.report.error', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        status: 'error',
+        errorMessage: error?.message ?? String(error),
+        meta: {
+          requestedPeriod,
+        },
+      })
     }
 
     const fetchedAt = new Date().toISOString()
@@ -1166,6 +1246,32 @@ export async function refreshSalesRawSnapshotFromApi(
         fetchedAt,
       })
       : null
+
+    if (reportLoaded) {
+      logFboShipmentTrace('api.refresh.report.persisted', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: Number(reportPersistResult?.shipmentDateCount ?? 0),
+        meta: {
+          reportPersistResult,
+          reportRowsCount: reportRows.length,
+          reportRowsWithShipmentDate: countRowsWithShipmentDate(reportRows),
+        },
+      })
+
+      if (countRowsWithShipmentDate(reportRows) === 0) {
+        logFboShipmentTrace('api.refresh.report.empty', {
+          storeClientId: secrets.clientId,
+          period: requestedPeriod,
+          itemsCount: 0,
+          meta: {
+            reportTrace,
+            reportRowsCount: reportRows.length,
+            reportRowsFboCount: countRowsByDeliverySchema(reportRows, 'fbo'),
+          },
+        })
+      }
+    }
 
     const persistResult = buildAndPersistFboSalesSnapshot({
       storeClientId: secrets.clientId,

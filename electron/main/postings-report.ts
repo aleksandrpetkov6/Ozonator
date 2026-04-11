@@ -1,3 +1,4 @@
+import { gunzipSync, inflateRawSync } from 'node:zlib'
 import type { Secrets } from './types'
 
 const OZON_API_BASE_URL = 'https://api-seller.ozon.ru'
@@ -19,6 +20,32 @@ export type SalesPostingsReportRow = {
   shipment_date: string
   delivery_date: string
   raw_row: Record<string, string>
+}
+
+export type SalesPostingsReportTrace = {
+  reportCode: string
+  fileUrl: string
+  createBody: Record<string, unknown>
+  pollAttempts: Array<{ attempt: number; status: string; hasFile: boolean; error: string }>
+  download: {
+    contentType: string
+    contentEncoding: string
+    bytes: number
+    archiveKind: 'plain' | 'gzip' | 'zip' | 'unknown'
+    extractedEntryName: string
+    extractedBytes: number
+  }
+  csv: {
+    rowsRaw: number
+    rowsMapped: number
+    rowsWithPostingNumber: number
+    rowsWithShipmentDate: number
+    rowsFbo: number
+    rowsFboWithShipmentDate: number
+    headerSample: string[]
+    samplePostingNumbers: string[]
+    sampleShipmentDates: string[]
+  }
 }
 
 function sleep(ms: number) {
@@ -111,7 +138,7 @@ async function ozonReportInfo(secrets: Secrets, code: string) {
   return ozonPost(secrets, '/v1/report/info', { code: normalizedCode })
 }
 
-async function ozonDownloadReportFile(fileUrl: string): Promise<Uint8Array> {
+async function ozonDownloadReportFile(fileUrl: string): Promise<{ bytes: Uint8Array; contentType: string; contentEncoding: string }> {
   const normalizedUrl = text(fileUrl)
   if (!normalizedUrl) throw new Error('Не указан URL отчёта')
 
@@ -127,7 +154,11 @@ async function ozonDownloadReportFile(fileUrl: string): Promise<Uint8Array> {
   }
 
   const buffer = await res.arrayBuffer()
-  return new Uint8Array(buffer)
+  return {
+    bytes: new Uint8Array(buffer),
+    contentType: text(res.headers.get('content-type')),
+    contentEncoding: text(res.headers.get('content-encoding')),
+  }
 }
 
 function normalizeReportStatus(value: unknown): string {
@@ -162,6 +193,101 @@ function decodeCsvBytes(bytes: Uint8Array): string {
   if (win1251) return win1251
 
   return utf8 || tryDecode('utf-8')
+}
+
+function bytesStartWith(bytes: Uint8Array, signature: number[]): boolean {
+  if (bytes.length < signature.length) return false
+  for (let index = 0; index < signature.length; index += 1) {
+    if (bytes[index] !== signature[index]) return false
+  }
+  return true
+}
+
+function readUInt16LE(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] | (bytes[offset + 1] << 8)
+}
+
+function readUInt32LE(bytes: Uint8Array, offset: number): number {
+  return (
+    bytes[offset]
+    | (bytes[offset + 1] << 8)
+    | (bytes[offset + 2] << 16)
+    | (bytes[offset + 3] << 24)
+  ) >>> 0
+}
+
+function extractFirstZipEntry(bytes: Uint8Array): { name: string; bytes: Uint8Array } | null {
+  let offset = 0
+  while (offset + 30 <= bytes.length) {
+    const signature = readUInt32LE(bytes, offset)
+    if (signature !== 0x04034b50) break
+    const compressionMethod = readUInt16LE(bytes, offset + 8)
+    const compressedSize = readUInt32LE(bytes, offset + 18)
+    const fileNameLength = readUInt16LE(bytes, offset + 26)
+    const extraLength = readUInt16LE(bytes, offset + 28)
+    const nameStart = offset + 30
+    const nameEnd = nameStart + fileNameLength
+    const dataStart = nameEnd + extraLength
+    const dataEnd = dataStart + compressedSize
+    if (dataEnd > bytes.length) return null
+
+    const name = new TextDecoder('utf-8').decode(bytes.slice(nameStart, nameEnd))
+    const payload = bytes.slice(dataStart, dataEnd)
+    if (!name.endsWith('/')) {
+      if (compressionMethod === 0) return { name, bytes: payload }
+      if (compressionMethod === 8) return { name, bytes: new Uint8Array(inflateRawSync(payload)) }
+      return null
+    }
+
+    offset = dataEnd
+  }
+  return null
+}
+
+function extractReportText(bytes: Uint8Array): {
+  text: string
+  archiveKind: 'plain' | 'gzip' | 'zip' | 'unknown'
+  extractedEntryName: string
+  extractedBytes: number
+} {
+  if (bytes.length === 0) {
+    return { text: '', archiveKind: 'plain', extractedEntryName: '', extractedBytes: 0 }
+  }
+
+  if (bytesStartWith(bytes, [0x1f, 0x8b])) {
+    const unpacked = new Uint8Array(gunzipSync(bytes))
+    return {
+      text: decodeCsvBytes(unpacked),
+      archiveKind: 'gzip',
+      extractedEntryName: '',
+      extractedBytes: unpacked.length,
+    }
+  }
+
+  if (bytesStartWith(bytes, [0x50, 0x4b, 0x03, 0x04])) {
+    const firstEntry = extractFirstZipEntry(bytes)
+    if (firstEntry) {
+      return {
+        text: decodeCsvBytes(firstEntry.bytes),
+        archiveKind: 'zip',
+        extractedEntryName: firstEntry.name,
+        extractedBytes: firstEntry.bytes.length,
+      }
+    }
+    return {
+      text: '',
+      archiveKind: 'zip',
+      extractedEntryName: '',
+      extractedBytes: 0,
+    }
+  }
+
+  return {
+    text: decodeCsvBytes(bytes),
+    archiveKind: 'plain',
+    extractedEntryName: '',
+    extractedBytes: bytes.length,
+  }
 }
 
 function detectCsvDelimiter(line: string): string {
@@ -319,15 +445,42 @@ function normalizeDeliverySchema(value: unknown): string {
   return text(value)
 }
 
+function buildCsvHeaderSample(rows: Array<Record<string, string>>, limit = 12): string[] {
+  const out: string[] = []
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      const normalized = text(key)
+      if (!normalized || out.includes(normalized)) continue
+      out.push(normalized)
+      if (out.length >= limit) return out
+    }
+  }
+  return out
+}
+
+function uniqueSample(values: unknown[], limit = 10): string[] {
+  const out: string[] = []
+  for (const value of values) {
+    const normalized = text(value)
+    if (!normalized || out.includes(normalized)) continue
+    out.push(normalized)
+    if (out.length >= limit) break
+  }
+  return out
+}
+
 function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsReportRow | null {
   const postingNumber = pickRowValue(row, ['Номер отправления', 'Отправление', 'posting_number', 'posting number'])
   if (!postingNumber) return null
 
   const orderNumber = pickRowValue(row, ['Номер заказа', 'order_number', 'order number'])
-  const deliverySchema = normalizeDeliverySchema(pickRowValue(row, ['Метод доставки', 'Схема доставки', 'delivery_schema', 'delivery schema']))
+  const deliverySchema = normalizeDeliverySchema(pickRowValue(row, ['Метод доставки', 'Схема доставки', 'Тип доставки', 'delivery_schema', 'delivery schema']))
   const shipmentDate = parseOzonLocalDateToIso(pickRowValue(row, [
     'Фактическая дата передачи в доставку',
     'Фактическая дата передачи в доставку (МСК)',
+    'Дата и время фактической передачи в доставку',
+    'Фактическая дата отгрузки',
+    'Фактическая дата передачи отправления в доставку',
     'shipment_date_actual',
     'shipment_date_fact',
     'shipment_date',
@@ -347,7 +500,10 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
   }
 }
 
-function parseSalesPostingsReportCsv(csvText: string): SalesPostingsReportRow[] {
+function parseSalesPostingsReportCsv(csvText: string): {
+  rows: SalesPostingsReportRow[]
+  trace: SalesPostingsReportTrace['csv']
+} {
   const rawRows = parseCsv(csvText)
   const out = new Map<string, SalesPostingsReportRow>()
 
@@ -361,14 +517,29 @@ function parseSalesPostingsReportCsv(csvText: string): SalesPostingsReportRow[] 
     }
   }
 
-  return Array.from(out.values())
+  const rows = Array.from(out.values())
+  return {
+    rows,
+    trace: {
+      rowsRaw: rawRows.length,
+      rowsMapped: rows.length,
+      rowsWithPostingNumber: rows.filter((row) => Boolean(row.posting_number)).length,
+      rowsWithShipmentDate: rows.filter((row) => Boolean(row.shipment_date)).length,
+      rowsFbo: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO').length,
+      rowsFboWithShipmentDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(row.shipment_date)).length,
+      headerSample: buildCsvHeaderSample(rawRows),
+      samplePostingNumbers: uniqueSample(rows.map((row) => row.posting_number), 10),
+      sampleShipmentDates: uniqueSample(rows.filter((row) => row.shipment_date).map((row) => row.shipment_date), 10),
+    },
+  }
 }
 
 export async function fetchSalesPostingsReportRows(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
-): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[] }> {
-  const createResponse = await ozonReportPostingsCreate(secrets, buildPostingsReportCreateBody(period))
+): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace }> {
+  const createBody = buildPostingsReportCreateBody(period)
+  const createResponse = await ozonReportPostingsCreate(secrets, createBody)
   const createResult = (createResponse && typeof createResponse === 'object' && 'result' in createResponse)
     ? (createResponse as any).result
     : createResponse
@@ -378,6 +549,7 @@ export async function fetchSalesPostingsReportRows(
   let fileUrl = ''
   let lastStatus = ''
   let lastError = ''
+  const pollAttempts: SalesPostingsReportTrace['pollAttempts'] = []
 
   for (let attempt = 0; attempt < REPORT_INFO_POLL_ATTEMPTS; attempt += 1) {
     const infoResponse = await ozonReportInfo(secrets, reportCode)
@@ -388,6 +560,7 @@ export async function fetchSalesPostingsReportRows(
     lastStatus = normalizeReportStatus((infoResult as any)?.status)
     lastError = text((infoResult as any)?.error)
     fileUrl = text((infoResult as any)?.file)
+    pollAttempts.push({ attempt: attempt + 1, status: lastStatus || 'unknown', hasFile: Boolean(fileUrl), error: lastError })
 
     if (fileUrl && (looksLikeReadyReportStatus(lastStatus) || !lastStatus)) break
     if (looksLikeFailedReportStatus(lastStatus)) {
@@ -400,9 +573,28 @@ export async function fetchSalesPostingsReportRows(
     throw new Error(`Ozon report error: report file is not ready for code ${reportCode}${lastStatus ? ` (${lastStatus})` : ''}`)
   }
 
-  const bytes = await ozonDownloadReportFile(fileUrl)
-  const csvText = decodeCsvBytes(bytes)
-  const rows = parseSalesPostingsReportCsv(csvText)
+  const downloaded = await ozonDownloadReportFile(fileUrl)
+  const extracted = extractReportText(downloaded.bytes)
+  const parsed = parseSalesPostingsReportCsv(extracted.text)
 
-  return { reportCode, fileUrl, rows }
+  return {
+    reportCode,
+    fileUrl,
+    rows: parsed.rows,
+    trace: {
+      reportCode,
+      fileUrl,
+      createBody: createBody as Record<string, unknown>,
+      pollAttempts,
+      download: {
+        contentType: downloaded.contentType,
+        contentEncoding: downloaded.contentEncoding,
+        bytes: downloaded.bytes.length,
+        archiveKind: extracted.archiveKind,
+        extractedEntryName: extracted.extractedEntryName,
+        extractedBytes: extracted.extractedBytes,
+      },
+      csv: parsed.trace,
+    },
+  }
 }
