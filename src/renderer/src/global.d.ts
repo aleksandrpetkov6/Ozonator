@@ -66,6 +66,7 @@ declare global {
       saveGridColumns: (dataset: string, cols: Array<{ id: string; w: number; visible: boolean; hiddenBucket: 'main' | 'add' }>) => Promise<{ ok: boolean; error?: string; dataset: string; savedCount: number }>
       getSyncLog: () => Promise<{ ok: boolean; logs: any[] }>
       clearLogs: () => Promise<{ ok: boolean }>
+      saveLogReportToDesktop: (fileName: string, content: string) => Promise<{ ok: boolean; path?: string; error?: string }>
     }
   }
 }
