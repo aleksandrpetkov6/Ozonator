@@ -27,7 +27,7 @@ const TYPE_RU: Record<string, string> = {
   app_reinstall: 'Переустановка программы',
   app_uninstall: 'Удаление программы',
   admin_settings: 'Настройки Админ',
-  sales_fbo_shipment_trace: 'Трассировка FBO даты отгрузки',
+  sales_fbo_shipment_trace: 'Трассировка синхронизации продаж',
 }
 
 const STATUS_RU: Record<string, string> = {
@@ -136,6 +136,23 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
       if (missing.length > 0) parts.push(`без даты: ${missing.slice(0, 3).join(', ')}`)
       const missingDetails = Array.isArray(m?.trace?.missingDetailPostingNumbers) ? m.trace.missingDetailPostingNumbers : []
       if (missingDetails.length > 0) parts.push(`без detail: ${missingDetails.slice(0, 3).join(', ')}`)
+      if (m?.traceKind === 'paid_by_customer') {
+        if (typeof m?.totalPostingCount === 'number') parts.push(`отправлений: ${m.totalPostingCount}`)
+        if (typeof m?.totalItemCount === 'number') parts.push(`товарных строк: ${m.totalItemCount}`)
+        if (typeof m?.postingsWithDetailCount === 'number') parts.push(`с detail: ${m.postingsWithDetailCount}`)
+        if (typeof m?.listItemDirectValueCount === 'number') parts.push(`list item: ${m.listItemDirectValueCount}`)
+        if (typeof m?.listFinancialValueCount === 'number') parts.push(`list financial: ${m.listFinancialValueCount}`)
+        if (typeof m?.detailItemDirectValueCount === 'number') parts.push(`detail item: ${m.detailItemDirectValueCount}`)
+        if (typeof m?.detailFinancialValueCount === 'number') parts.push(`detail financial: ${m.detailFinancialValueCount}`)
+        if (typeof m?.finalRowsCount === 'number') parts.push(`строк продаж: ${m.finalRowsCount}`)
+        if (typeof m?.finalRowsWithPaidByCustomer === 'number') parts.push(`с оплачено покупателем: ${m.finalRowsWithPaidByCustomer}`)
+        if (typeof m?.finalRowsWithoutPaidByCustomer === 'number') parts.push(`без оплачено покупателем: ${m.finalRowsWithoutPaidByCustomer}`)
+        if (typeof m?.fbsRowsWithPaidByCustomer === 'number') parts.push(`FBS заполнено: ${m.fbsRowsWithPaidByCustomer}`)
+        if (typeof m?.fboRowsWithPaidByCustomer === 'number') parts.push(`FBO заполнено: ${m.fboRowsWithPaidByCustomer}`)
+        if (typeof m?.rfbsRowsWithPaidByCustomer === 'number') parts.push(`rFBS заполнено: ${m.rfbsRowsWithPaidByCustomer}`)
+        const missingPaid = Array.isArray(m?.missingPostingNumbers) ? m.missingPostingNumbers : []
+        if (missingPaid.length > 0) parts.push(`пример без значения: ${missingPaid.slice(0, 5).join(', ')}`)
+      }
       return parts.length ? parts.join(', ') : meta
     }
     if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
