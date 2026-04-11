@@ -469,6 +469,10 @@ function normalizeSalesShipmentReportRawRow(value: unknown): Record<string, stri
   return out
 }
 
+function normalizeSalesShipmentReportNumber(value: unknown): number | '' {
+  return typeof value === 'number' && Number.isFinite(value) ? value : ''
+}
+
 function normalizeDeliveryModelKey(value: unknown): string {
   const raw = normalizeTextValue(value).toLowerCase().replace(/[^a-z]/g, '')
   if (!raw) return ''
@@ -523,9 +527,9 @@ function buildSalesShipmentReportRowsFromSnapshotMap(
       sku: normalizeTextValue(row?.sku),
       offer_id: normalizeTextValue(row?.offer_id),
       product_name: normalizeTextValue(row?.product_name),
-      price: typeof row?.price === 'number' ? row.price : '',
-      quantity: typeof row?.quantity === 'number' ? row.quantity : '',
-      paid_by_customer: typeof row?.paid_by_customer === 'number' ? row.paid_by_customer : '',
+      price: normalizeSalesShipmentReportNumber(row?.price),
+      quantity: normalizeSalesShipmentReportNumber(row?.quantity),
+      paid_by_customer: normalizeSalesShipmentReportNumber(row?.paid_by_customer),
       raw_row: normalizeSalesShipmentReportRawRow(row?.raw_row),
     }))
     .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number))
@@ -1228,9 +1232,9 @@ export async function refreshSalesRawSnapshotFromApi(
           sku: normalizeTextValue(row?.sku),
           offer_id: normalizeTextValue(row?.offer_id),
           product_name: normalizeTextValue(row?.product_name),
-          price: typeof row?.price === 'number' ? row.price : '',
-          quantity: typeof row?.quantity === 'number' ? row.quantity : '',
-          paid_by_customer: typeof row?.paid_by_customer === 'number' ? row.paid_by_customer : '',
+          price: normalizeSalesShipmentReportNumber(row?.price),
+          quantity: normalizeSalesShipmentReportNumber(row?.quantity),
+          paid_by_customer: normalizeSalesShipmentReportNumber(row?.paid_by_customer),
           raw_row: normalizeSalesShipmentReportRawRow(row?.raw_row),
         }))
         .filter((row) => row.posting_number)
