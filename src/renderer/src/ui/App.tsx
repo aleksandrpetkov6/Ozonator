@@ -18,6 +18,58 @@ type SalesPeriod = UiDateRange
 
 const DEMAND_PERIOD_PRESETS = [DEFAULT_UI_DATE_RANGE_DAYS, 90, 180, 365] as const
 
+function normalizePresetDays(value: unknown): number | null {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  const normalized = Math.max(1, Math.trunc(n))
+  return DEMAND_PERIOD_PRESETS.includes(normalized as (typeof DEMAND_PERIOD_PRESETS)[number]) ? normalized : null
+}
+
+function getDateRangeLengthDays(range: UiDateRange | null | undefined): number | null {
+  if (!isValidUiDateRange(range)) return null
+  const from = Date.parse(`${range.from}T00:00:00.000Z`)
+  const to = Date.parse(`${range.to}T00:00:00.000Z`)
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null
+  const diffDays = Math.round((to - from) / 86400000)
+  if (!Number.isFinite(diffDays) || diffDays < 0) return null
+  return diffDays
+}
+
+function isSameUiDateRange(left: UiDateRange | null | undefined, right: UiDateRange | null | undefined): boolean {
+  if (!isValidUiDateRange(left) || !isValidUiDateRange(right)) return false
+  return left.from === right.from && left.to === right.to
+}
+
+function inferLegacyRollingSalesPresetDays(range: UiDateRange | null | undefined): number | null {
+  if (!isValidUiDateRange(range)) return null
+  const todayDefault = getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS)
+  if (range.to >= todayDefault.to) return null
+  const rangeLengthDays = getDateRangeLengthDays(range)
+  if (rangeLengthDays == null) return null
+
+  for (const days of DEMAND_PERIOD_PRESETS) {
+    if (rangeLengthDays !== days) continue
+    const expected = getDefaultDateRange(days)
+    const expectedLengthDays = getDateRangeLengthDays(expected)
+    if (expectedLengthDays === rangeLengthDays) return days
+  }
+
+  return null
+}
+
+function resolveInitialSalesPeriodDraft(draft: AppUiDraft): { period: SalesPeriod; presetDays: number | null } {
+  const explicitPresetDays = normalizePresetDays(draft.salesPeriodPresetDays)
+  const legacyPresetDays = explicitPresetDays == null ? inferLegacyRollingSalesPresetDays(draft.salesPeriod ?? null) : null
+  const presetDays = explicitPresetDays ?? legacyPresetDays
+  if (presetDays != null) {
+    return { period: getDefaultDateRange(presetDays), presetDays }
+  }
+  if (isValidUiDateRange(draft.salesPeriod)) {
+    return { period: draft.salesPeriod, presetDays: null }
+  }
+  return { period: getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS), presetDays: DEFAULT_UI_DATE_RANGE_DAYS }
+}
+
 
 function toShortRuDate(value: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return ''
@@ -39,6 +91,7 @@ type AppUiDraft = {
   productsQuery?: string
   demandPeriod?: UiDateRange | null
   salesPeriod?: UiDateRange | null
+  salesPeriodPresetDays?: number | null
   adminLogLifeDraft?: string
 }
 
@@ -68,6 +121,7 @@ function readAppUiDraft(): AppUiDraft {
       productsQuery: typeof draft.productsQuery === 'string' ? draft.productsQuery : undefined,
       demandPeriod: isValidUiDateRange(draft.demandPeriod) ? draft.demandPeriod : null,
       salesPeriod: isValidUiDateRange(draft.salesPeriod) ? draft.salesPeriod : null,
+      salesPeriodPresetDays: normalizePresetDays((draft as any).salesPeriodPresetDays),
       adminLogLifeDraft: typeof draft.adminLogLifeDraft === 'string' ? draft.adminLogLifeDraft : undefined,
     }
   } catch {
@@ -82,6 +136,7 @@ function writeAppUiDraft(draft: AppUiDraft) {
       productsQuery: String(draft.productsQuery ?? ''),
       demandPeriod: isValidUiDateRange(draft.demandPeriod) ? draft.demandPeriod : null,
       salesPeriod: isValidUiDateRange(draft.salesPeriod) ? draft.salesPeriod : null,
+      salesPeriodPresetDays: normalizePresetDays(draft.salesPeriodPresetDays),
       adminLogLifeDraft: String(draft.adminLogLifeDraft ?? ''),
     }))
   } catch {
@@ -142,7 +197,8 @@ export default function App() {
   const [productsTotal, setProductsTotal] = useState(0)
   const [productsFiltered, setProductsFiltered] = useState(0)
   const [demandPeriod, setDemandPeriod] = useState<DemandForecastPeriod>(() => isValidUiDateRange(bootDraft.demandPeriod) ? bootDraft.demandPeriod : readDemandForecastPeriod())
-  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>(() => isValidUiDateRange(bootDraft.salesPeriod) ? bootDraft.salesPeriod : getDefaultDateRange(DEFAULT_UI_DATE_RANGE_DAYS))
+  const [salesPeriodPresetDays, setSalesPeriodPresetDays] = useState<number | null>(() => resolveInitialSalesPeriodDraft(bootDraft).presetDays)
+  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>(() => resolveInitialSalesPeriodDraft(bootDraft).period)
   const [salesRefreshTick, setSalesRefreshTick] = useState(0)
   const didOnlineBootstrapRef = useRef(false)
   const bootDraftRestoreDoneRef = useRef(false)
@@ -181,9 +237,10 @@ export default function App() {
       productsQuery,
       demandPeriod,
       salesPeriod,
+      salesPeriodPresetDays,
       adminLogLifeDraft,
     })
-  }, [pathname, productsQuery, demandPeriod, salesPeriod, adminLogLifeDraft])
+  }, [pathname, productsQuery, demandPeriod, salesPeriod, salesPeriodPresetDays, adminLogLifeDraft])
 
   useEffect(() => {
     const flushDraft = () => {
@@ -192,13 +249,14 @@ export default function App() {
         productsQuery,
         demandPeriod,
         salesPeriod,
+        salesPeriodPresetDays,
         adminLogLifeDraft,
       })
     }
 
     window.addEventListener('ozon:prepare-install-exit', flushDraft)
     return () => window.removeEventListener('ozon:prepare-install-exit', flushDraft)
-  }, [pathname, productsQuery, demandPeriod, salesPeriod, adminLogLifeDraft])
+  }, [pathname, productsQuery, demandPeriod, salesPeriod, salesPeriodPresetDays, adminLogLifeDraft])
 
   const onProductStats = useCallback((s: { total: number; filtered: number }) => {
     setProductsTotal(s.total)
@@ -220,8 +278,22 @@ export default function App() {
 
   const setSalesPeriodField = useCallback((field: keyof SalesPeriod, value: string) => {
     const normalized = sanitizeDateInput(value)
+    setSalesPeriodPresetDays(null)
     setSalesPeriod((prev) => ({ ...prev, [field]: normalized }))
   }, [])
+
+  useEffect(() => {
+    if (salesPeriodPresetDays == null) return
+
+    const syncRollingPeriod = () => {
+      const next = getDefaultDateRange(salesPeriodPresetDays)
+      setSalesPeriod((prev) => (isSameUiDateRange(prev, next) ? prev : next))
+    }
+
+    syncRollingPeriod()
+    const id = window.setInterval(syncRollingPeriod, 60 * 1000)
+    return () => window.clearInterval(id)
+  }, [salesPeriodPresetDays])
 
   const activePeriod = isSales ? salesPeriod : demandPeriod
 
@@ -236,6 +308,7 @@ export default function App() {
   const applyActivePreset = useCallback((days: number) => {
     const next = getDefaultDateRange(days)
     if (isSales) {
+      setSalesPeriodPresetDays(days)
       setSalesPeriod(next)
       return
     }
