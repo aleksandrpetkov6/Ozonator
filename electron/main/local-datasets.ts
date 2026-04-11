@@ -1116,7 +1116,7 @@ export async function refreshSalesRawSnapshotFromApi(
 
     let reportRows: SalesShipmentReportRow[] = []
     try {
-      const report = await fetchSalesPostingsReportRows(secrets, requestedPeriod)
+      const report = await fetchSalesPostingsReportRows(secrets, requestedPeriod, 'fbo')
       reportRows = report.rows
         .map((row) => ({
           posting_number: normalizeTextValue(row?.posting_number),
@@ -1124,8 +1124,27 @@ export async function refreshSalesRawSnapshotFromApi(
           shipment_date: normalizeTextValue(row?.shipment_date),
         }))
         .filter((row) => row.posting_number && row.shipment_date)
-    } catch {
+
+      logFboShipmentTrace('api.refresh.report.loaded', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: reportRows.length,
+        meta: {
+          reportCode: normalizeTextValue((report as any)?.reportCode),
+          fileUrl: normalizeTextValue((report as any)?.fileUrl),
+          samplePostingNumbers: uniqueSample(reportRows.map((row) => row.posting_number), 10),
+        },
+      })
+    } catch (error: any) {
       reportRows = []
+      logFboShipmentTrace('api.refresh.report.failed', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: 0,
+        meta: {
+          error: error?.message ?? String(error),
+        },
+      })
     }
 
     const fetchedAt = new Date().toISOString()
@@ -1145,6 +1164,7 @@ export async function refreshSalesRawSnapshotFromApi(
       itemsCount: Number(persistResult?.persisted?.shipmentDateCount ?? persistResult?.trace?.postingsWithResolvedShipmentDate ?? 0),
       meta: {
         reportRowsCount: reportRows.length,
+        reportMatchedPostingCount: Number(persistResult?.persisted?.shipmentDateCount ?? 0),
         reportFboShipmentDateIgnored: false,
         ...persistResult,
       },

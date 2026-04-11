@@ -45,7 +45,10 @@ function normalizePeriod(period: ReportPeriodInput | null | undefined): { from: 
   return { from, to }
 }
 
-function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefined) {
+function buildPostingsReportCreateBody(
+  period: ReportPeriodInput | null | undefined,
+  deliverySchema?: string | null,
+) {
   const normalized = normalizePeriod(period)
   const now = new Date()
   const fromDate = normalized.from
@@ -59,7 +62,7 @@ function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefi
     filter: {
       processed_at_from: fromDate.toISOString(),
       processed_at_to: toDate.toISOString(),
-      delivery_schema: [],
+      delivery_schema: deliverySchema ? [String(deliverySchema).trim().toLowerCase()] : [],
       sku: [],
       cancel_reason_id: [],
       offer_id: '',
@@ -366,8 +369,9 @@ function parseSalesPostingsReportCsv(csvText: string): SalesPostingsReportRow[] 
 export async function fetchSalesPostingsReportRows(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
+  deliverySchema?: string | null,
 ): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[] }> {
-  const createResponse = await ozonReportPostingsCreate(secrets, buildPostingsReportCreateBody(period))
+  const createResponse = await ozonReportPostingsCreate(secrets, buildPostingsReportCreateBody(period, deliverySchema))
   const createResult = (createResponse && typeof createResponse === 'object' && 'result' in createResponse)
     ? (createResponse as any).result
     : createResponse
