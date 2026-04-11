@@ -155,21 +155,34 @@ function toSortTimestamp(value?: string | null): number | null {
 
 function getTraceParentId(traceRow: LogRow, syncRows: LogRow[]): number | null {
   const traceTime = toSortTimestamp(traceRow.started_at) ?? toSortTimestamp(traceRow.finished_at)
-  let fallbackParentId: number | null = null
+  let bestByTimeWindow: { id: number; startedAt: number } | null = null
+  let bestPreviousByTime: { id: number; startedAt: number } | null = null
+  let bestPreviousById: number | null = null
 
   for (const syncRow of syncRows) {
-    if (syncRow.id >= traceRow.id) break
-    fallbackParentId = syncRow.id
+    if (syncRow.id < traceRow.id) {
+      bestPreviousById = syncRow.id
+    }
 
     const syncStart = toSortTimestamp(syncRow.started_at)
-    if (traceTime == null || syncStart == null || traceTime < syncStart) continue
+    if (traceTime == null || syncStart == null) continue
+
+    if (traceTime >= syncStart) {
+      if (!bestPreviousByTime || syncStart >= bestPreviousByTime.startedAt) {
+        bestPreviousByTime = { id: syncRow.id, startedAt: syncStart }
+      }
+    }
 
     const syncFinishRaw = toSortTimestamp(syncRow.finished_at)
-    const syncFinish = syncFinishRaw == null ? Number.POSITIVE_INFINITY : (syncFinishRaw + 60_000)
-    if (traceTime <= syncFinish) return syncRow.id
+    const syncFinish = syncFinishRaw == null ? (syncStart + 10 * 60_000) : (syncFinishRaw + 2 * 60_000)
+    if (traceTime < syncStart || traceTime > syncFinish) continue
+
+    if (!bestByTimeWindow || syncStart >= bestByTimeWindow.startedAt) {
+      bestByTimeWindow = { id: syncRow.id, startedAt: syncStart }
+    }
   }
 
-  return fallbackParentId
+  return bestByTimeWindow?.id ?? bestPreviousByTime?.id ?? bestPreviousById
 }
 
 function buildLogGroups(rows: LogRow[]): LogGroup[] {
@@ -207,8 +220,12 @@ function buildLogGroups(rows: LogRow[]): LogGroup[] {
   }))
 }
 
+function hasRowExtraPanel(row: LogRow): boolean {
+  return Boolean(escapeTxtLine(row.error_details))
+}
+
 function hasExpandableDetails(group: LogGroup): boolean {
-  return TRACE_PARENT_TYPES.has(group.row.type) && group.children.length > 0
+  return TRACE_PARENT_TYPES.has(group.row.type) && (group.children.length > 0 || hasRowExtraPanel(group.row))
 }
 
 function getMainRowDetails(row: LogRow, traceCount: number): string {
@@ -260,7 +277,7 @@ function buildSyncReportText(group: LogGroup): string {
   lines.push('Детали синхронизации:')
 
   if (children.length === 0) {
-    lines.push('— Нет вложенных деталей.')
+    lines.push('— Нет вложенных трассировок.')
   } else {
     for (const child of children) {
       lines.push('')
@@ -403,6 +420,7 @@ function renderSortHeader(label: string, colId: LogSortCol) {
                                 aria-expanded={expanded}
                                 aria-label={expanded ? 'Свернуть детали синхронизации' : 'Показать детали синхронизации'}
                                 title={expanded ? 'Свернуть детали синхронизации' : 'Показать детали синхронизации'}
+                                style={{ cursor: 'pointer', color: 'rgba(10,80,180,.96)', textDecoration: 'underline', textUnderlineOffset: '2px' }}
                               >
                                 {typeRu(row.type)}
                               </span>
@@ -449,27 +467,42 @@ function renderSortHeader(label: string, colId: LogSortCol) {
                                 <div><span>Старт:</span> {fmtDt('started_at', row.started_at)}</div>
                                 <div><span>Финиш:</span> {fmtDt('finished_at', row.finished_at)}</div>
                                 <div><span>Статус:</span> {statusRu(row.status)}</div>
-                                <div><span>Записей:</span> {children.length}</div>
+                                <div><span>Трассировок:</span> {children.length}</div>
                               </div>
 
-                              <div className="logTraceList">
-                                {children.map((child) => {
-                                  const childDetails = detailsRu(child.type, child.meta, child.items_count)
-                                  return (
-                                    <div key={child.id} className="logTraceItem">
-                                      <div className="logTraceMeta">
-                                        <span className="logTraceTime">{fmtDt('started_at', child.started_at)}</span>
-                                        <span className={`statusText ${child.status ?? ''}`.trim()}>{statusRu(child.status)}</span>
-                                        <span className="logTraceId">ID {child.id}</span>
+                              {row.error_details && (
+                                <div className="logTraceItem" style={{ marginBottom: 10 }}>
+                                  <div className="logTraceMeta">
+                                    <span className="logTraceId">Технические детали ошибки</span>
+                                  </div>
+                                  <div className="logTraceText">{escapeTxtLine(row.error_details) || '-'}</div>
+                                </div>
+                              )}
+
+                              {children.length > 0 ? (
+                                <div className="logTraceList">
+                                  {children.map((child) => {
+                                    const childDetails = detailsRu(child.type, child.meta, child.items_count)
+                                    return (
+                                      <div key={child.id} className="logTraceItem">
+                                        <div className="logTraceMeta">
+                                          <span className="logTraceTime">{fmtDt('started_at', child.started_at)}</span>
+                                          <span className={`statusText ${child.status ?? ''}`.trim()}>{statusRu(child.status)}</span>
+                                          <span className="logTraceId">ID {child.id}</span>
+                                        </div>
+                                        <div className="logTraceText">{childDetails}</div>
+                                        {child.error_message && child.error_message !== '-' && (
+                                          <div className="logTraceError">Ошибка: {child.error_message}</div>
+                                        )}
                                       </div>
-                                      <div className="logTraceText">{childDetails}</div>
-                                      {child.error_message && child.error_message !== '-' && (
-                                        <div className="logTraceError">Ошибка: {child.error_message}</div>
-                                      )}
-                                    </div>
-                                  )
-                                })}
-                              </div>
+                                    )
+                                  })}
+                                </div>
+                              ) : (
+                                <div className="logTraceItem">
+                                  <div className="logTraceText">Вложенных трассировок для этой синхронизации нет.</div>
+                                </div>
+                              )}
                             </div>
                           </td>
                         </tr>
