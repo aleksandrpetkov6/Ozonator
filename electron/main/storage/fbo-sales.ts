@@ -835,6 +835,7 @@ export function mergeSalesRowsWithFboLocalDb(args: {
       ...row,
       related_postings: text(row?.related_postings) || text(extra?.related_postings),
       shipment_date: shipmentDate,
+      shipment_date_source: normalizedExtraShipment ? 'fbo_local_db' : text((row as any)?.shipment_date_source),
       delivery_date: deliveryDate,
       delivery_cluster: text(row?.delivery_cluster) || text(extra?.delivery_cluster),
       delivery_model: text(row?.delivery_model) || 'FBO',
