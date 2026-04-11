@@ -248,6 +248,85 @@ function normalizeNumberValue(value: any): number | '' {
   return n
 }
 
+function extractPostingItems(source: any): any[] {
+  const direct = pickFirstPresent(source, ['products', 'result.products', 'items', 'result.items'])
+  return Array.isArray(direct) ? direct : []
+}
+
+function extractFinancialProducts(source: any): any[] {
+  const direct = pickFirstPresent(source, ['financial_data.products', 'result.financial_data.products'])
+  return Array.isArray(direct) ? direct : []
+}
+
+function findSalesProductIdByItem(item: any, detailPosting: any, posting: any): string {
+  const directProductId = normalizeTextValue(pickFirstPresent(item, ['product_id', 'productId']))
+  if (directProductId) return directProductId
+
+  const offerId = normalizeTextValue(pickFirstPresent(item, ['offer_id', 'offerId', 'article']))
+  const sku = normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
+
+  for (const source of [detailPosting, posting]) {
+    for (const candidate of extractPostingItems(source)) {
+      const candidateProductId = normalizeTextValue(pickFirstPresent(candidate, ['product_id', 'productId']))
+      if (!candidateProductId) continue
+
+      const candidateOfferId = normalizeTextValue(pickFirstPresent(candidate, ['offer_id', 'offerId', 'article']))
+      if (offerId && candidateOfferId && candidateOfferId === offerId) return candidateProductId
+
+      const candidateSku = normalizeTextValue(pickFirstPresent(candidate, ['sku', 'sku_id', 'id']))
+      if (sku && candidateSku && candidateSku === sku) return candidateProductId
+    }
+  }
+
+  return ''
+}
+
+function findSalesFinancialProduct(item: any, detailPosting: any, posting: any): any {
+  const productId = findSalesProductIdByItem(item, detailPosting, posting)
+  const offerId = normalizeTextValue(pickFirstPresent(item, ['offer_id', 'offerId', 'article']))
+  const sku = normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
+
+  for (const source of [detailPosting, posting]) {
+    const financialProducts = extractFinancialProducts(source)
+    if (financialProducts.length === 0) continue
+
+    if (productId) {
+      const byProductId = financialProducts.find((candidate) => normalizeTextValue(pickFirstPresent(candidate, ['product_id', 'productId', 'id'])) === productId)
+      if (byProductId) return byProductId
+    }
+
+    if (offerId) {
+      const byOfferId = financialProducts.find((candidate) => normalizeTextValue(pickFirstPresent(candidate, ['offer_id', 'offerId', 'article'])) === offerId)
+      if (byOfferId) return byOfferId
+    }
+
+    if (sku) {
+      const bySku = financialProducts.find((candidate) => normalizeTextValue(pickFirstPresent(candidate, ['sku', 'sku_id'])) === sku)
+      if (bySku) return bySku
+    }
+
+    if (financialProducts.length === 1) return financialProducts[0]
+  }
+
+  return null
+}
+
+function resolveSalesItemPriceValue(item: any): number | '' {
+  return normalizeNumberValue(pickFirstPresent(item, ['price', 'your_price', 'seller_price']))
+}
+
+function resolveSalesItemPaidByCustomerValue(item: any, detailPosting: any, posting: any): number | '' {
+  const financialProduct = findSalesFinancialProduct(item, detailPosting, posting)
+  const financialClientPrice = normalizeNumberValue(pickFirstPresent(financialProduct, ['client_price', 'clientPrice']))
+  if (financialClientPrice !== '') return financialClientPrice
+
+  return normalizeNumberValue(pickFirstPresent(item, ['client_price', 'clientPrice', 'paid_by_customer', 'paidByCustomer']))
+}
+
+function resolveSalesItemQuantityValue(item: any): number | '' {
+  return normalizeNumberValue(pickFirstPresent(item, ['quantity', 'qty']))
+}
+
 export function extractPostingsFromPayload(payload: any): any[] {
   const fromResult = safeGetByPath(payload, 'result.postings', null)
   if (Array.isArray(fromResult)) return fromResult
@@ -850,9 +929,9 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
           delivery_date: deliveredAt || '',
           delivery_cluster: deliveryCluster || '',
           delivery_model: deliverySchema || '',
-          price: normalizeNumberValue(pickFirstPresent(item, ['price', 'your_price', 'seller_price'])),
-          quantity: normalizeNumberValue(pickFirstPresent(item, ['quantity', 'qty'])),
-          paid_by_customer: normalizeNumberValue(pickFirstPresent(item, ['payout', 'paid_by_buyer', 'price'])),
+          price: resolveSalesItemPriceValue(item),
+          quantity: resolveSalesItemQuantityValue(item),
+          paid_by_customer: resolveSalesItemPaidByCustomerValue(item, detailPosting, posting),
         }
         const dedupKey = `${postingNumber}|${sku}`
         const prev = dedup.get(dedupKey)
