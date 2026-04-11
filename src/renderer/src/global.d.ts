@@ -27,6 +27,7 @@ declare global {
     posting_number?: string | null
     related_postings?: string | null
     shipment_date?: string | null
+    shipment_date_source?: string | null
     status?: string | null
     status_details?: string | null
     carrier_status_details?: string | null
