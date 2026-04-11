@@ -525,6 +525,13 @@ function normalizeSalesPeriodDate(value: any): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ''
 }
 
+function buildUtcDayBoundaryIso(year: number, month: number, day: number, boundary: 'start' | 'end'): string {
+  const iso = boundary === 'start'
+    ? new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0))
+    : new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999))
+  return iso.toISOString()
+}
+
 export function buildSalesRequestBody(period: SalesPeriod | null | undefined, limit = 1000, offset = 0, endpoint?: string) {
   let from = normalizeSalesPeriodDate(period?.from)
   let to = normalizeSalesPeriodDate(period?.to)
@@ -537,8 +544,8 @@ export function buildSalesRequestBody(period: SalesPeriod | null | undefined, li
     const body = {
       dir: 'DESC',
       filter: {
-        since: new Date(fromYear, fromMonth - 1, fromDay, 0, 0, 0, 0).toISOString(),
-        to: new Date(toYear, toMonth - 1, toDay, 23, 59, 59, 999).toISOString(),
+        since: buildUtcDayBoundaryIso(fromYear, fromMonth, fromDay, 'start'),
+        to: buildUtcDayBoundaryIso(toYear, toMonth, toDay, 'end'),
       },
       limit,
       offset,
