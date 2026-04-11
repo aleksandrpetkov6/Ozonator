@@ -22,6 +22,12 @@ export type SalesPostingsReportRow = {
   delivery_schema: string
   shipment_date: string
   delivery_date: string
+  sku: string
+  offer_id: string
+  product_name: string
+  price: number | ''
+  quantity: number | ''
+  paid_by_customer: number | ''
   raw_row: Record<string, string>
 }
 
@@ -112,7 +118,7 @@ function resolvePeriodBounds(period: ReportPeriodInput | null | undefined): { fr
   return { from: formatDate(fromDate), to: formatDate(toDate) }
 }
 
-function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefined) {
+function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefined, deliverySchema: 'fbo' | 'fbs' = 'fbo') {
   const bounds = resolvePeriodBounds(period)
   const fromDate = new Date(`${bounds.from}T00:00:00.000Z`)
   const toDate = new Date(`${bounds.to}T23:59:59.999Z`)
@@ -121,7 +127,7 @@ function buildPostingsReportCreateBody(period: ReportPeriodInput | null | undefi
     filter: {
       processed_at_from: fromDate.toISOString(),
       processed_at_to: toDate.toISOString(),
-      delivery_schema: ['fbo'],
+      delivery_schema: [deliverySchema],
     },
     language: 'DEFAULT',
   }
@@ -502,6 +508,14 @@ function parseOzonLocalDateToIso(value: unknown): string {
   return ''
 }
 
+
+function parseCsvNumber(value: unknown): number | '' {
+  const raw = text(value).replace(/\s+/g, '').replace(',', '.')
+  if (!raw) return ''
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : ''
+}
+
 function normalizeDeliverySchema(value: unknown): string {
   const compact = text(value).toLowerCase().replace(/[^a-z]/g, '')
   if (!compact) return ''
@@ -555,6 +569,12 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
     'Дата отгрузки',
   ]))
   const deliveryDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата доставки', 'delivery_date', 'delivery date']))
+  const sku = pickRowValue(row, ['SKU', 'sku'])
+  const offerId = pickRowValue(row, ['Артикул', 'offer_id', 'offer id'])
+  const productName = pickRowValue(row, ['Название товара', 'Наименование товара', 'product_name', 'product name'])
+  const price = parseCsvNumber(pickRowValue(row, ['Ваша цена', 'price', 'seller_price']))
+  const quantity = parseCsvNumber(pickRowValue(row, ['Количество', 'quantity', 'qty']))
+  const paidByCustomer = parseCsvNumber(pickRowValue(row, ['Оплачено покупателем', 'client_price', 'paid_by_customer']))
 
   return {
     posting_number: postingNumber,
@@ -562,6 +582,12 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
     delivery_schema: deliverySchema,
     shipment_date: shipmentDate,
     delivery_date: deliveryDate,
+    sku,
+    offer_id: offerId,
+    product_name: productName,
+    price,
+    quantity,
+    paid_by_customer: paidByCustomer,
     raw_row: row,
   }
 }
@@ -576,7 +602,7 @@ function parseSalesPostingsReportCsv(csvText: string): {
   for (const rawRow of rawRows) {
     const mapped = mapCsvRowToSalesReportRow(rawRow)
     if (!mapped) continue
-    const key = `${mapped.delivery_schema}|${mapped.posting_number}`
+    const key = buildSalesPostingsReportRowKey(mapped)
     const prev = out.get(key)
     if (!prev || (!prev.shipment_date && mapped.shipment_date)) {
       out.set(key, mapped)
@@ -603,8 +629,9 @@ function parseSalesPostingsReportCsv(csvText: string): {
 async function fetchSingleSalesPostingsReportRows(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
+  deliverySchema: 'fbo' | 'fbs',
 ): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: { createBody: Record<string, unknown>; pollAttempts: ReportPollAttempt[]; download: ReportDownloadTrace; csv: ReportCsvTrace } }> {
-  const createBody = buildPostingsReportCreateBody(period)
+  const createBody = buildPostingsReportCreateBody(period, deliverySchema)
   const createResponse = await ozonReportPostingsCreate(secrets, createBody)
   const createResult = (createResponse && typeof createResponse === 'object' && 'result' in createResponse)
     ? (createResponse as any).result
@@ -663,12 +690,22 @@ async function fetchSingleSalesPostingsReportRows(
   }
 }
 
+function buildSalesPostingsReportRowKey(row: SalesPostingsReportRow): string {
+  return [
+    text(row?.delivery_schema).toUpperCase(),
+    text(row?.posting_number),
+    text(row?.sku),
+    text(row?.offer_id),
+    text(row?.product_name),
+  ].join('|')
+}
+
 function mergeSalesPostingsReportRows(rows: SalesPostingsReportRow[]): SalesPostingsReportRow[] {
   const out = new Map<string, SalesPostingsReportRow>()
   for (const row of rows) {
     const postingNumber = text(row?.posting_number)
     if (!postingNumber) continue
-    const key = postingNumber
+    const key = buildSalesPostingsReportRowKey(row)
     const prev = out.get(key)
     if (!prev) {
       out.set(key, row)
@@ -765,9 +802,10 @@ function buildAggregateDownloadTrace(segments: SalesPostingsReportTraceSegment[]
   }
 }
 
-export async function fetchSalesPostingsReportRows(
+async function fetchSalesPostingsReportRowsForSchema(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
+  deliverySchema: 'fbo' | 'fbs',
 ): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace }> {
   const bounds = resolvePeriodBounds(period)
   const totalDays = diffDaysInclusive(bounds.from, bounds.to)
@@ -787,10 +825,10 @@ export async function fetchSalesPostingsReportRows(
 
     for (const segment of strategy.segments) {
       try {
-        const single = await fetchSingleSalesPostingsReportRows(secrets, segment)
+        const single = await fetchSingleSalesPostingsReportRows(secrets, segment, deliverySchema)
         collectedRows.push(...single.rows)
         segmentTraces.push({
-          label: segment.label,
+          label: `${deliverySchema}:${segment.label}`,
           from: segment.from,
           to: segment.to,
           reportCode: single.reportCode,
@@ -806,12 +844,12 @@ export async function fetchSalesPostingsReportRows(
       } catch (error) {
         lastError = error
         segmentTraces.push({
-          label: segment.label,
+          label: `${deliverySchema}:${segment.label}`,
           from: segment.from,
           to: segment.to,
           reportCode: '',
           fileUrl: '',
-          createBody: buildPostingsReportCreateBody(segment) as Record<string, unknown>,
+          createBody: buildPostingsReportCreateBody(segment, deliverySchema) as Record<string, unknown>,
           pollAttempts: [],
           download: null,
           csv: null,
@@ -849,6 +887,68 @@ export async function fetchSalesPostingsReportRows(
           segments: segmentTraces,
         },
       }
+    }
+  }
+
+  if (lastError instanceof Error) throw lastError
+  throw new Error(`Ozon report error: postings report did not return any rows for ${deliverySchema}`)
+}
+
+export async function fetchSalesPostingsReportRows(
+  secrets: Secrets,
+  period: ReportPeriodInput | null | undefined,
+): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace }> {
+  const schemas: Array<'fbo' | 'fbs'> = ['fbo', 'fbs']
+  const allRows: SalesPostingsReportRow[] = []
+  const allSegments: SalesPostingsReportTraceSegment[] = []
+  let firstSuccess: { reportCode: string; fileUrl: string; trace: SalesPostingsReportTrace } | null = null
+  let hasPartial = false
+  let lastError: unknown = null
+
+  for (const schema of schemas) {
+    try {
+      const result = await fetchSalesPostingsReportRowsForSchema(secrets, period, schema)
+      allRows.push(...result.rows)
+      allSegments.push(...(Array.isArray(result.trace?.segments) ? result.trace.segments : []))
+      if (!firstSuccess) firstSuccess = result
+      if (result.trace?.partial) hasPartial = true
+    } catch (error) {
+      lastError = error
+      hasPartial = true
+      allSegments.push({
+        label: `${schema}:failed`,
+        from: resolvePeriodBounds(period).from,
+        to: resolvePeriodBounds(period).to,
+        reportCode: '',
+        fileUrl: '',
+        createBody: buildPostingsReportCreateBody(period, schema) as Record<string, unknown>,
+        pollAttempts: [],
+        download: null,
+        csv: null,
+        rows: 0,
+        rowsWithShipmentDate: 0,
+        error: text((error as any)?.message ?? error),
+      })
+    }
+  }
+
+  const mergedRows = mergeSalesPostingsReportRows(allRows)
+  if (mergedRows.length > 0 && firstSuccess) {
+    return {
+      reportCode: firstSuccess.reportCode,
+      fileUrl: firstSuccess.fileUrl,
+      rows: mergedRows,
+      trace: {
+        reportCode: firstSuccess.reportCode,
+        fileUrl: firstSuccess.fileUrl,
+        createBody: firstSuccess.trace.createBody,
+        pollAttempts: firstSuccess.trace.pollAttempts,
+        download: buildAggregateDownloadTrace(allSegments),
+        csv: buildAggregateCsvTrace(mergedRows, allSegments),
+        strategy: firstSuccess.trace.strategy,
+        partial: hasPartial || allSegments.some((segment) => Boolean(segment.error)),
+        segments: allSegments,
+      },
     }
   }
 

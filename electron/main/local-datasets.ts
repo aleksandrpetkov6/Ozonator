@@ -374,8 +374,9 @@ function logPaidByCustomerTrace(stage: string, args: {
   rows?: any[]
   payloads: Array<{ endpoint: string; payload: any }>
   postingDetailsByKey: Map<string, any>
+  reportRows?: SalesShipmentReportRow[]
 }) {
-  const trace = buildSalesPaidByCustomerTrace(args.payloads, args.postingDetailsByKey, args.rows as any)
+  const trace = buildSalesPaidByCustomerTrace(args.payloads, args.postingDetailsByKey, args.rows as any, args.reportRows as any)
   logFboShipmentTrace(stage, {
     storeClientId: args.storeClientId ?? null,
     period: args.period,
@@ -456,7 +457,7 @@ function parseJsonTextSafe(text: string | null | undefined) {
 }
 
 
-type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'order_number' | 'delivery_schema' | 'shipment_date' | 'delivery_date' | 'raw_row'>
+type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'order_number' | 'delivery_schema' | 'shipment_date' | 'delivery_date' | 'sku' | 'offer_id' | 'product_name' | 'price' | 'quantity' | 'paid_by_customer' | 'raw_row'>
 
 function normalizeDeliveryModelKey(value: unknown): string {
   const raw = normalizeTextValue(value).toLowerCase().replace(/[^a-z]/g, '')
@@ -509,9 +510,15 @@ function buildSalesShipmentReportRowsFromSnapshotMap(
       delivery_schema: normalizeTextValue(row?.delivery_schema),
       shipment_date: normalizeTextValue(row?.shipment_date),
       delivery_date: normalizeTextValue(row?.delivery_date),
+      sku: normalizeTextValue(row?.sku),
+      offer_id: normalizeTextValue(row?.offer_id),
+      product_name: normalizeTextValue(row?.product_name),
+      price: typeof row?.price === 'number' ? row.price : '',
+      quantity: typeof row?.quantity === 'number' ? row.quantity : '',
+      paid_by_customer: typeof row?.paid_by_customer === 'number' ? row.paid_by_customer : '',
       raw_row: row?.raw_row && typeof row.raw_row === 'object' ? row.raw_row : {},
     }))
-    .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number && row.shipment_date))
+    .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number))
 }
 
 function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentReportRow[]): any[] {
@@ -813,7 +820,7 @@ function buildSalesRowsFromPayloads(
     if (endpoint) sourceEndpoints.add(endpoint)
   }
 
-  const rows = normalizeSalesRows(payloads, products, postingDetailsByKey)
+  const rows = normalizeSalesRows(payloads, products, postingDetailsByKey, reportRows as any)
   const mergedRows = mergeSalesRowsWithFboLocalDb({
     rows,
     storeClientId: storeClientId ?? null,
@@ -925,6 +932,7 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
       rows: result.rows,
       payloads,
       postingDetailsByKey,
+      reportRows,
     })
 
     return result
@@ -1207,6 +1215,12 @@ export async function refreshSalesRawSnapshotFromApi(
           delivery_schema: normalizeTextValue(row?.delivery_schema),
           shipment_date: normalizeTextValue(row?.shipment_date),
           delivery_date: normalizeTextValue(row?.delivery_date),
+          sku: normalizeTextValue(row?.sku),
+          offer_id: normalizeTextValue(row?.offer_id),
+          product_name: normalizeTextValue(row?.product_name),
+          price: typeof row?.price === 'number' ? row.price : '',
+          quantity: typeof row?.quantity === 'number' ? row.quantity : '',
+          paid_by_customer: typeof row?.paid_by_customer === 'number' ? row.paid_by_customer : '',
           raw_row: row?.raw_row && typeof row.raw_row === 'object' ? row.raw_row : {},
         }))
         .filter((row) => row.posting_number)
@@ -1466,6 +1480,7 @@ export async function refreshSalesRawSnapshotFromApi(
       rows,
       payloads,
       postingDetailsByKey,
+      reportRows,
     })
 
     persistDatasetSnapshot({

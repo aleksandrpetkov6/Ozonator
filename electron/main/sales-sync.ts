@@ -1,4 +1,5 @@
 import { ozonPostingFboGet, ozonPostingFbsGet } from './ozon'
+import type { SalesPostingsReportRow } from './postings-report'
 
 export type SalesPeriod = {
   from?: string | null
@@ -37,6 +38,10 @@ export type SalesPaidByCustomerTrace = {
   detailWithFinancialDataObjectCount: number
   detailWithFinancialProductsArrayCount: number
   detailWithNonEmptyFinancialProductsCount: number
+  reportRowsCount: number
+  reportRowsWithPaidByCustomerCount: number
+  reportMatchedRowsCount: number
+  reportResolvedRowsCount: number
   finalRowsCount: number
   finalRowsWithPaidByCustomer: number
   finalRowsWithoutPaidByCustomer: number
@@ -397,6 +402,134 @@ function resolveSalesItemPaidByCustomerValue(item: any, detailPosting: any, post
 
 function resolveSalesItemQuantityValue(item: any): number | '' {
   return normalizeNumberValue(pickFirstPresent(item, ['quantity', 'qty']))
+}
+
+
+function normalizeSalesModelKey(value: any): string {
+  const raw = normalizeTextValue(value).toUpperCase()
+  if (!raw) return ''
+  if (raw === 'RFBS') return 'rFBS'
+  if (raw === 'FBS') return 'FBS'
+  if (raw === 'FBO') return 'FBO'
+  return raw
+}
+
+function buildSalesReportLookupCandidates(args: {
+  deliveryModel?: any
+  postingNumber?: any
+  sku?: any
+  offerId?: any
+  productName?: any
+}): string[] {
+  const postingNumber = normalizeTextValue(args.postingNumber)
+  if (!postingNumber) return []
+  const sku = normalizeTextValue(args.sku)
+  const offerId = normalizeTextValue(args.offerId)
+  const productName = normalizeTextValue(args.productName)
+  const model = normalizeSalesModelKey(args.deliveryModel)
+  const modelCandidates = model === 'rFBS' ? ['rFBS', 'FBS', '*'] : (model ? [model, '*'] : ['*'])
+  const out: string[] = []
+  const push = (...parts: string[]) => {
+    const candidate = parts.map((part) => normalizeTextValue(part)).join('|')
+    if (candidate && !out.includes(candidate)) out.push(candidate)
+  }
+
+  for (const modelCandidate of modelCandidates) {
+    if (sku && offerId && productName) push(modelCandidate, postingNumber, sku, offerId, productName)
+    if (sku && offerId) push(modelCandidate, postingNumber, sku, offerId)
+    if (sku) push(modelCandidate, postingNumber, sku)
+    if (offerId) push(modelCandidate, postingNumber, offerId)
+    if (productName) push(modelCandidate, postingNumber, productName)
+  }
+  return out
+}
+
+function buildSalesPaidByCustomerReportMap(reportRows: SalesPostingsReportRow[]): {
+  valueByKey: Map<string, number>
+  reportRowsCount: number
+  reportRowsWithPaidByCustomerCount: number
+} {
+  const valueByKey = new Map<string, number>()
+  let reportRowsCount = 0
+  let reportRowsWithPaidByCustomerCount = 0
+
+  for (const row of Array.isArray(reportRows) ? reportRows : []) {
+    reportRowsCount += 1
+    const paidValue = normalizeNumberValue(row?.paid_by_customer)
+    if (paidValue === '') continue
+    reportRowsWithPaidByCustomerCount += 1
+    const candidates = buildSalesReportLookupCandidates({
+      deliveryModel: row?.delivery_schema,
+      postingNumber: row?.posting_number,
+      sku: row?.sku,
+      offerId: row?.offer_id,
+      productName: row?.product_name,
+    })
+    for (const candidate of candidates) {
+      if (!valueByKey.has(candidate)) valueByKey.set(candidate, paidValue)
+    }
+  }
+
+  return { valueByKey, reportRowsCount, reportRowsWithPaidByCustomerCount }
+}
+
+function resolveSalesPaidByCustomerFromReportRow(
+  row: Pick<SalesRow, 'delivery_model' | 'posting_number' | 'sku' | 'offer_id' | 'name'>,
+  reportValueByKey: Map<string, number>,
+): number | '' {
+  const candidates = buildSalesReportLookupCandidates({
+    deliveryModel: row?.delivery_model,
+    postingNumber: row?.posting_number,
+    sku: row?.sku,
+    offerId: row?.offer_id,
+    productName: row?.name,
+  })
+  for (const candidate of candidates) {
+    const value = reportValueByKey.get(candidate)
+    if (value !== undefined) return value
+  }
+  return ''
+}
+
+function applySalesPaidByCustomerFromReportRows(rows: SalesRow[], reportRows: SalesPostingsReportRow[]): {
+  rows: SalesRow[]
+  reportRowsCount: number
+  reportRowsWithPaidByCustomerCount: number
+  reportMatchedRowsCount: number
+  reportResolvedRowsCount: number
+} {
+  const { valueByKey, reportRowsCount, reportRowsWithPaidByCustomerCount } = buildSalesPaidByCustomerReportMap(reportRows)
+  if (valueByKey.size === 0) {
+    return {
+      rows,
+      reportRowsCount,
+      reportRowsWithPaidByCustomerCount,
+      reportMatchedRowsCount: 0,
+      reportResolvedRowsCount: 0,
+    }
+  }
+
+  let reportMatchedRowsCount = 0
+  let reportResolvedRowsCount = 0
+  const nextRows = rows.map((row) => {
+    const reportPaid = resolveSalesPaidByCustomerFromReportRow(row, valueByKey)
+    if (reportPaid === '') return row
+    reportMatchedRowsCount += 1
+    if (normalizeNumberValue(row?.paid_by_customer) !== '') return row
+    reportResolvedRowsCount += 1
+    return {
+      ...row,
+      paid_by_customer: reportPaid,
+    }
+  })
+
+  return {
+    rows: nextRows,
+    reportRowsCount,
+    reportRowsWithPaidByCustomerCount,
+    reportMatchedRowsCount,
+    reportResolvedRowsCount,
+  }
 }
 
 export function extractPostingsFromPayload(payload: any): any[] {
@@ -931,7 +1064,12 @@ export async function fetchSalesPostingDetails(
   return out
 }
 
-export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: GridApiRow[], postingDetailsByKey?: Map<string, any>): SalesRow[] {
+export function normalizeSalesRows(
+  payloads: SalesPayloadEnvelope[],
+  products: GridApiRow[],
+  postingDetailsByKey?: Map<string, any>,
+  reportRows: SalesPostingsReportRow[] = [],
+): SalesRow[] {
   const productsByOfferId = new Map<string, GridApiRow>()
   const productsBySku = new Map<string, GridApiRow>()
   for (const product of products) {
@@ -1030,7 +1168,8 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
     const fallbackCluster = normalizeTextValue(fboOrderClusterMap.get(orderKey))
     if (fallbackCluster) row.delivery_cluster = fallbackCluster
   }
-  return rows.sort((a, b) => {
+  const rowsWithReportPaid = applySalesPaidByCustomerFromReportRows(rows, reportRows).rows
+  return rowsWithReportPaid.sort((a, b) => {
     const aAccepted = String(a?.in_process_at ?? '')
     const bAccepted = String(b?.in_process_at ?? '')
     if (aAccepted !== bAccepted) return bAccepted.localeCompare(aAccepted)
@@ -1045,6 +1184,7 @@ export function buildSalesPaidByCustomerTrace(
   payloads: SalesPayloadEnvelope[],
   postingDetailsByKey?: Map<string, any>,
   rows?: SalesRow[],
+  reportRows: SalesPostingsReportRow[] = [],
 ): SalesPaidByCustomerTrace {
   const postingKeys = new Set<string>()
   const postingsWithDetail = new Set<string>()
@@ -1112,6 +1252,15 @@ export function buildSalesPaidByCustomerTrace(
   }
 
   const finalRows = Array.isArray(rows) ? rows : []
+  const reportMapStats = buildSalesPaidByCustomerReportMap(reportRows)
+  let reportMatchedRowsCount = 0
+  let reportResolvedRowsCount = 0
+  for (const row of finalRows) {
+    const reportPaid = resolveSalesPaidByCustomerFromReportRow(row, reportMapStats.valueByKey)
+    if (reportPaid === '') continue
+    reportMatchedRowsCount += 1
+    if (normalizeNumberValue(row?.paid_by_customer) !== '') reportResolvedRowsCount += 1
+  }
   const rowsWithPaid = finalRows.filter((row) => normalizeNumberValue(row?.paid_by_customer) !== '')
   const rowsWithoutPaid = finalRows.filter((row) => normalizeNumberValue(row?.paid_by_customer) === '')
   const uniqueMissingPostingNumbers = Array.from(new Set(
@@ -1136,6 +1285,10 @@ export function buildSalesPaidByCustomerTrace(
     detailWithFinancialDataObjectCount,
     detailWithFinancialProductsArrayCount,
     detailWithNonEmptyFinancialProductsCount,
+    reportRowsCount: reportMapStats.reportRowsCount,
+    reportRowsWithPaidByCustomerCount: reportMapStats.reportRowsWithPaidByCustomerCount,
+    reportMatchedRowsCount,
+    reportResolvedRowsCount,
     finalRowsCount: finalRows.length,
     finalRowsWithPaidByCustomer: rowsWithPaid.length,
     finalRowsWithoutPaidByCustomer: rowsWithoutPaid.length,
