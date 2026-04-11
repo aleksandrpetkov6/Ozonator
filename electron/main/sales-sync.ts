@@ -690,8 +690,22 @@ function resolvePostingDeliveryDate(detailPosting: any, posting: any): string {
   return getFallbackDeliveryDateValue(detailPosting) || getFallbackDeliveryDateValue(posting)
 }
 
+function getSalesPostingItems(source: any): any[] {
+  if (!source || typeof source !== 'object') return []
+  const directProducts = safeGetByPath(source, 'products', null)
+  if (Array.isArray(directProducts)) return directProducts
+  const directItems = safeGetByPath(source, 'items', null)
+  if (Array.isArray(directItems)) return directItems
+  const resultProducts = safeGetByPath(source, 'result.products', null)
+  if (Array.isArray(resultProducts)) return resultProducts
+  const resultItems = safeGetByPath(source, 'result.items', null)
+  if (Array.isArray(resultItems)) return resultItems
+  return []
+}
+
 function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO' | ''): boolean {
   if (!posting || typeof posting !== 'object') return false
+  if (getSalesPostingItems(posting).length === 0) return true
   if (endpointKind === 'FBO') {
     const hasRelated = Boolean(buildRelatedPostingsText(posting))
     const hasShipmentDate = Boolean(getShipmentDateValue(null, posting, 'FBO'))
@@ -803,10 +817,6 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
   for (const envelope of payloads) {
     const endpointKind = normalizeSalesEndpointName(envelope.endpoint)
     for (const posting of extractPostingsFromPayload(envelope.payload)) {
-      const items = Array.isArray((posting as any)?.products)
-        ? (posting as any).products
-        : (Array.isArray((posting as any)?.items) ? (posting as any).items : [])
-      if (items.length === 0) continue
       const acceptedAt = normalizeDateValue(pickFirstPresent(posting, ['in_process_at', 'created_at', 'acceptance_date']))
       const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
       const orderKey = normalizeTextValue(pickFirstPresent(posting, ['order_id', 'order_number']))
@@ -814,6 +824,10 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
         ? Array.from(fboOrderPostingMap.get(orderKey) ?? []).filter((value) => value !== postingNumber)
         : []
       const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
+      const items = getSalesPostingItems(detailPosting).length > 0
+        ? getSalesPostingItems(detailPosting)
+        : getSalesPostingItems(posting)
+      if (items.length === 0) continue
       const related = buildRelatedPostingsText(detailPosting, fallbackRelated, posting)
       const shipmentDate = getShipmentDateValue(detailPosting, posting, endpointKind)
       const status = translateSalesCodeValue(pickFirstPresentFromSources(['status', 'state', 'result.status', 'result.state'], detailPosting, posting), 'status')
