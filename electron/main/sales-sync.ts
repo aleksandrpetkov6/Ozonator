@@ -703,9 +703,40 @@ function getSalesPostingItems(source: any): any[] {
   return []
 }
 
+function hasUsableSalesPostingItems(source: any): boolean {
+  return getSalesPostingItems(source).some((item) => Boolean(
+    normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
+    || normalizeTextValue(pickFirstPresent(item, ['offer_id', 'offerId', 'article']))
+    || normalizeTextValue(pickFirstPresent(item, ['name', 'product_name']))
+  ))
+}
+
+function mergeSalesPostingItems(detailPosting: any, posting: any): any[] {
+  const detailItems = getSalesPostingItems(detailPosting)
+  const postingItems = getSalesPostingItems(posting)
+  if (detailItems.length === 0 && postingItems.length === 0) return []
+  if (detailItems.length === 0) return postingItems
+  if (postingItems.length === 0) return detailItems
+
+  const out: any[] = []
+  const maxLen = Math.max(detailItems.length, postingItems.length)
+  for (let index = 0; index < maxLen; index += 1) {
+    const detailItem = detailItems[index] && typeof detailItems[index] === 'object' ? detailItems[index] : {}
+    const postingItem = postingItems[index] && typeof postingItems[index] === 'object' ? postingItems[index] : {}
+    out.push({
+      ...postingItem,
+      ...detailItem,
+      sku: pickFirstPresentFromSources(['sku', 'sku_id', 'id'], detailItem, postingItem),
+      offer_id: pickFirstPresentFromSources(['offer_id', 'offerId', 'article'], detailItem, postingItem),
+      name: pickFirstPresentFromSources(['name', 'product_name'], detailItem, postingItem),
+    })
+  }
+  return out
+}
+
 function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO' | ''): boolean {
   if (!posting || typeof posting !== 'object') return false
-  if (getSalesPostingItems(posting).length === 0) return true
+  if (!hasUsableSalesPostingItems(posting)) return true
   if (endpointKind === 'FBO') {
     const hasRelated = Boolean(buildRelatedPostingsText(posting))
     const hasShipmentDate = Boolean(getShipmentDateValue(null, posting, 'FBO'))
@@ -728,6 +759,42 @@ function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO
   if (!buildRelatedPostingsText(posting)) return true
   if (!getShipmentDateValue(null, posting, endpointKind)) return true
   if (!normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))) return true
+  return false
+}
+
+
+function shouldRefreshCachedSalesPostingDetail(existingDetail: any, posting: any, endpointKind: 'FBS' | 'FBO' | ''): boolean {
+  if (!existingDetail || typeof existingDetail !== 'object') return true
+
+  if (!hasUsableSalesPostingItems(posting) && !hasUsableSalesPostingItems(existingDetail)) {
+    return true
+  }
+
+  if (endpointKind === 'FBO') {
+    const hasRelated = Boolean(buildRelatedPostingsText(existingDetail, [], posting))
+    const hasDeliveryCluster = Boolean(normalizeTextValue(pickFirstPresentFromSources([
+      'financial_data.cluster_to',
+      'result.financial_data.cluster_to',
+      'cluster_to',
+      'result.cluster_to',
+    ], existingDetail, posting)))
+    const needsDeliveryBackfill = (getFactDeliveryDateValue(existingDetail) || getFactDeliveryDateValue(posting) || hasDeliveryDateSignal(existingDetail) || hasDeliveryDateSignal(posting) || hasDeliveredStatusSignal(existingDetail) || hasDeliveredStatusSignal(posting))
+      ? !Boolean(resolvePostingDeliveryDate(existingDetail, posting))
+      : false
+    return !hasRelated || !hasDeliveryCluster || needsDeliveryBackfill
+  }
+
+  if (getFactDeliveryDateValue(existingDetail)) return false
+  if (hasDeliveryDateSignal(existingDetail)) return true
+  if (hasDeliveredStatusSignal(existingDetail)) return true
+  if (!buildRelatedPostingsText(existingDetail, [], posting)) return true
+  if (!getShipmentDateValue(existingDetail, posting, endpointKind)) return true
+  if (!normalizeTextValue(pickFirstPresentFromSources([
+    'financial_data.cluster_to',
+    'result.financial_data.cluster_to',
+    'cluster_to',
+    'result.cluster_to',
+  ], existingDetail, posting))) return true
   return false
 }
 
@@ -762,7 +829,9 @@ export async function fetchSalesPostingDetails(
       const postingNumber = normalizeTextValue(pickFirstPresent(posting, ['posting_number', 'postingNumber']))
       if (!postingNumber || !shouldFetchSalesPostingDetails(posting, endpointKind)) continue
       const requestKey = getSalesPostingDetailsKey(endpointKind, postingNumber)
-      if (out.has(requestKey) || seen.has(requestKey)) continue
+      const existingDetail = out.get(requestKey)
+      if (existingDetail && !shouldRefreshCachedSalesPostingDetail(existingDetail, posting, endpointKind)) continue
+      if (seen.has(requestKey)) continue
       seen.add(requestKey)
       requests.push({ endpointKind, postingNumber })
     }
@@ -824,9 +893,7 @@ export function normalizeSalesRows(payloads: SalesPayloadEnvelope[], products: G
         ? Array.from(fboOrderPostingMap.get(orderKey) ?? []).filter((value) => value !== postingNumber)
         : []
       const detailPosting = postingDetailsByKey?.get(getSalesPostingDetailsKey(endpointKind, postingNumber)) ?? null
-      const items = getSalesPostingItems(detailPosting).length > 0
-        ? getSalesPostingItems(detailPosting)
-        : getSalesPostingItems(posting)
+      const items = mergeSalesPostingItems(detailPosting, posting)
       if (items.length === 0) continue
       const related = buildRelatedPostingsText(detailPosting, fallbackRelated, posting)
       const shipmentDate = getShipmentDateValue(detailPosting, posting, endpointKind)
