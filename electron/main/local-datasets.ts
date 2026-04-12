@@ -40,6 +40,7 @@ const FBO_SHIPMENT_TRACE_STAGE_LABELS: Record<string, string> = {
   'api.refresh.report.parsed': 'Продажи дата доставки: отчёт postings распарсен',
   'api.refresh.report.partial': 'Продажи дата доставки: отчёт postings собран частично',
   'api.refresh.report.persisted': 'Продажи дата доставки: строки отчёта сохранены в локальную БД',
+  'api.refresh.report.snapshot.persisted': 'Продажи дата доставки: snapshot отчёта сохранён в локальную БД',
   'api.refresh.report.empty': 'Продажи дата доставки: отчёт postings не дал дат доставки',
   'api.refresh.report.error': 'Продажи дата доставки: ошибка отчёта postings',
   'api.refresh.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена',
@@ -554,6 +555,47 @@ function normalizeSalesShipmentReportRawRow(value: unknown): Record<string, stri
 
 function normalizeSalesShipmentReportNumber(value: unknown): number | '' {
   return typeof value === 'number' && Number.isFinite(value) ? value : ''
+}
+
+function inspectPersistedPostingsReportSnapshot(
+  storeClientId: string | null | undefined,
+  requestedPeriod: SalesPeriod | null | undefined,
+) {
+  const latest = dbGetLatestApiRawResponses(storeClientId ?? null, [SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport])[0] ?? null
+  const payload = parseJsonTextSafe(latest?.response_body ?? null) as any
+  const rows = Array.isArray(payload?.rows) ? payload.rows : []
+  const normalizedRows = rows
+    .map((row: any): SalesShipmentReportRow => ({
+      posting_number: normalizeTextValue(row?.posting_number),
+      order_number: normalizeTextValue(row?.order_number),
+      delivery_schema: normalizeTextValue(row?.delivery_schema),
+      shipment_date: normalizeTextValue(row?.shipment_date),
+      shipment_origin: normalizeTextValue(row?.shipment_origin),
+      delivery_date: normalizeTextValue(row?.delivery_date),
+      status: normalizeTextValue(row?.status),
+      sku: normalizeTextValue(row?.sku),
+      offer_id: normalizeTextValue(row?.offer_id),
+      product_name: normalizeTextValue(row?.product_name),
+      price: normalizeSalesShipmentReportNumber(row?.price),
+      quantity: normalizeSalesShipmentReportNumber(row?.quantity),
+      paid_by_customer: normalizeSalesShipmentReportNumber(row?.paid_by_customer),
+      raw_row: normalizeSalesShipmentReportRawRow(row?.raw_row),
+    }))
+    .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number))
+
+  const snapshotPeriod = normalizeSalesPeriod(payload?.period ?? null)
+  const expectedPeriod = normalizeSalesPeriod(requestedPeriod)
+  return {
+    found: Boolean(latest),
+    fetchedAt: normalizeTextValue(latest?.fetched_at),
+    rowsCount: normalizedRows.length,
+    periodMatches: sameSalesPeriod(snapshotPeriod, expectedPeriod),
+    rowsWithDeliveryDate: countRowsWithDeliveryDate(normalizedRows),
+    rowsWithShipmentOrigin: countRowsWithShipmentOrigin(normalizedRows),
+    rowsWithStatus: countRowsWithStatus(normalizedRows),
+    rowsFboWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(normalizedRows, 'fbo'),
+    rowsFbsWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(normalizedRows, 'fbs'),
+  }
 }
 
 function normalizeDeliveryModelKey(value: unknown): string {
@@ -1890,6 +1932,26 @@ export async function refreshSalesRawSnapshotFromApi(
     persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport, {
       period: normalizedRequestedPeriod,
       rows: reportRows,
+    })
+
+    const persistedReportSnapshot = inspectPersistedPostingsReportSnapshot(secrets.clientId, requestedPeriod)
+    logFboShipmentTrace('api.refresh.report.snapshot.persisted', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      status: persistedReportSnapshot.found ? 'success' : 'error',
+      itemsCount: Number(persistedReportSnapshot.rowsCount ?? 0),
+      errorMessage: persistedReportSnapshot.found ? null : 'Snapshot отчёта postings не найден в api_raw_cache',
+      meta: {
+        reportSnapshotPersistedToApiRawCache: persistedReportSnapshot.found,
+        reportSnapshotRowsCount: persistedReportSnapshot.rowsCount,
+        reportSnapshotFetchedAt: persistedReportSnapshot.fetchedAt,
+        reportSnapshotPeriodMatches: persistedReportSnapshot.periodMatches,
+        reportSnapshotRowsWithDeliveryDate: persistedReportSnapshot.rowsWithDeliveryDate,
+        reportSnapshotRowsWithShipmentOrigin: persistedReportSnapshot.rowsWithShipmentOrigin,
+        reportSnapshotRowsWithStatus: persistedReportSnapshot.rowsWithStatus,
+        reportSnapshotRowsFboWithShipmentOrigin: persistedReportSnapshot.rowsFboWithShipmentOrigin,
+        reportSnapshotRowsFbsWithShipmentOrigin: persistedReportSnapshot.rowsFbsWithShipmentOrigin,
+      },
     })
 
     const { rows: builtRows, sourceEndpoints, deliveryDateTrace, statusTrace } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
