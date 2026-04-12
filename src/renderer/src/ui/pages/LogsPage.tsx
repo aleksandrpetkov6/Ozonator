@@ -84,6 +84,9 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
       if (typeof m?.fboRowsWithShipmentDate === 'number') parts.push(`строк с датой: ${m.fboRowsWithShipmentDate}`)
       if (typeof m?.salesRowsCount === 'number') parts.push(`строк продаж: ${m.salesRowsCount}`)
       if (typeof m?.reportRowsCount === 'number') parts.push(`строк отчёта: ${m.reportRowsCount}`)
+      if (typeof m?.reportRowsWithDeliveryDate === 'number') parts.push(`отчёт: дат доставки ${m.reportRowsWithDeliveryDate}`)
+      if (typeof m?.reportRowsFboWithDeliveryDate === 'number') parts.push(`отчёт FBO с датой: ${m.reportRowsFboWithDeliveryDate}`)
+      if (typeof m?.reportRowsFbsWithDeliveryDate === 'number') parts.push(`отчёт FBS/rFBS с датой: ${m.reportRowsFbsWithDeliveryDate}`)
       if (typeof m?.reportStrategy === 'string' && m.reportStrategy) {
         const strategyLabel = m.reportStrategy === 'chunked-1d'
           ? 'отчёт по дням'
@@ -113,11 +116,12 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
       if (m?.trace && typeof m.trace === 'object') {
         if (typeof m.trace?.postingsWithDetail === 'number') parts.push(`с деталями: ${m.trace.postingsWithDetail}`)
         if (typeof m.trace?.postingsWithShipmentTransferEvent === 'number') parts.push(`с event даты: ${m.trace.postingsWithShipmentTransferEvent}`)
-        if (typeof m.trace?.postingsWithResolvedShipmentDate === 'number') parts.push(`дата извлечена: ${m.trace.postingsWithResolvedShipmentDate}`)
+        if (typeof m.trace?.postingsWithResolvedShipmentDate === 'number') parts.push(`дата отгрузки извлечена: ${m.trace.postingsWithResolvedShipmentDate}`)
       }
       if (m?.persisted && typeof m.persisted === 'object') {
         if (typeof m.persisted?.shipmentTransferEventCount === 'number') parts.push(`event в БД: ${m.persisted.shipmentTransferEventCount}`)
-        if (typeof m.persisted?.shipmentDateCount === 'number') parts.push(`дат в БД: ${m.persisted.shipmentDateCount}`)
+        if (typeof m.persisted?.shipmentDateCount === 'number') parts.push(`дат отгрузки в БД: ${m.persisted.shipmentDateCount}`)
+        if (typeof m.persisted?.deliveryDateCount === 'number') parts.push(`дат доставки в БД: ${m.persisted.deliveryDateCount}`)
       }
       const failedSegments = Array.isArray(m?.failedSegmentSample) ? m.failedSegmentSample : []
       if (failedSegments.length > 0) {
@@ -132,10 +136,25 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
         if (sample.length > 0) parts.push(`fail: ${sample.join(' | ')}`)
       }
       if (typeof m?.reportBuildError === 'string' && m.reportBuildError) parts.push(`ошибка отчёта: ${m.reportBuildError}`)
+      if (typeof m?.salesRowsWithDeliveryDate === 'number') parts.push(`строк продаж с датой доставки: ${m.salesRowsWithDeliveryDate}`)
+      if (typeof m?.salesRowsWithoutDeliveryDate === 'number') parts.push(`строк продаж без даты доставки: ${m.salesRowsWithoutDeliveryDate}`)
+      if (typeof m?.fboRowsWithDeliveryDate === 'number') parts.push(`FBO строк с датой: ${m.fboRowsWithDeliveryDate}`)
+      if (typeof m?.fbsRowsWithDeliveryDate === 'number') parts.push(`FBS строк с датой: ${m.fbsRowsWithDeliveryDate}`)
+      if (typeof m?.rfbsRowsWithDeliveryDate === 'number') parts.push(`rFBS строк с датой: ${m.rfbsRowsWithDeliveryDate}`)
+      if (typeof m?.deliveryDateMatchedRows === 'number') parts.push(`совпало по posting_number: ${m.deliveryDateMatchedRows}`)
+      if (typeof m?.deliveryDateResolvedRows === 'number') parts.push(`дата доставки применена: ${m.deliveryDateResolvedRows}`)
+      if (typeof m?.deliveryDateClearedRows === 'number') parts.push(`очищено старых API дат: ${m.deliveryDateClearedRows}`)
+      if (typeof m?.reportDeliveryDateKeyCount === 'number') parts.push(`ключей даты доставки из CSV: ${m.reportDeliveryDateKeyCount}`)
+      const deliveryDateSample = Array.isArray(m?.reportDeliveryDateSample) ? m.reportDeliveryDateSample : []
+      if (deliveryDateSample.length > 0) parts.push(`пример дат из CSV: ${deliveryDateSample.slice(0, 3).join(', ')}`)
       const missing = Array.isArray(m?.trace?.missingShipmentDatePostingNumbers) ? m.trace.missingShipmentDatePostingNumbers : []
-      if (missing.length > 0) parts.push(`без даты: ${missing.slice(0, 3).join(', ')}`)
+      if (missing.length > 0) parts.push(`без даты отгрузки: ${missing.slice(0, 3).join(', ')}`)
+      const missingDelivery = Array.isArray(m?.missingDeliveryDatePostingNumbers) ? m.missingDeliveryDatePostingNumbers : []
+      if (missingDelivery.length > 0) parts.push(`без даты доставки: ${missingDelivery.slice(0, 5).join(', ')}`)
       const missingDetails = Array.isArray(m?.trace?.missingDetailPostingNumbers) ? m.trace.missingDetailPostingNumbers : []
       if (missingDetails.length > 0) parts.push(`без detail: ${missingDetails.slice(0, 3).join(', ')}`)
+      if (typeof m?.reportCode === 'string' && m.reportCode) parts.push(`код отчёта: ${m.reportCode}`)
+      if (typeof m?.fileUrl === 'string' && m.fileUrl) parts.push(`fileUrl: ${m.fileUrl}`)
       if (m?.traceKind === 'paid_by_customer') {
         if (typeof m?.totalPostingCount === 'number') parts.push(`отправлений: ${m.totalPostingCount}`)
         if (typeof m?.totalItemCount === 'number') parts.push(`товарных строк: ${m.totalItemCount}`)
