@@ -129,6 +129,12 @@ function uniqueSample(values: unknown[], limit = 10): string[] {
   return out
 }
 
+function pushTraceSample(target: string[], value: string, limit = 10) {
+  const normalized = normalizeTextValue(value)
+  if (!normalized || target.includes(normalized) || target.length >= limit) return
+  target.push(normalized)
+}
+
 function countRowsByDeliveryModel(rows: any[], modelRaw: string): number {
   const model = normalizeDeliveryModelKey(modelRaw)
   return (Array.isArray(rows) ? rows : []).filter((row) => normalizeDeliveryModelKey(row?.delivery_model) === model).length
@@ -915,13 +921,21 @@ function applySalesRelatedPostingPrefix(rows: any[]): any[] {
   })
 }
 
+type SalesDeliveryDateTrace = Record<string, any>
+
+type BuildSalesRowsResult = {
+  rows: any[]
+  sourceEndpoints: string[]
+  deliveryDateTrace: SalesDeliveryDateTrace
+}
+
 function buildSalesRowsFromPayloads(
   storeClientId: string | null | undefined,
   requestedPeriod: SalesPeriod | null | undefined,
   payloads: Array<{ endpoint: string; payload: any }>,
   postingDetailsByKey: Map<string, any>,
   reportRows: SalesShipmentReportRow[] = [],
-) {
+): BuildSalesRowsResult {
   const products = dbGetProducts(storeClientId ?? null)
   const sourceEndpoints = new Set<string>()
 
@@ -943,7 +957,7 @@ function buildSalesRowsFromPayloads(
     rows: normalizedRows,
     sourceEndpoints: Array.from(sourceEndpoints),
     deliveryDateTrace: {
-      ...(reportApplied.trace ?? {}),
+      ...((reportApplied.trace ?? {}) as SalesDeliveryDateTrace),
       finalRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(normalizedRows, 'fbo') + countRowsByDeliveryModelWithDeliveryDate(normalizedRows, 'fbs') + countRowsByDeliveryModelWithDeliveryDate(normalizedRows, 'rfbs'),
       finalRowsWithoutDeliveryDate: normalizedRows.length - (countRowsByDeliveryModelWithDeliveryDate(normalizedRows, 'fbo') + countRowsByDeliveryModelWithDeliveryDate(normalizedRows, 'fbs') + countRowsByDeliveryModelWithDeliveryDate(normalizedRows, 'rfbs')),
       fboRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(normalizedRows, 'fbo'),
