@@ -7,9 +7,7 @@ import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
 import { fetchSalesPostingsReportRows, type SalesPostingsReportDownloadArtifact, type SalesPostingsReportRow } from './postings-report'
 import type { Secrets } from './types'
 import { getDatasetSnapshotDefaultMergeStrategy, getDatasetSnapshotSchemaVersion } from './data-contracts'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { getPersistentRootDir } from './storage/paths'
+import { saveCurrentPersistentArtifacts } from './storage/persistent-artifacts'
 
 const SALES_CACHE_SNAPSHOT_ENDPOINTS = {
   fbs: '/__local__/sales-cache/fbs',
@@ -139,42 +137,28 @@ function uniqueSample(values: unknown[], limit = 10): string[] {
 }
 
 
-function sanitizeFilePart(value: unknown): string {
-  const normalized = normalizeTextValue(value).replace(/[\/:*?"<>|]+/g, '-').replace(/\s+/g, '_')
-  return normalized || 'unknown'
-}
-
-function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownloadArtifact[], fetchedAt: string): Array<{ path: string; schema: string; reportCode: string; headers: string[] }> {
+function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownloadArtifact[]): Array<{ path: string; schema: string; reportCode: string; headers: string[]; cleanedLegacyFilesCount: number }> {
   const safeArtifacts = Array.isArray(artifacts) ? artifacts : []
   if (safeArtifacts.length === 0) return []
 
-  const root = join(getPersistentRootDir(), 'reports', 'postings')
-  mkdirSync(root, { recursive: true })
-  const stamp = fetchedAt.replace(/[:.]/g, '-').replace(/[^0-9T\-Z]/g, '_')
-  const saved: Array<{ path: string; schema: string; reportCode: string; headers: string[] }> = []
+  const prepared = safeArtifacts.map((artifact) => ({
+    groupPath: ['reports', 'postings'],
+    slot: normalizeTextValue(artifact?.schema).toLowerCase() || 'unknown',
+    suffix: 'report',
+    extension: 'csv',
+    content: String(artifact?.csvText ?? ''),
+    headers: Array.isArray(artifact?.headerNames) ? artifact.headerNames.map((v) => normalizeTextValue(v)).filter(Boolean) : [],
+    reportCode: normalizeTextValue(artifact?.reportCode),
+  }))
 
-  for (const artifact of safeArtifacts) {
-    const schema = normalizeTextValue(artifact?.schema).toLowerCase() || 'unknown'
-    const reportCode = normalizeTextValue(artifact?.reportCode)
-    const from = sanitizeFilePart(artifact?.from)
-    const to = sanitizeFilePart(artifact?.to)
-    const entryName = sanitizeFilePart(artifact?.extractedEntryName || 'report.csv')
-    const fileName = `${stamp}__${schema}__${from}__${to}__${sanitizeFilePart(reportCode || 'report')}__${entryName.endsWith('.csv') ? entryName : `${entryName}.csv`}`
-    const filePath = join(root, fileName)
-    try {
-      writeFileSync(filePath, String(artifact?.csvText ?? ''), 'utf8')
-      saved.push({
-        path: filePath,
-        schema,
-        reportCode,
-        headers: Array.isArray(artifact?.headerNames) ? artifact.headerNames.map((v) => normalizeTextValue(v)).filter(Boolean) : [],
-      })
-    } catch {
-      // ignore write errors; they will be visible through empty saved list / paths in trace
-    }
-  }
-
-  return saved
+  const saved = saveCurrentPersistentArtifacts(prepared)
+  return saved.map((item, index) => ({
+    path: item.path,
+    schema: prepared[index].slot,
+    reportCode: prepared[index].reportCode,
+    headers: item.headers,
+    cleanedLegacyFilesCount: item.cleanedLegacyFilesCount,
+  }))
 }
 
 
@@ -1719,7 +1703,7 @@ export async function refreshSalesRawSnapshotFromApi(
         }))
         .filter((row) => row.posting_number)
 
-      reportSavedCsvFiles = persistSalesPostingsCsvArtifacts(Array.isArray(report.downloads) ? report.downloads : [], new Date().toISOString())
+      reportSavedCsvFiles = persistSalesPostingsCsvArtifacts(Array.isArray(report.downloads) ? report.downloads : [])
 
       const reportSegments = Array.isArray(reportTrace?.segments) ? reportTrace.segments : []
       const failedSegments = reportSegments.filter((segment: any) => normalizeTextValue(segment?.error))
@@ -1782,6 +1766,7 @@ export async function refreshSalesRawSnapshotFromApi(
           download: reportTrace?.download ?? null,
           reportSavedCsvCount: reportSavedCsvFiles.length,
           reportSavedCsvPaths: reportSavedCsvFiles.map((item) => item.path),
+          reportSavedCsvCleanupCount: reportSavedCsvFiles.reduce((sum, item) => sum + Number(item.cleanedLegacyFilesCount || 0), 0),
           reportCsvHeaderCount: Number(reportTrace?.csv?.headerCount ?? 0),
           reportCsvHeaderNames: Array.isArray(reportTrace?.csv?.headerNames) ? reportTrace.csv.headerNames : [],
           reportStrategy: reportTrace?.strategy ?? 'single',
@@ -1815,6 +1800,7 @@ export async function refreshSalesRawSnapshotFromApi(
           reportStatusSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.status)).map((row) => normalizeSalesReportStatusValue(row?.status)), 10),
           reportSavedCsvCount: reportSavedCsvFiles.length,
           reportSavedCsvPaths: reportSavedCsvFiles.map((item) => item.path),
+          reportSavedCsvCleanupCount: reportSavedCsvFiles.reduce((sum, item) => sum + Number(item.cleanedLegacyFilesCount || 0), 0),
           reportCsvHeaderCount: Number(reportTrace?.csv?.headerCount ?? 0),
           reportCsvHeaderNames: Array.isArray(reportTrace?.csv?.headerNames) ? reportTrace.csv.headerNames : [],
           reportStrategy: reportTrace?.strategy ?? 'single',
