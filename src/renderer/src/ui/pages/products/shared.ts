@@ -25,7 +25,7 @@ export type GridRow = {
   delivery_model?: string | null
   currency?: string | null
   item_currency?: string | null
-  customer_currency_in_item_currency?: string | null
+  customer_currency_in_item_currency?: number | string | null
   shipment_date?: string | null
   shipment_date_source?: string | null
   status?: string | null
@@ -345,11 +345,9 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
       asMainCol({ id: 'posting_number', title: 'Номер отправления', w: 220, visible: true }),
       asMainCol({ id: 'related_postings', title: 'Связанные отправления', w: 300, visible: true }),
       asMainCol({ id: 'delivery_model', title: 'Метод доставки', w: 150, visible: true }),
-      asMainCol({ id: 'price', title: 'Ваша цена', w: 130, visible: true, getSortValue: (row) => toSortNumber(row.price) }),
-      asMainCol({ id: 'item_currency', title: 'Валюта товара', w: 140, visible: true }),
-      asMainCol({ id: 'paid_by_customer', title: 'Оплачено покупателем в своей валюте', w: 280, visible: true, getSortValue: (row) => toSortNumber(row.paid_by_customer) }),
-      asMainCol({ id: 'currency', title: 'Валюта покупателя', w: 170, visible: true }),
-      asMainCol({ id: 'customer_currency_in_item_currency', title: 'Оплачено покупателем в (валюта товара)', w: 320, visible: true }),
+      asMainCol({ id: 'price', title: 'Ваша цена в (код валюты товара)', w: 210, visible: true, getSortValue: (row) => toSortNumber(row.price) }),
+      asMainCol({ id: 'paid_by_customer', title: 'Оплачено покупателем', w: 260, visible: true, getSortValue: (row) => toSortNumber(row.paid_by_customer) }),
+      asMainCol({ id: 'customer_currency_in_item_currency', title: 'Оплачено покупателем в (валюта товара)', w: 320, visible: true, getSortValue: (row) => toSortNumber(row.customer_currency_in_item_currency) }),
       asMainCol({ id: 'quantity', title: 'Количество', w: 120, visible: true, getSortValue: (row) => toSortNumber(row.quantity) }),
       asMainCol({ id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.shipment_date) ?? '' }),
       asMainCol({ id: 'status', title: 'Статус', w: 180, visible: true }),
