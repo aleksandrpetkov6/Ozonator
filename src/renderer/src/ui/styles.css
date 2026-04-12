@@ -1426,8 +1426,7 @@ button:disabled{
   word-break: break-word;
 }
 
-.logTypeTextExpandable,
-.logActionText{
+.logTypeTextExpandable{
   color: rgba(10,80,180,.96);
   text-decoration: underline;
   text-decoration-thickness: 1px;
@@ -1436,13 +1435,11 @@ button:disabled{
   user-select: none;
 }
 
-.logTypeTextExpandable:hover,
-.logActionText:hover{
+.logTypeTextExpandable:hover{
   color: rgba(10,90,200,1);
 }
 
-.logTypeTextExpandable:focus-visible,
-.logActionText:focus-visible{
+.logTypeTextExpandable:focus-visible{
   outline: 2px solid rgba(10,132,255,.35);
   outline-offset: 2px;
   border-radius: 4px;
@@ -1458,8 +1455,90 @@ button:disabled{
 }
 
 .logDetailsPanel{
-  padding: 10px 12px 12px;
+  padding: 12px 14px 14px;
   border-top: 1px solid rgba(60,60,67,.10);
+}
+
+.logDetailsSubtitle{
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(60,60,67,.72);
+}
+
+.logActionButton{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(10,132,255,.18);
+  background: linear-gradient(180deg, rgba(255,255,255,.98) 0%, rgba(245,249,255,.98) 100%);
+  color: rgba(10,80,180,.96);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(10,132,255,.08);
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, color .18s ease, background .18s ease;
+}
+
+.logActionButton:hover{
+  transform: translateY(-1px) scale(1.01);
+  box-shadow: 0 8px 18px rgba(10,132,255,.12);
+  border-color: rgba(10,132,255,.28);
+}
+
+.logActionButton:focus-visible{
+  outline: 2px solid rgba(10,132,255,.35);
+  outline-offset: 2px;
+}
+
+.logActionButtonIcon{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(10,132,255,.10);
+  flex: 0 0 auto;
+}
+
+.logActionButton.is-saving{
+  color: rgba(28,28,30,.88);
+  border-color: rgba(60,60,67,.16);
+}
+
+.logActionButton.is-saving .logActionButtonIcon{
+  animation: logDownloadPulse 1s ease-in-out infinite;
+}
+
+.logActionButton.is-done{
+  color: rgba(18,122,61,.96);
+  border-color: rgba(18,122,61,.20);
+  background: linear-gradient(180deg, rgba(247,255,250,.98) 0%, rgba(237,252,242,.98) 100%);
+}
+
+.logActionButton.is-done .logActionButtonIcon{
+  background: rgba(18,122,61,.12);
+  animation: logDownloadDone .5s ease;
+}
+
+.logActionButton.is-error{
+  color: rgba(196,43,28,.96);
+  border-color: rgba(196,43,28,.18);
+  background: linear-gradient(180deg, rgba(255,249,249,.98) 0%, rgba(255,241,240,.98) 100%);
+}
+
+@keyframes logDownloadPulse{
+  0%, 100% { transform: scale(1); opacity: .85; }
+  50% { transform: scale(1.16); opacity: 1; }
+}
+
+@keyframes logDownloadDone{
+  0% { transform: scale(.84); }
+  60% { transform: scale(1.14); }
+  100% { transform: scale(1); }
 }
 
 .logDetailsToolbar{
@@ -1479,7 +1558,7 @@ button:disabled{
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   font-size: 12px;
   color: rgba(60,60,67,.82);
 }
@@ -1488,6 +1567,10 @@ button:disabled{
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.86);
+  border: 1px solid rgba(60,60,67,.08);
 }
 
 .logDetailsSummary span{
@@ -1495,47 +1578,154 @@ button:disabled{
   color: rgba(28,28,30,.82);
 }
 
-.logTraceList{
+.logSectionList{
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
-.logTraceItem{
-  padding: 8px 10px;
-  border-radius: 10px;
+.logSection{
+  padding: 12px;
+  border-radius: 14px;
   border: 1px solid rgba(60,60,67,.10);
-  background: rgba(255,255,255,.88);
+  background: rgba(255,255,255,.92);
 }
 
-.logTraceMeta{
+.logSectionError{
+  border-color: rgba(196,43,28,.16);
+  background: rgba(255,248,248,.96);
+}
+
+.logSectionHeader{
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 4px;
-  font-size: 12px;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
-.logTraceTime,
-.logTraceId{
+.logSectionTitle{
+  font-weight: 700;
+  color: rgba(28,28,30,.92);
+}
+
+.logSectionIntro{
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.4;
   color: rgba(60,60,67,.78);
 }
 
-.logTraceText,
-.logTraceError{
+.logSectionMetrics{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin-top: 10px;
+}
+
+.logMetricItem{
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(247,249,252,.92);
+  border: 1px solid rgba(60,60,67,.08);
+}
+
+.logMetricLabel{
+  display: block;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(60,60,67,.68);
+  text-transform: uppercase;
+  letter-spacing: .02em;
+}
+
+.logMetricValue{
+  display: block;
+  line-height: 1.35;
+  color: rgba(28,28,30,.90);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.logSectionNotes,
+.logSectionErrors{
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.logSectionNote,
+.logSectionErrorText{
+  line-height: 1.4;
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
-  line-height: 1.3;
 }
 
-.logTraceError{
-  margin-top: 4px;
+.logSectionErrorText{
   color: var(--red);
+}
+
+.logSectionSteps{
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.logStepItem{
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(247,249,252,.92);
+  border: 1px solid rgba(60,60,67,.08);
+}
+
+.logStepMeta{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.logStepId{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(10,132,255,.10);
+  color: rgba(10,80,180,.92);
+  font-weight: 700;
+}
+
+.logStepTime{
+  color: rgba(60,60,67,.78);
+}
+
+.logStepTitle{
+  font-weight: 600;
+  color: rgba(28,28,30,.90);
+  line-height: 1.35;
+}
+
+.logStepSummary{
+  margin-top: 4px;
+  color: rgba(60,60,67,.82);
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 980px){
   .logDetailsSummary{
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .logSectionMetrics{
+    grid-template-columns: 1fr;
   }
 }
