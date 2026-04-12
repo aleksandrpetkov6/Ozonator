@@ -8,6 +8,8 @@ import { ensurePersistentStorageReady, getLifecycleMarkerPath, getPersistentDbPa
 let db: Database.Database | null = null
 
 const DEFAULT_LOG_RETENTION_DAYS = 30
+const DEFAULT_API_RAW_RETENTION_DAYS = 14
+const DEFAULT_API_RAW_HEAVY_ENDPOINT_KEEP_LAST = 5
 const MAX_JSON_LEN = 20000
 const MAX_API_JSON_LEN = 750000
 const REINSTALL_UNINSTALL_SUPPRESS_WINDOW_MS = 10 * 60 * 1000
@@ -56,6 +58,63 @@ export type ApiRawCacheStoredRow = ApiRawCacheEntryRow & {
   response_body_len: number | null
 }
 
+export type DatasetCoverageStatus = 'missing' | 'scheduled' | 'fetching' | 'stale' | 'error' | 'cancelled' | 'skipped'
+export type DatasetCoverageMaterializationStatus = 'none' | 'raw_saved' | 'parsing' | 'materialized_ready' | 'snapshotting' | 'ui_ready'
+export type TransferSessionState = 'new' | 'active' | 'paused_no_network' | 'paused_rate_limited' | 'paused_budget' | 'paused_by_user' | 'resuming' | 'completed' | 'expired' | 'failed'
+
+export type DatasetCoverageRow = {
+  dataset: string
+  scope_key: string
+  chunk_key: string
+  field_class: string
+  status: DatasetCoverageStatus
+  materialization_status: DatasetCoverageMaterializationStatus
+  fetched_at: string | null
+  expires_at: string | null
+  rows_count: number | null
+  source_cursor: string | null
+  high_watermark: string | null
+  revision_token: string | null
+  delta_token: string | null
+  content_hash: string | null
+  apply_checkpoint: string | null
+  attempt_count: number | null
+  last_error_code: string | null
+  last_error_at: string | null
+  contract_version: string | null
+  parser_version: string | null
+  snapshot_version: string | null
+  is_dirty: number | null
+  visible_after_at: string | null
+  updated_at: string
+  transfer_session_id: string | null
+}
+
+export type TransferSessionRow = {
+  session_id: string
+  dataset: string
+  scope_key: string
+  chunk_key: string
+  field_class: string
+  transfer_state: TransferSessionState
+  resume_cursor: string | null
+  sent_cursor: string | null
+  committed_cursor: string | null
+  last_ack_token: string | null
+  bytes_or_rows_confirmed: number | null
+  progress_total_units: number | null
+  progress_confirmed_units: number | null
+  lease_owner: string | null
+  lease_acquired_at: string | null
+  lease_expires_at: string | null
+  heartbeat_at: string | null
+  retry_after_at: string | null
+  pause_reason: string | null
+  session_expires_at: string | null
+  created_at: string
+  updated_at: string
+}
+
 const GRID_COLS_KEY_PREFIX = 'grid_cols_layout:'
 
 function dbPath() {
@@ -102,6 +161,16 @@ function parsePositiveInt(value: unknown, fallback: number): number {
 function normalizeRetentionDays(value: unknown): number {
   const n = parsePositiveInt(value, DEFAULT_LOG_RETENTION_DAYS)
   return Math.min(3650, Math.max(1, n))
+}
+
+function normalizeApiRawRetentionDays(value: unknown): number {
+  const n = parsePositiveInt(value, DEFAULT_API_RAW_RETENTION_DAYS)
+  return Math.min(3650, Math.max(1, n))
+}
+
+function normalizePositiveKeepLast(value: unknown): number {
+  const n = parsePositiveInt(value, DEFAULT_API_RAW_HEAVY_ENDPOINT_KEEP_LAST)
+  return Math.min(500, Math.max(1, n))
 }
 
 function safeJson(value: any): string | null {
@@ -627,6 +696,67 @@ export function ensureDb() {
     CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_lookup ON dataset_snapshots(store_client_id, dataset, scope_key);
     CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_time ON dataset_snapshots(fetched_at DESC);
 
+    CREATE TABLE IF NOT EXISTS dataset_coverage (
+      dataset TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      chunk_key TEXT NOT NULL,
+      field_class TEXT NOT NULL,
+      status TEXT NOT NULL,
+      materialization_status TEXT NOT NULL,
+      fetch_priority INTEGER NULL,
+      rows_count INTEGER NULL,
+      fetched_at TEXT NULL,
+      expires_at TEXT NULL,
+      source_cursor TEXT NULL,
+      high_watermark TEXT NULL,
+      revision_token TEXT NULL,
+      delta_token TEXT NULL,
+      content_hash TEXT NULL,
+      apply_checkpoint TEXT NULL,
+      attempt_count INTEGER NULL,
+      last_error_code TEXT NULL,
+      last_error_at TEXT NULL,
+      contract_version TEXT NULL,
+      parser_version TEXT NULL,
+      snapshot_version TEXT NULL,
+      is_dirty INTEGER NULL,
+      visible_after_at TEXT NULL,
+      updated_at TEXT NOT NULL,
+      transfer_session_id TEXT NULL,
+      PRIMARY KEY (dataset, scope_key, chunk_key, field_class)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dataset_coverage_lookup ON dataset_coverage(dataset, scope_key, chunk_key, field_class);
+    CREATE INDEX IF NOT EXISTS idx_dataset_coverage_status ON dataset_coverage(status, materialization_status, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS transfer_sessions (
+      session_id TEXT PRIMARY KEY,
+      dataset TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      chunk_key TEXT NOT NULL,
+      field_class TEXT NOT NULL,
+      transfer_state TEXT NOT NULL,
+      resume_cursor TEXT NULL,
+      sent_cursor TEXT NULL,
+      committed_cursor TEXT NULL,
+      last_ack_token TEXT NULL,
+      bytes_or_rows_confirmed INTEGER NULL,
+      progress_total_units INTEGER NULL,
+      progress_confirmed_units INTEGER NULL,
+      lease_owner TEXT NULL,
+      lease_acquired_at TEXT NULL,
+      lease_expires_at TEXT NULL,
+      heartbeat_at TEXT NULL,
+      retry_after_at TEXT NULL,
+      pause_reason TEXT NULL,
+      session_expires_at TEXT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_transfer_sessions_dataset_scope ON transfer_sessions(dataset, scope_key, chunk_key, field_class);
+    CREATE INDEX IF NOT EXISTS idx_transfer_sessions_state ON transfer_sessions(transfer_state, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS cbr_rate_days (
       requested_date TEXT PRIMARY KEY,
       effective_date TEXT NULL,
@@ -735,8 +865,15 @@ export function ensureDb() {
   if (getSettingValue('log_retention_days') == null) {
     setSettingValue('log_retention_days', String(DEFAULT_LOG_RETENTION_DAYS))
   }
+  if (getSettingValue('raw_cache_retention_days') == null) {
+    setSettingValue('raw_cache_retention_days', String(DEFAULT_API_RAW_RETENTION_DAYS))
+  }
+  if (getSettingValue('raw_cache_heavy_keep_last') == null) {
+    setSettingValue('raw_cache_heavy_keep_last', String(DEFAULT_API_RAW_HEAVY_ENDPOINT_KEEP_LAST))
+  }
 
   dbPruneLogsByRetention()
+  dbPruneApiRawCacheByRetention()
 }
 
 export function dbRecordApiRawResponse(args: {
@@ -831,6 +968,260 @@ export function dbRecordApiRawResponse(args: {
   })
 
   tx()
+  dbPruneApiRawCacheByRetention()
+}
+
+export function dbPruneApiRawCacheByRetention() {
+  const retentionDays = normalizeApiRawRetentionDays(getSettingValue('raw_cache_retention_days') ?? DEFAULT_API_RAW_RETENTION_DAYS)
+  const heavyKeepLast = normalizePositiveKeepLast(getSettingValue('raw_cache_heavy_keep_last') ?? DEFAULT_API_RAW_HEAVY_ENDPOINT_KEEP_LAST)
+  const cutoffMs = Date.now() - (retentionDays * 24 * 60 * 60 * 1000)
+  const cutoffIso = new Date(cutoffMs).toISOString()
+
+  mustDb().prepare(`
+    DELETE FROM api_raw_cache
+    WHERE fetched_at < ?
+  `).run(cutoffIso)
+
+  const heavyRows = mustDb().prepare(`
+    SELECT DISTINCT endpoint
+    FROM api_raw_cache
+    WHERE endpoint LIKE '/__local__/sales-cache/%'
+  `).all() as Array<{ endpoint?: string }>
+
+  const deleteHeavyStmt = mustDb().prepare(`
+    DELETE FROM api_raw_cache
+    WHERE endpoint = ?
+      AND id NOT IN (
+        SELECT id
+        FROM api_raw_cache
+        WHERE endpoint = ?
+        ORDER BY fetched_at DESC, id DESC
+        LIMIT ?
+      )
+  `)
+
+  for (const row of heavyRows) {
+    const endpoint = String(row?.endpoint ?? '').trim()
+    if (!endpoint) continue
+    deleteHeavyStmt.run(endpoint, endpoint, heavyKeepLast)
+  }
+}
+
+export function dbUpsertDatasetCoverage(args: {
+  dataset: string
+  scopeKey?: string | null
+  chunkKey?: string | null
+  fieldClass?: string | null
+  status: DatasetCoverageStatus
+  materializationStatus: DatasetCoverageMaterializationStatus
+  fetchPriority?: number | null
+  rowsCount?: number | null
+  fetchedAt?: string | null
+  expiresAt?: string | null
+  sourceCursor?: string | null
+  highWatermark?: string | null
+  revisionToken?: string | null
+  deltaToken?: string | null
+  contentHash?: string | null
+  applyCheckpoint?: string | null
+  attemptCount?: number | null
+  lastErrorCode?: string | null
+  lastErrorAt?: string | null
+  contractVersion?: string | null
+  parserVersion?: string | null
+  snapshotVersion?: string | null
+  isDirty?: boolean | number | null
+  visibleAfterAt?: string | null
+  transferSessionId?: string | null
+}) {
+  const dataset = String(args.dataset ?? '').trim()
+  if (!dataset) throw new Error('Некорректный dataset для dataset_coverage')
+
+  const scopeKey = String(args.scopeKey ?? '').trim()
+  const chunkKey = String(args.chunkKey ?? '').trim() || scopeKey || '__full__'
+  const fieldClass = String(args.fieldClass ?? '').trim() || 'core'
+  const updatedAt = new Date().toISOString()
+
+  mustDb().prepare(`
+    INSERT INTO dataset_coverage (
+      dataset, scope_key, chunk_key, field_class,
+      status, materialization_status,
+      fetch_priority, rows_count, fetched_at, expires_at,
+      source_cursor, high_watermark, revision_token, delta_token,
+      content_hash, apply_checkpoint, attempt_count,
+      last_error_code, last_error_at,
+      contract_version, parser_version, snapshot_version,
+      is_dirty, visible_after_at, updated_at, transfer_session_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(dataset, scope_key, chunk_key, field_class) DO UPDATE SET
+      status = excluded.status,
+      materialization_status = excluded.materialization_status,
+      fetch_priority = excluded.fetch_priority,
+      rows_count = excluded.rows_count,
+      fetched_at = excluded.fetched_at,
+      expires_at = excluded.expires_at,
+      source_cursor = excluded.source_cursor,
+      high_watermark = excluded.high_watermark,
+      revision_token = excluded.revision_token,
+      delta_token = excluded.delta_token,
+      content_hash = excluded.content_hash,
+      apply_checkpoint = excluded.apply_checkpoint,
+      attempt_count = excluded.attempt_count,
+      last_error_code = excluded.last_error_code,
+      last_error_at = excluded.last_error_at,
+      contract_version = excluded.contract_version,
+      parser_version = excluded.parser_version,
+      snapshot_version = excluded.snapshot_version,
+      is_dirty = excluded.is_dirty,
+      visible_after_at = excluded.visible_after_at,
+      updated_at = excluded.updated_at,
+      transfer_session_id = excluded.transfer_session_id
+  `).run(
+    dataset,
+    scopeKey,
+    chunkKey,
+    fieldClass,
+    args.status,
+    args.materializationStatus,
+    typeof args.fetchPriority === 'number' && Number.isFinite(args.fetchPriority) ? Math.trunc(args.fetchPriority) : null,
+    typeof args.rowsCount === 'number' && Number.isFinite(args.rowsCount) ? Math.trunc(args.rowsCount) : null,
+    args.fetchedAt ?? null,
+    args.expiresAt ?? null,
+    args.sourceCursor ?? null,
+    args.highWatermark ?? null,
+    args.revisionToken ?? null,
+    args.deltaToken ?? null,
+    args.contentHash ?? null,
+    args.applyCheckpoint ?? null,
+    typeof args.attemptCount === 'number' && Number.isFinite(args.attemptCount) ? Math.trunc(args.attemptCount) : null,
+    args.lastErrorCode ?? null,
+    args.lastErrorAt ?? null,
+    args.contractVersion ?? null,
+    args.parserVersion ?? null,
+    args.snapshotVersion ?? null,
+    args.isDirty == null ? null : (Number(args.isDirty) ? 1 : 0),
+    args.visibleAfterAt ?? null,
+    updatedAt,
+    args.transferSessionId ?? null,
+  )
+}
+
+export function dbGetDatasetCoverage(args: {
+  dataset: string
+  scopeKey?: string | null
+  chunkKey?: string | null
+  fieldClass?: string | null
+}): DatasetCoverageRow | null {
+  const dataset = String(args.dataset ?? '').trim()
+  if (!dataset) return null
+  const scopeKey = String(args.scopeKey ?? '').trim()
+  const chunkKey = String(args.chunkKey ?? '').trim() || scopeKey || '__full__'
+  const fieldClass = String(args.fieldClass ?? '').trim() || 'core'
+
+  const row = mustDb().prepare(`
+    SELECT *
+    FROM dataset_coverage
+    WHERE dataset = ? AND scope_key = ? AND chunk_key = ? AND field_class = ?
+    LIMIT 1
+  `).get(dataset, scopeKey, chunkKey, fieldClass) as DatasetCoverageRow | undefined
+
+  return row ?? null
+}
+
+export function dbUpsertTransferSession(args: {
+  sessionId: string
+  dataset: string
+  scopeKey?: string | null
+  chunkKey?: string | null
+  fieldClass?: string | null
+  transferState: TransferSessionState
+  resumeCursor?: string | null
+  sentCursor?: string | null
+  committedCursor?: string | null
+  lastAckToken?: string | null
+  bytesOrRowsConfirmed?: number | null
+  progressTotalUnits?: number | null
+  progressConfirmedUnits?: number | null
+  leaseOwner?: string | null
+  leaseAcquiredAt?: string | null
+  leaseExpiresAt?: string | null
+  heartbeatAt?: string | null
+  retryAfterAt?: string | null
+  pauseReason?: string | null
+  sessionExpiresAt?: string | null
+}) {
+  const sessionId = String(args.sessionId ?? '').trim()
+  const dataset = String(args.dataset ?? '').trim()
+  if (!sessionId || !dataset) throw new Error('Некорректные ключи для transfer_session')
+
+  const scopeKey = String(args.scopeKey ?? '').trim()
+  const chunkKey = String(args.chunkKey ?? '').trim() || scopeKey || '__full__'
+  const fieldClass = String(args.fieldClass ?? '').trim() || 'core'
+  const now = new Date().toISOString()
+  const existing = mustDb().prepare(`SELECT created_at FROM transfer_sessions WHERE session_id = ? LIMIT 1`).get(sessionId) as { created_at?: string | null } | undefined
+  const createdAt = String(existing?.created_at ?? '').trim() || now
+
+  mustDb().prepare(`
+    INSERT INTO transfer_sessions (
+      session_id, dataset, scope_key, chunk_key, field_class,
+      transfer_state, resume_cursor, sent_cursor, committed_cursor, last_ack_token,
+      bytes_or_rows_confirmed, progress_total_units, progress_confirmed_units,
+      lease_owner, lease_acquired_at, lease_expires_at,
+      heartbeat_at, retry_after_at, pause_reason, session_expires_at,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      dataset = excluded.dataset,
+      scope_key = excluded.scope_key,
+      chunk_key = excluded.chunk_key,
+      field_class = excluded.field_class,
+      transfer_state = excluded.transfer_state,
+      resume_cursor = excluded.resume_cursor,
+      sent_cursor = excluded.sent_cursor,
+      committed_cursor = excluded.committed_cursor,
+      last_ack_token = excluded.last_ack_token,
+      bytes_or_rows_confirmed = excluded.bytes_or_rows_confirmed,
+      progress_total_units = excluded.progress_total_units,
+      progress_confirmed_units = excluded.progress_confirmed_units,
+      lease_owner = excluded.lease_owner,
+      lease_acquired_at = excluded.lease_acquired_at,
+      lease_expires_at = excluded.lease_expires_at,
+      heartbeat_at = excluded.heartbeat_at,
+      retry_after_at = excluded.retry_after_at,
+      pause_reason = excluded.pause_reason,
+      session_expires_at = excluded.session_expires_at,
+      updated_at = excluded.updated_at
+  `).run(
+    sessionId,
+    dataset,
+    scopeKey,
+    chunkKey,
+    fieldClass,
+    args.transferState,
+    args.resumeCursor ?? null,
+    args.sentCursor ?? null,
+    args.committedCursor ?? null,
+    args.lastAckToken ?? null,
+    typeof args.bytesOrRowsConfirmed === 'number' && Number.isFinite(args.bytesOrRowsConfirmed) ? Math.trunc(args.bytesOrRowsConfirmed) : null,
+    typeof args.progressTotalUnits === 'number' && Number.isFinite(args.progressTotalUnits) ? Math.trunc(args.progressTotalUnits) : null,
+    typeof args.progressConfirmedUnits === 'number' && Number.isFinite(args.progressConfirmedUnits) ? Math.trunc(args.progressConfirmedUnits) : null,
+    args.leaseOwner ?? null,
+    args.leaseAcquiredAt ?? null,
+    args.leaseExpiresAt ?? null,
+    args.heartbeatAt ?? null,
+    args.retryAfterAt ?? null,
+    args.pauseReason ?? null,
+    args.sessionExpiresAt ?? null,
+    createdAt,
+    now,
+  )
+}
+
+export function dbGetTransferSession(sessionIdRaw: unknown): TransferSessionRow | null {
+  const sessionId = String(sessionIdRaw ?? '').trim()
+  if (!sessionId) return null
+  const row = mustDb().prepare(`SELECT * FROM transfer_sessions WHERE session_id = ? LIMIT 1`).get(sessionId) as TransferSessionRow | undefined
+  return row ?? null
 }
 
 export function dbGetLatestApiRawResponses(storeClientId: string | null | undefined, endpointsRaw: unknown): ApiRawCacheResponseRow[] {
@@ -1080,6 +1471,23 @@ export function dbSaveDatasetSnapshot(args: {
     merged.rowsCount,
     fetchedAt,
   )
+
+  dbUpsertDatasetCoverage({
+    dataset,
+    scopeKey,
+    chunkKey: scopeKey || '__full__',
+    fieldClass: 'core',
+    status: 'stale',
+    materializationStatus: 'ui_ready',
+    rowsCount: merged.rowsCount,
+    fetchedAt,
+    visibleAfterAt: fetchedAt,
+    contractVersion: String(schemaVersion),
+    snapshotVersion: String(schemaVersion),
+    contentHash: rowsJson ? sha256Hex(rowsJson) : null,
+    applyCheckpoint: fetchedAt,
+    isDirty: 0,
+  })
 }
 
 export function dbGetDatasetSnapshotRows(args: {
