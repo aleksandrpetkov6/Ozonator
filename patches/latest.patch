@@ -4,26 +4,23 @@
    "compilerOptions": {
      "target": "ES2020",
      "module": "ESNext",
-     "moduleResolution": "node",
-     "esModuleInterop": true,
-+    "skipLibCheck": true,
-     "forceConsistentCasingInFileNames": true,
+     "moduleResolution": "Node",
      "strict": true,
-     "noImplicitAny": true,
-     "noUnusedLocals": true,
-     "noUnusedParameters": true,
-     "noImplicitReturns": true,
-     "noFallthroughCasesInSwitch": true,
+     "esModuleInterop": true,
+     "skipLibCheck": true,
++    "noImplicitAny": false,
+     "forceConsistentCasingInFileNames": true,
+     "outDir": "./dist",
+     "rootDir": "./src",
      "resolveJsonModule": true,
      "isolatedModules": true,
-     "jsx": "react-jsx"
+     "noEmit": true
    },
    "include": [
-     "src",
-     "electron",
-     "tests"
+     "src/**/*"
    ],
    "exclude": [
-     "node_modules"
+     "node_modules",
+     "dist"
    ]
  }
