@@ -1,7 +1,20 @@
 --- a/src/renderer/src/ui/pages/LogsPage.tsx
 +++ b/src/renderer/src/ui/pages/LogsPage.tsx
 @@
--    return map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
-+    // Use parentheses to avoid ambiguity between ?? and || operators
-+    return (map[stage] ?? normalizeText(meta?.stageRu)) || 'Шаг синхронизации'
+   }
+   return map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
+-  }
++  }
++
++  // NOTE: The original expression `map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'`
++  // caused a build error with esbuild: "Cannot use '||' with '??' without parentheses".
++  // The precedence of `??` is lower than `||`, so the expression was parsed incorrectly.
++  // Adding parentheses ensures the intended order of evaluation:
++  //   1. Resolve `map[stage]` or fallback to `normalizeText(meta?.stageRu)`
++  //   2. If the result is falsy, use the default string.
++  // This change preserves the original logic while satisfying the parser.
++  // eslint-disable-next-line no-undef
++  return (map[stage] ?? normalizeText(meta?.stageRu)) || 'Шаг синхронизации'
+ }
+ 
 *** End of File ***
