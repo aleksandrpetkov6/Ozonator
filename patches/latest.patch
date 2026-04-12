@@ -1,22 +1,7 @@
---- a/tsconfig.json
-+++ b/tsconfig.json
+--- a/src/renderer/src/ui/pages/LogsPage.tsx
++++ b/src/renderer/src/ui/pages/LogsPage.tsx
 @@
-   "compilerOptions": {
-     "target": "ES2020",
-     "module": "ESNext",
-     "moduleResolution": "Node",
-     "strict": true,
-     "esModuleInterop": true,
-     "forceConsistentCasingInFileNames": true,
-     "skipLibCheck": true
-   },
-   "include": [
-     "src",
-     "electron",
-     "tests"
-   ],
-   "exclude": [
-     "node_modules",
-     "out"
-   ]
- }
+-    return map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
++    // Use parentheses to ensure correct precedence between nullish coalescing (??) and logical OR (||)
++    return (map[stage] ?? normalizeText(meta?.stageRu)) || 'Шаг синхронизации'
+*** End of File ***
