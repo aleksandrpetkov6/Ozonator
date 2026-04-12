@@ -53,6 +53,7 @@ const AUTO_MAX_W: Record<string, number> = {
  in_process_at: 240,
  customer_currency_in_item_currency: 320,
  warehouse_name: 240,
+ shipment_origin: 280,
  placement_zone: 320,
  type: 380,
  name: 460,
