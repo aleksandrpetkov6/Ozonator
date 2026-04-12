@@ -1,4 +1,5 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
+import { applyCbrConversionsToSalesRows } from './cbr-rates'
 import { buildSalesPaidByCustomerTrace, extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, type SalesPeriod } from './sales-sync'
 import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbLogEvent, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPostingsReport, persistFboPushShipmentEvents } from './storage/fbo-sales'
@@ -1476,7 +1477,8 @@ export async function refreshSalesRawSnapshotFromApi(
       rows: reportRows,
     })
 
-    const { rows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
+    const { rows: builtRows, sourceEndpoints } = buildSalesRowsFromPayloads(secrets.clientId, requestedPeriod, payloads, postingDetailsByKey, reportRows)
+    const rows = await applyCbrConversionsToSalesRows(builtRows)
     logFboShipmentTrace('api.refresh.rows.built', {
       storeClientId: secrets.clientId,
       period: requestedPeriod,
