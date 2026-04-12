@@ -759,16 +759,20 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
   const samplePostingNumbers: string[] = []
   const sampleShipmentDates: string[] = []
   const sampleDeliveryDates: string[] = []
+  const sampleStatuses: string[] = []
   let rowsRaw = 0
   let rowsMapped = 0
   let rowsWithPostingNumber = 0
   let rowsWithShipmentDate = 0
   let rowsWithDeliveryDate = 0
+  let rowsWithStatus = 0
   let rowsFbo = 0
   let rowsFboWithShipmentDate = 0
   let rowsFboWithDeliveryDate = 0
+  let rowsFboWithStatus = 0
   let rowsFbs = 0
   let rowsFbsWithDeliveryDate = 0
+  let rowsFbsWithStatus = 0
 
   for (const segment of segments) {
     if (segment.csv) {
@@ -777,11 +781,14 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
       rowsWithPostingNumber += Number(segment.csv.rowsWithPostingNumber ?? 0)
       rowsWithShipmentDate += Number(segment.csv.rowsWithShipmentDate ?? 0)
       rowsWithDeliveryDate += Number(segment.csv.rowsWithDeliveryDate ?? 0)
+      rowsWithStatus += Number(segment.csv.rowsWithStatus ?? 0)
       rowsFbo += Number(segment.csv.rowsFbo ?? 0)
       rowsFboWithShipmentDate += Number(segment.csv.rowsFboWithShipmentDate ?? 0)
       rowsFboWithDeliveryDate += Number(segment.csv.rowsFboWithDeliveryDate ?? 0)
+      rowsFboWithStatus += Number(segment.csv.rowsFboWithStatus ?? 0)
       rowsFbs += Number(segment.csv.rowsFbs ?? 0)
       rowsFbsWithDeliveryDate += Number(segment.csv.rowsFbsWithDeliveryDate ?? 0)
+      rowsFbsWithStatus += Number(segment.csv.rowsFbsWithStatus ?? 0)
       for (const key of segment.csv.headerSample ?? []) {
         if (key && !headerSample.includes(key) && headerSample.length < 20) headerSample.push(key)
       }
@@ -807,6 +814,13 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
         if (sampleDeliveryDates.length >= 10) break
       }
     }
+    if (!sampleStatuses.length || sampleStatuses.length < 10) {
+      for (const item of rows) {
+        const value = text(item.status)
+        if (value && !sampleStatuses.includes(value)) sampleStatuses.push(value)
+        if (sampleStatuses.length >= 10) break
+      }
+    }
   }
 
   return {
@@ -815,15 +829,19 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
     rowsWithPostingNumber,
     rowsWithShipmentDate,
     rowsWithDeliveryDate,
+    rowsWithStatus,
     rowsFbo,
     rowsFboWithShipmentDate,
     rowsFboWithDeliveryDate,
+    rowsFboWithStatus,
     rowsFbs,
     rowsFbsWithDeliveryDate,
+    rowsFbsWithStatus,
     headerSample,
     samplePostingNumbers,
     sampleShipmentDates,
     sampleDeliveryDates,
+    sampleStatuses,
   }
 }
 
