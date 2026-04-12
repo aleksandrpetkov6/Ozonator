@@ -439,8 +439,12 @@ export function dbRecordApiRawResponse(args: {
   const now = args.fetchedAt ?? new Date().toISOString()
   const entityHint = inferEntityHintFromEndpoint(endpoint)
 
-  const req = safeJsonWithLimit(args.requestBody ?? null, MAX_API_JSON_LEN)
-  const res = safeJsonWithLimit(args.responseBody ?? null, MAX_API_JSON_LEN)
+  const apiJsonLimit = method === 'LOCAL' && endpoint.startsWith('/__local__/sales-cache/postings')
+    ? Math.max(MAX_API_JSON_LEN, 5_000_000)
+    : MAX_API_JSON_LEN
+
+  const req = safeJsonWithLimit(args.requestBody ?? null, apiJsonLimit)
+  const res = safeJsonWithLimit(args.responseBody ?? null, apiJsonLimit)
   const responseSha = sha256Hex(res.text ?? '')
 
   const keyCandidates = inferKeyCandidates(args.responseBody)
@@ -594,6 +598,61 @@ export function dbGetApiRawResponses(storeClientId: string | null | undefined, e
     fetched_at: String((row as any)?.fetched_at ?? ''),
     store_client_id: typeof (row as any)?.store_client_id === 'string' ? (row as any).store_client_id : null,
   }))
+}
+
+export function dbGetLatestApiRawStoredResponses(storeClientId: string | null | undefined, endpointsRaw: unknown): ApiRawCacheStoredRow[] {
+  const endpoints = Array.from(new Set((Array.isArray(endpointsRaw) ? endpointsRaw : [])
+    .map((v) => String(v ?? '').trim())
+    .filter(Boolean)))
+
+  if (endpoints.length === 0) return []
+
+  const placeholders = endpoints.map(() => '?').join(', ')
+  const params = [...endpoints]
+  let sql = `
+    SELECT endpoint, request_body, response_body, fetched_at, store_client_id,
+           request_truncated, response_truncated,
+           length(response_body) AS response_body_len
+    FROM api_raw_cache
+    WHERE is_success = 1
+      AND response_body IS NOT NULL
+      AND endpoint IN (${placeholders})
+  `
+
+  const scopedStoreClientId = String(storeClientId ?? '').trim()
+  if (scopedStoreClientId) {
+    sql += ` AND store_client_id = ?`
+    params.push(scopedStoreClientId)
+  }
+
+  sql += ` ORDER BY fetched_at DESC, id DESC`
+
+  const rows = mustDb().prepare(sql).all(...params) as any[]
+  const out: ApiRawCacheStoredRow[] = []
+  const seen = new Set<string>()
+
+  for (const row of rows) {
+    const endpoint = String((row as any)?.endpoint ?? '').trim()
+    if (!endpoint || seen.has(endpoint)) continue
+
+    out.push({
+      endpoint,
+      request_body: typeof (row as any)?.request_body === 'string' ? (row as any).request_body : null,
+      response_body: typeof (row as any)?.response_body === 'string' ? (row as any).response_body : null,
+      fetched_at: String((row as any)?.fetched_at ?? ''),
+      store_client_id: typeof (row as any)?.store_client_id === 'string' ? (row as any).store_client_id : null,
+      request_truncated: Number((row as any)?.request_truncated ?? 0),
+      response_truncated: Number((row as any)?.response_truncated ?? 0),
+      response_body_len: (typeof (row as any)?.response_body_len === 'number' && Number.isFinite((row as any).response_body_len))
+        ? Number((row as any).response_body_len)
+        : null,
+    })
+    seen.add(endpoint)
+
+    if (seen.size >= endpoints.length) break
+  }
+
+  return out
 }
 
 export function dbSaveDatasetSnapshot(args: {
