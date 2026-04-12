@@ -483,26 +483,33 @@ function normalizeDeliveryModelKey(value: unknown): string {
   return ''
 }
 
-function buildSalesShipmentReportMap(rows: SalesShipmentReportRow[]): Map<string, string> {
-  const out = new Map<string, string>()
+function buildSalesPostingsReportMaps(rows: SalesShipmentReportRow[]): { shipmentDateByKey: Map<string, string>; deliveryDateByKey: Map<string, string> } {
+  const shipmentDateByKey = new Map<string, string>()
+  const deliveryDateByKey = new Map<string, string>()
 
-  const save = (key: string, shipmentDate: string) => {
-    if (!key || !shipmentDate) return
-    const prev = normalizeTextValue(out.get(key))
-    if (!prev || shipmentDate > prev) out.set(key, shipmentDate)
+  const save = (target: Map<string, string>, key: string, value: string) => {
+    if (!key || !value) return
+    const prev = normalizeTextValue(target.get(key))
+    if (!prev || value > prev) target.set(key, value)
   }
 
   for (const row of rows) {
     const postingNumber = normalizeTextValue(row?.posting_number)
-    const shipmentDate = normalizeTextValue(row?.shipment_date)
-    if (!postingNumber || !shipmentDate) continue
+    if (!postingNumber) continue
 
+    const shipmentDate = normalizeTextValue(row?.shipment_date)
+    const deliveryDate = normalizeTextValue(row?.delivery_date)
     const modelKey = normalizeDeliveryModelKey(row?.delivery_schema)
-    save(`*|${postingNumber}`, shipmentDate)
-    if (modelKey) save(`${modelKey}|${postingNumber}`, shipmentDate)
+    const keys = [`*|${postingNumber}`]
+    if (modelKey) keys.push(`${modelKey}|${postingNumber}`)
+
+    for (const key of keys) {
+      save(shipmentDateByKey, key, shipmentDate)
+      save(deliveryDateByKey, key, deliveryDate)
+    }
   }
 
-  return out
+  return { shipmentDateByKey, deliveryDateByKey }
 }
 
 function buildSalesShipmentReportRowsFromSnapshotMap(
@@ -540,31 +547,39 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
   if (!Array.isArray(rows) || rows.length === 0) return Array.isArray(rows) ? rows : []
   if (!Array.isArray(reportRows) || reportRows.length === 0) return rows
 
-  const reportMap = buildSalesShipmentReportMap(reportRows)
-  if (reportMap.size === 0) return rows
+  const { shipmentDateByKey, deliveryDateByKey } = buildSalesPostingsReportMaps(reportRows)
+  if (shipmentDateByKey.size === 0 && deliveryDateByKey.size === 0) return rows
 
   return rows.map((row) => {
     const postingNumber = normalizeTextValue(row?.posting_number)
     if (!postingNumber) return row
 
-    // Для FBO «Дата отгрузки» теперь приходит через локальную БД из отчёта postings-report.
-    // Поэтому здесь прямое добирание FBO shipment_date из snapshot-CSV не делаем, чтобы не смешивать источники.
-    if (normalizeDeliveryModelKey(row?.delivery_model) === 'fbo') return row
-
-    const currentShipmentDate = normalizeTextValue(row?.shipment_date)
-    if (currentShipmentDate) return row
-
     const modelKey = normalizeDeliveryModelKey(row?.delivery_model)
     const reportShipmentDate = normalizeTextValue(
-      (modelKey ? reportMap.get(`${modelKey}|${postingNumber}`) : '')
-      || reportMap.get(`*|${postingNumber}`),
+      (modelKey ? shipmentDateByKey.get(`${modelKey}|${postingNumber}`) : '')
+      || shipmentDateByKey.get(`*|${postingNumber}`),
     )
-    if (!reportShipmentDate) return row
+    const reportDeliveryDate = normalizeTextValue(
+      (modelKey ? deliveryDateByKey.get(`${modelKey}|${postingNumber}`) : '')
+      || deliveryDateByKey.get(`*|${postingNumber}`),
+    )
 
-    return {
-      ...row,
-      shipment_date: reportShipmentDate,
+    let changed = false
+    const nextRow = { ...row }
+
+    // Для FBO «Дата отгрузки» приходит через локальную БД из отчёта postings-report.
+    // Здесь напрямую добираем shipment_date из snapshot-CSV только для не-FBO строк.
+    if (modelKey !== 'fbo' && !normalizeTextValue(row?.shipment_date) && reportShipmentDate) {
+      nextRow.shipment_date = reportShipmentDate
+      changed = true
     }
+
+    if (!normalizeTextValue(row?.delivery_date) && reportDeliveryDate) {
+      nextRow.delivery_date = reportDeliveryDate
+      changed = true
+    }
+
+    return changed ? nextRow : row
   })
 }
 
