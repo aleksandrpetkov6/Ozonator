@@ -280,6 +280,7 @@ function buildTraceStepTitle(meta: TraceMeta): string {
     'api.refresh.report.parsed': 'CSV распарсен',
     'api.refresh.report.partial': 'Отчёт собран частично',
     'api.refresh.report.persisted': 'Строки отчёта сохранены',
+    'api.refresh.report.snapshot.persisted': 'Snapshot отчёта сохранён в локальную БД',
     'api.refresh.report.empty': 'Отчёт не вернул даты доставки',
     'api.refresh.report.error': 'Ошибка формирования отчёта',
     'api.refresh.snapshot.persisted': 'Локальная база обновлена',
@@ -333,6 +334,13 @@ function buildTraceStepSummary(meta: TraceMeta): string {
       typeof meta?.reportRowsCount === 'number' ? `Строк отчёта: ${meta.reportRowsCount}.` : '',
       typeof meta?.reportRowsWithDeliveryDate === 'number' ? `Дат доставки найдено: ${meta.reportRowsWithDeliveryDate}.` : '',
       typeof meta?.reportRowsWithStatus === 'number' ? `Статусов найдено: ${meta.reportRowsWithStatus}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.report.snapshot.persisted') {
+    return createSentence([
+      typeof meta?.reportSnapshotRowsCount === 'number' ? `Строк в snapshot: ${meta.reportSnapshotRowsCount}.` : '',
+      typeof meta?.reportSnapshotRowsWithDeliveryDate === 'number' ? `Дат доставки в snapshot: ${meta.reportSnapshotRowsWithDeliveryDate}.` : '',
+      typeof meta?.reportSnapshotRowsWithShipmentOrigin === 'number' ? `Источник отгрузки в snapshot: ${meta.reportSnapshotRowsWithShipmentOrigin}.` : '',
     ])
   }
   if (stage === 'api.refresh.rows.built' || stage === 'raw-cache.rebuild.rows.built') {
@@ -421,12 +429,15 @@ function buildSectionMetrics(key: TraceCategoryKey, merged: TraceMeta): TraceMet
     if (typeof merged?.deliveryDateMatchedRows === 'number') pushMetric(metrics, 'Совпало по posting_number', merged.deliveryDateMatchedRows)
     if (typeof merged?.deliveryDateResolvedRows === 'number') pushMetric(metrics, 'Дат доставки применено', merged.deliveryDateResolvedRows)
     if (typeof merged?.salesRowsWithoutDeliveryDate === 'number') pushMetric(metrics, 'Строк без даты доставки', merged.salesRowsWithoutDeliveryDate)
+    if (typeof merged?.reportSnapshotRowsCount === 'number') pushMetric(metrics, 'Строк в snapshot локальной БД', merged.reportSnapshotRowsCount)
+    if (typeof merged?.reportSnapshotPersistedToApiRawCache === 'boolean') pushMetric(metrics, 'Snapshot записан в api_raw_cache', merged.reportSnapshotPersistedToApiRawCache ? 'Да' : 'Нет')
     if (normalizeText(merged?.reportCode)) pushMetric(metrics, 'Код отчёта', merged.reportCode)
     return metrics
   }
   if (key === 'origin') {
     pushMetric(metrics, 'Источник', 'Отчёт postings CSV')
-    if (typeof merged?.reportRowsWithShipmentOrigin === 'number') pushMetric(metrics, 'Строк с источником отгрузки в отчёте', merged.reportRowsWithShipmentOrigin)
+    if (typeof merged?.reportRowsFboWithShipmentOrigin === 'number') pushMetric(metrics, 'FBO: строк с «Кластер отгрузки» в отчёте', merged.reportRowsFboWithShipmentOrigin)
+    if (typeof merged?.reportRowsFbsWithShipmentOrigin === 'number') pushMetric(metrics, 'FBS/rFBS: строк со «Склад отгрузки» в отчёте', merged.reportRowsFbsWithShipmentOrigin)
     if (typeof merged?.shipmentOriginMatchedRows === 'number') pushMetric(metrics, 'Совпало по posting_number', merged.shipmentOriginMatchedRows)
     if (typeof merged?.shipmentOriginResolvedRows === 'number') pushMetric(metrics, 'Значение применено', merged.shipmentOriginResolvedRows)
     if (typeof merged?.finalRowsWithoutShipmentOrigin === 'number') pushMetric(metrics, 'Строк без значения', merged.finalRowsWithoutShipmentOrigin)
@@ -466,6 +477,9 @@ function buildSectionNotes(key: TraceCategoryKey, merged: TraceMeta): string[] {
     if (sample.length) notes.push(`Без даты доставки: ${sample.join(', ')}.`)
     const dateSample = uniqueSample(merged?.reportDeliveryDateSample, 3)
     if (dateSample.length) notes.push(`Примеры дат из отчёта: ${dateSample.join(', ')}.`)
+    if (typeof merged?.reportSnapshotPersistedToApiRawCache === 'boolean') {
+      notes.push(`Snapshot отчёта в api_raw_cache: ${merged.reportSnapshotPersistedToApiRawCache ? 'да' : 'нет'}.`)
+    }
   }
   if (key === 'origin') {
     const sample = uniqueSample(merged?.reportShipmentOriginSample, 4)
