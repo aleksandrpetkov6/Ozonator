@@ -519,7 +519,7 @@ function getSectionTitle(key: TraceCategoryKey): string {
 function getSectionIntro(key: TraceCategoryKey): string {
   if (key === 'shipment') return 'Показывает, как загружались отправления FBO и как дата отгрузки попала в локальную базу.'
   if (key === 'delivery') return 'Показывает путь даты доставки: от формирования postings CSV до применения в строки продаж.'
-  if (key === 'origin') return 'Показывает заполнение столбца «Склад / кластер отгрузки» из postings CSV.'
+  if (key === 'origin') return 'Показывает заполнение столбца «Склад / кластер отгрузки»: итоговое значение берётся из API Ozon, а postings CSV используется как диагностический источник.'
   if (key === 'status') return 'Показывает путь статуса: от postings CSV до применения в строки продаж и очистки деталей для «Доставлен».'
   if (key === 'paid') return 'Показывает, как собиралось поле «Оплачено покупателем» и сколько строк было заполнено.'
   return 'Служебная трассировка.'
