@@ -6,6 +6,7 @@ import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistF
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
 import { fetchSalesPostingsReportRows, type SalesPostingsReportDownloadArtifact, type SalesPostingsReportRow } from './postings-report'
 import type { Secrets } from './types'
+import { getDatasetSnapshotDefaultMergeStrategy, getDatasetSnapshotSchemaVersion } from './data-contracts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getPersistentRootDir } from './storage/paths'
@@ -1494,6 +1495,7 @@ function persistDatasetSnapshot(args: {
 }) {
   const period = normalizeSalesPeriod(args.period ?? null)
   const dataset = String(args.dataset ?? '').trim()
+  const sourceKind = args.sourceKind ?? 'projection'
 
   dbSaveDatasetSnapshot({
     storeClientId: args.storeClientId ?? null,
@@ -1501,7 +1503,9 @@ function persistDatasetSnapshot(args: {
     scopeKey: args.scopeKey ?? '',
     periodFrom: period.from,
     periodTo: period.to,
-    sourceKind: args.sourceKind ?? 'projection',
+    schemaVersion: getDatasetSnapshotSchemaVersion(dataset),
+    mergeStrategy: getDatasetSnapshotDefaultMergeStrategy(dataset, sourceKind) as any,
+    sourceKind,
     sourceEndpoints: args.sourceEndpoints ?? [],
     rows: Array.isArray(args.rows) ? args.rows : [],
   })
