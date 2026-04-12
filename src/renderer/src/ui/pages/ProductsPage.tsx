@@ -49,9 +49,7 @@ const AUTO_MAX_W: Record<string, number> = {
  created_at: 240,
  updated_at: 240,
  in_process_at: 240,
- currency: 170,
- item_currency: 140,
- customer_currency_in_item_currency: 290,
+ customer_currency_in_item_currency: 320,
  warehouse_name: 240,
  placement_zone: 320,
  type: 380,
@@ -62,6 +60,17 @@ const AUTO_MAX_W: Record<string, number> = {
 function normDay(value: unknown): string {
  const raw = typeof value === 'string' ? value.trim() : ''
  return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ''
+}
+
+function normalizeCurrencyCode(value: unknown): string {
+ const raw = typeof value === 'string' ? value.trim().toUpperCase() : String(value ?? '').trim().toUpperCase()
+ return /^[A-Z]{3}$/.test(raw) ? raw : ''
+}
+
+function formatCellNumberWithCurrency(value: unknown, currencyCode: unknown): string {
+ if (value == null || value === '') return '-'
+ const code = normalizeCurrencyCode(currencyCode)
+ return code ? `${String(value)} ${code}` : String(value)
 }
 function rowDay(value: unknown): string {
  const raw = typeof value === 'string' ? value.trim() : ''
@@ -599,6 +608,9 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
      const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
      return { text: zone || 'Нет данных синхронизации' }
    }
+   if (dataset === 'sales' && colId === 'paid_by_customer') {
+     return { text: formatCellNumberWithCurrency(v, (p as any).currency) }
+   }
    return { text: (v == null || v === '') ? '-' : String(v) }
  }
 
@@ -808,6 +820,11 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
  const getHeaderTitleText = useCallback((c: ColDef): string => {
    const colId = String(c.id)
    if (colId === 'offer_id' && dataset === 'products') return `${c.title} ${totalRows}`
+   if (colId === 'price' && dataset === 'sales') {
+     return salesItemCurrencyHeaderSuffix
+       ? `Ваша цена в (${salesItemCurrencyHeaderSuffix})`
+       : 'Ваша цена в (код валюты товара)'
+   }
    if (colId === 'customer_currency_in_item_currency' && dataset === 'sales') {
      return salesItemCurrencyHeaderSuffix
        ? `Оплачено покупателем в (${salesItemCurrencyHeaderSuffix})`
