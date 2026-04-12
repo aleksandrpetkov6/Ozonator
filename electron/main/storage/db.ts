@@ -23,6 +23,8 @@ type AppLogType =
 
 type GridColsDataset = string
 
+type DatasetSnapshotMergeStrategy = 'replace' | 'incremental_upsert_backfill' | 'authoritative_upsert_prune_backfill'
+
 type GridColHiddenBucket = 'main' | 'add'
 
 type GridColLayoutItem = {
@@ -244,6 +246,280 @@ function inferKeyCandidates(root: any): string[] {
   return ranked.slice(0, 16)
 }
 
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeSnapshotKeyPart(value: unknown): string {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return ''
+}
+
+function getSnapshotPathValue(source: Record<string, any>, path: string): unknown {
+  const parts = String(path ?? '').split('.').map((x) => x.trim()).filter(Boolean)
+  let cur: any = source
+  for (const part of parts) {
+    if (!cur || typeof cur !== 'object' || !(part in cur)) return undefined
+    cur = cur[part]
+  }
+  return cur
+}
+
+function hasMeaningfulSnapshotValue(value: unknown): boolean {
+  if (value == null) return false
+  if (typeof value === 'string') return value.trim().length > 0
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value === 'boolean') return true
+  if (Array.isArray(value)) return value.length > 0
+  if (isPlainObject(value)) return Object.keys(value).length > 0
+  return false
+}
+
+function cloneSnapshotValue<T>(value: T): T {
+  if (value == null) return value
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch {
+    return value
+  }
+}
+
+function collectSnapshotFieldCatalog(rows: any[]): string[] {
+  const out = new Set<string>()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!isPlainObject(row)) continue
+    for (const key of Object.keys(row)) {
+      const normalized = String(key ?? '').trim()
+      if (!normalized) continue
+      out.add(normalized)
+      if (out.size >= 512) return Array.from(out).sort((a, b) => a.localeCompare(b, 'ru'))
+    }
+  }
+  return Array.from(out).sort((a, b) => a.localeCompare(b, 'ru'))
+}
+
+function parseSnapshotFieldCatalog(raw: unknown): string[] {
+  if (typeof raw !== 'string' || !raw.trim()) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return Array.from(new Set(parsed.map((value) => String(value ?? '').trim()).filter(Boolean)))
+  } catch {
+    return []
+  }
+}
+
+function buildSnapshotFieldCatalogJson(existingRaw: unknown, rows: any[]): string | null {
+  const merged = new Set<string>(parseSnapshotFieldCatalog(existingRaw))
+  for (const key of collectSnapshotFieldCatalog(rows)) merged.add(key)
+  return merged.size ? JSON.stringify(Array.from(merged).sort((a, b) => a.localeCompare(b, 'ru'))) : null
+}
+
+function inferDatasetSnapshotMergeStrategy(dataset: string, sourceKind: string): DatasetSnapshotMergeStrategy {
+  const normalizedDataset = String(dataset ?? '').trim().toLowerCase()
+  const normalizedSourceKind = String(sourceKind ?? '').trim().toLowerCase()
+  if (normalizedDataset === 'sales') return 'incremental_upsert_backfill'
+  if (normalizedSourceKind === 'db-table' || normalizedSourceKind === 'db-view' || normalizedSourceKind === 'derived-products') {
+    return 'authoritative_upsert_prune_backfill'
+  }
+  return 'incremental_upsert_backfill'
+}
+
+function inferDatasetSnapshotRowKey(dataset: string, row: any): string | null {
+  if (!isPlainObject(row)) return null
+  const normalizedDataset = String(dataset ?? '').trim().toLowerCase()
+  const pathGroups: string[][] = []
+  if (normalizedDataset === 'sales') {
+    pathGroups.push(['delivery_model', 'posting_number', 'sku', 'offer_id', 'name'])
+  } else if (normalizedDataset === 'stocks') {
+    pathGroups.push(['warehouse_id', 'sku'])
+    pathGroups.push(['warehouse_id', 'offer_id'])
+    pathGroups.push(['warehouse_id', 'ozon_sku'])
+    pathGroups.push(['warehouse_id', 'seller_sku'])
+  } else if (normalizedDataset === 'products' || normalizedDataset === 'returns' || normalizedDataset === 'forecast-demand') {
+    pathGroups.push(['offer_id'])
+    pathGroups.push(['product_id'])
+    pathGroups.push(['sku'])
+    pathGroups.push(['ozon_sku'])
+    pathGroups.push(['seller_sku'])
+  }
+  pathGroups.push(['id'])
+  pathGroups.push(['posting_number', 'sku'])
+  pathGroups.push(['posting_number', 'offer_id'])
+  pathGroups.push(['warehouse_id', 'sku'])
+  pathGroups.push(['warehouse_id', 'offer_id'])
+  pathGroups.push(['offer_id'])
+  pathGroups.push(['product_id'])
+  pathGroups.push(['sku'])
+  pathGroups.push(['ozon_sku'])
+  pathGroups.push(['seller_sku'])
+  pathGroups.push(['fbo_sku'])
+  pathGroups.push(['fbs_sku'])
+  for (const group of pathGroups) {
+    const parts = group.map((path) => normalizeSnapshotKeyPart(getSnapshotPathValue(row, path)))
+    if (parts.every(Boolean)) return `${normalizedDataset || 'dataset'}::${group.join('+')}::${parts.join('::')}`
+  }
+  try {
+    return `${normalizedDataset || 'dataset'}::row_sha256::${sha256Hex(JSON.stringify(row))}`
+  } catch {
+    return null
+  }
+}
+
+function mergeSnapshotRows(existingRow: any, incomingRow: any): any {
+  if (!isPlainObject(existingRow) || !isPlainObject(incomingRow)) {
+    return hasMeaningfulSnapshotValue(incomingRow) ? cloneSnapshotValue(incomingRow) : cloneSnapshotValue(existingRow)
+  }
+  const out: Record<string, any> = {}
+  const keys = new Set<string>([...Object.keys(existingRow), ...Object.keys(incomingRow)])
+  for (const key of keys) {
+    const existingValue = (existingRow as any)[key]
+    const incomingValue = (incomingRow as any)[key]
+    if (isPlainObject(existingValue) && isPlainObject(incomingValue)) {
+      out[key] = mergeSnapshotRows(existingValue, incomingValue)
+      continue
+    }
+    if (Array.isArray(existingValue) && Array.isArray(incomingValue)) {
+      out[key] = incomingValue.length > 0 ? cloneSnapshotValue(incomingValue) : cloneSnapshotValue(existingValue)
+      continue
+    }
+    out[key] = hasMeaningfulSnapshotValue(incomingValue)
+      ? cloneSnapshotValue(incomingValue)
+      : cloneSnapshotValue(existingValue)
+  }
+  return out
+}
+
+function normalizeDatasetRowsForStorage(args: { dataset: string; rows: any[]; maxRows: number }): { rows: any[]; rowsCount: number } {
+  const sourceRows = Array.isArray(args.rows) ? args.rows : []
+  const maxRows = Math.max(1, Math.trunc(Number(args.maxRows) || 0))
+  const rows = sourceRows.length > maxRows ? sourceRows.slice(0, maxRows) : sourceRows
+  return {
+    rows: rows.map((row) => cloneSnapshotValue(row)),
+    rowsCount: rows.length,
+  }
+}
+
+function mergeDatasetSnapshotRows(args: {
+  dataset: string
+  strategy: DatasetSnapshotMergeStrategy
+  existingRows: any[]
+  incomingRows: any[]
+  maxRows: number
+}): { rows: any[]; rowsCount: number; mergeMeta: Record<string, any> } {
+  const normalizedExisting = normalizeDatasetRowsForStorage({ dataset: args.dataset, rows: args.existingRows, maxRows: args.maxRows }).rows
+  const normalizedIncoming = normalizeDatasetRowsForStorage({ dataset: args.dataset, rows: args.incomingRows, maxRows: args.maxRows }).rows
+
+  if (args.strategy === 'replace') {
+    return {
+      rows: normalizedIncoming,
+      rowsCount: normalizedIncoming.length,
+      mergeMeta: {
+        strategy: args.strategy,
+        existingRowsCount: normalizedExisting.length,
+        incomingRowsCount: normalizedIncoming.length,
+        updatedRowsCount: 0,
+        insertedRowsCount: normalizedIncoming.length,
+        preservedRowsCount: 0,
+        prunedRowsCount: Math.max(0, normalizedExisting.length - normalizedIncoming.length),
+      },
+    }
+  }
+
+  const existingByKey = new Map<string, any>()
+  const incomingByKey = new Map<string, any>()
+  const existingWithoutKey: any[] = []
+  const incomingWithoutKey: any[] = []
+  const existingOrder: string[] = []
+  const incomingOrder: string[] = []
+
+  for (const row of normalizedExisting) {
+    const key = inferDatasetSnapshotRowKey(args.dataset, row)
+    if (!key) {
+      existingWithoutKey.push(row)
+      continue
+    }
+    if (!existingByKey.has(key)) existingOrder.push(key)
+    existingByKey.set(key, row)
+  }
+
+  for (const row of normalizedIncoming) {
+    const key = inferDatasetSnapshotRowKey(args.dataset, row)
+    if (!key) {
+      incomingWithoutKey.push(row)
+      continue
+    }
+    if (!incomingByKey.has(key)) incomingOrder.push(key)
+    incomingByKey.set(key, row)
+  }
+
+  const result: any[] = []
+  let updatedRowsCount = 0
+  let insertedRowsCount = 0
+  let preservedRowsCount = 0
+  let prunedRowsCount = 0
+
+  if (args.strategy === 'authoritative_upsert_prune_backfill') {
+    for (const key of incomingOrder) {
+      const incoming = incomingByKey.get(key)
+      const existing = existingByKey.get(key)
+      if (existing !== undefined) {
+        result.push(mergeSnapshotRows(existing, incoming))
+        updatedRowsCount += 1
+      } else {
+        result.push(cloneSnapshotValue(incoming))
+        insertedRowsCount += 1
+      }
+    }
+    result.push(...incomingWithoutKey.map((row) => cloneSnapshotValue(row)))
+    insertedRowsCount += incomingWithoutKey.length
+    prunedRowsCount = Math.max(0, existingByKey.size + existingWithoutKey.length - updatedRowsCount)
+  } else {
+    const usedIncomingKeys = new Set<string>()
+    for (const key of existingOrder) {
+      const existing = existingByKey.get(key)
+      if (incomingByKey.has(key)) {
+        result.push(mergeSnapshotRows(existing, incomingByKey.get(key)))
+        usedIncomingKeys.add(key)
+        updatedRowsCount += 1
+      } else {
+        result.push(cloneSnapshotValue(existing))
+        preservedRowsCount += 1
+      }
+    }
+    result.push(...existingWithoutKey.map((row) => cloneSnapshotValue(row)))
+    preservedRowsCount += existingWithoutKey.length
+    for (const key of incomingOrder) {
+      if (usedIncomingKeys.has(key)) continue
+      result.push(cloneSnapshotValue(incomingByKey.get(key)))
+      insertedRowsCount += 1
+    }
+    result.push(...incomingWithoutKey.map((row) => cloneSnapshotValue(row)))
+    insertedRowsCount += incomingWithoutKey.length
+  }
+
+  const capped = result.length > args.maxRows
+    ? (args.strategy === 'incremental_upsert_backfill' ? result.slice(-args.maxRows) : result.slice(0, args.maxRows))
+    : result
+
+  return {
+    rows: capped,
+    rowsCount: capped.length,
+    mergeMeta: {
+      strategy: args.strategy,
+      existingRowsCount: normalizedExisting.length,
+      incomingRowsCount: normalizedIncoming.length,
+      updatedRowsCount,
+      insertedRowsCount,
+      preservedRowsCount,
+      prunedRowsCount,
+      cappedRowsDropped: Math.max(0, result.length - capped.length),
+    },
+  }
+}
+
 export function ensureDb() {
   if (db) return
 
@@ -345,6 +621,9 @@ export function ensureDb() {
       schema_version INTEGER NOT NULL DEFAULT 1,
       source_kind TEXT NOT NULL DEFAULT 'projection',
       source_endpoints TEXT NULL,
+      field_catalog_json TEXT NULL,
+      merge_strategy TEXT NOT NULL DEFAULT 'replace',
+      merge_meta_json TEXT NULL,
       rows_json TEXT NOT NULL,
       rows_count INTEGER NOT NULL DEFAULT 0,
       fetched_at TEXT NOT NULL,
@@ -420,6 +699,19 @@ export function ensureDb() {
   }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_product_placements_store_ozon_sku ON product_placements(store_client_id, ozon_sku);`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_product_placements_store_seller_sku ON product_placements(store_client_id, seller_sku);`)
+
+  const datasetSnapshotCols = new Set(
+    (db.prepare('PRAGMA table_info(dataset_snapshots)').all() as any[]).map((r) => String(r.name))
+  )
+  if (!datasetSnapshotCols.has('field_catalog_json')) {
+    db.exec(`ALTER TABLE dataset_snapshots ADD COLUMN field_catalog_json TEXT NULL;`)
+  }
+  if (!datasetSnapshotCols.has('merge_strategy')) {
+    db.exec(`ALTER TABLE dataset_snapshots ADD COLUMN merge_strategy TEXT NOT NULL DEFAULT 'replace';`)
+  }
+  if (!datasetSnapshotCols.has('merge_meta_json')) {
+    db.exec(`ALTER TABLE dataset_snapshots ADD COLUMN merge_meta_json TEXT NULL;`)
+  }
 
   if (getSettingValue('log_retention_days') == null) {
     setSettingValue('log_retention_days', String(DEFAULT_LOG_RETENTION_DAYS))
@@ -670,6 +962,7 @@ export function dbSaveDatasetSnapshot(args: {
   schemaVersion?: number
   sourceKind?: string
   sourceEndpoints?: string[]
+  mergeStrategy?: DatasetSnapshotMergeStrategy | null
   rows: any[]
   fetchedAt?: string
 }) {
@@ -684,32 +977,71 @@ export function dbSaveDatasetSnapshot(args: {
   const sourceEndpoints = Array.from(new Set((Array.isArray(args.sourceEndpoints) ? args.sourceEndpoints : [])
     .map((value) => String(value ?? '').trim())
     .filter(Boolean)))
+  const maxRows = dataset === 'sales' ? 5000 : 20000
+  const mergeStrategy = (args.mergeStrategy && String(args.mergeStrategy).trim()
+    ? args.mergeStrategy
+    : inferDatasetSnapshotMergeStrategy(dataset, sourceKind)) as DatasetSnapshotMergeStrategy
+
+  const existingRow = mustDb().prepare(`
+    SELECT rows_json, field_catalog_json, merge_strategy, merge_meta_json
+    FROM dataset_snapshots
+    WHERE store_client_id = ? AND dataset = ? AND scope_key = ?
+    LIMIT 1
+  `).get(storeClientId, dataset, scopeKey) as {
+    rows_json?: string | null
+    field_catalog_json?: string | null
+    merge_strategy?: string | null
+    merge_meta_json?: string | null
+  } | undefined
+
+  let existingRows: any[] = []
+  if (typeof existingRow?.rows_json === 'string' && existingRow.rows_json.trim()) {
+    try {
+      const parsed = JSON.parse(existingRow.rows_json)
+      if (Array.isArray(parsed)) existingRows = parsed
+    } catch {}
+  }
+
+  const merged = mergeDatasetSnapshotRows({
+    dataset,
+    strategy: mergeStrategy,
+    existingRows,
+    incomingRows: Array.isArray(args.rows) ? args.rows : [],
+    maxRows,
+  })
 
   let rowsJson = '[]'
-  let rowsCount = 0
   try {
-    const allRows = Array.isArray(args.rows) ? args.rows : []
-    const MAX_ROWS = dataset === 'sales' ? 5000 : 20000
-    const rows = allRows.length > MAX_ROWS ? allRows.slice(0, MAX_ROWS) : allRows
-    rowsJson = JSON.stringify(rows)
-    rowsCount = rows.length
+    rowsJson = JSON.stringify(merged.rows)
   } catch {
     rowsJson = '[]'
-    rowsCount = 0
   }
+
+  const fieldCatalogJson = buildSnapshotFieldCatalogJson(existingRow?.field_catalog_json ?? null, merged.rows)
+  const mergeMetaJson = JSON.stringify({
+    ...(merged.mergeMeta ?? {}),
+    sourceKind,
+    sourceEndpointsCount: sourceEndpoints.length,
+    schemaVersion,
+    savedAt: fetchedAt,
+  })
 
   mustDb().prepare(`
     INSERT INTO dataset_snapshots (
       store_client_id, dataset, scope_key, period_from, period_to,
       schema_version, source_kind, source_endpoints,
+      field_catalog_json, merge_strategy, merge_meta_json,
       rows_json, rows_count, fetched_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(store_client_id, dataset, scope_key) DO UPDATE SET
       period_from = excluded.period_from,
       period_to = excluded.period_to,
       schema_version = excluded.schema_version,
       source_kind = excluded.source_kind,
       source_endpoints = excluded.source_endpoints,
+      field_catalog_json = excluded.field_catalog_json,
+      merge_strategy = excluded.merge_strategy,
+      merge_meta_json = excluded.merge_meta_json,
       rows_json = excluded.rows_json,
       rows_count = excluded.rows_count,
       fetched_at = excluded.fetched_at
@@ -722,8 +1054,11 @@ export function dbSaveDatasetSnapshot(args: {
     schemaVersion,
     sourceKind,
     sourceEndpoints.length ? JSON.stringify(sourceEndpoints) : null,
+    fieldCatalogJson,
+    mergeStrategy,
+    mergeMetaJson,
     rowsJson,
-    rowsCount,
+    merged.rowsCount,
     fetchedAt,
   )
 }
