@@ -147,10 +147,28 @@ function detailsRu(type?: string | null, meta?: string | null, itemsCount?: numb
       if (typeof m?.reportDeliveryDateKeyCount === 'number') parts.push(`ключей даты доставки из CSV: ${m.reportDeliveryDateKeyCount}`)
       const deliveryDateSample = Array.isArray(m?.reportDeliveryDateSample) ? m.reportDeliveryDateSample : []
       if (deliveryDateSample.length > 0) parts.push(`пример дат из CSV: ${deliveryDateSample.slice(0, 3).join(', ')}`)
+      if (typeof m?.reportRowsWithStatus === 'number') parts.push(`отчёт: статусов ${m.reportRowsWithStatus}`)
+      if (typeof m?.reportRowsFboWithStatus === 'number') parts.push(`отчёт FBO со статусом: ${m.reportRowsFboWithStatus}`)
+      if (typeof m?.reportRowsFbsWithStatus === 'number') parts.push(`отчёт FBS/rFBS со статусом: ${m.reportRowsFbsWithStatus}`)
+      if (typeof m?.salesRowsWithStatus === 'number') parts.push(`строк продаж со статусом: ${m.salesRowsWithStatus}`)
+      if (typeof m?.salesRowsWithoutStatus === 'number') parts.push(`строк продаж без статуса: ${m.salesRowsWithoutStatus}`)
+      if (typeof m?.finalDeliveredRows === 'number') parts.push(`строк со статусом Доставлен: ${m.finalDeliveredRows}`)
+      if (typeof m?.fboRowsWithStatus === 'number') parts.push(`FBO строк со статусом: ${m.fboRowsWithStatus}`)
+      if (typeof m?.fbsRowsWithStatus === 'number') parts.push(`FBS строк со статусом: ${m.fbsRowsWithStatus}`)
+      if (typeof m?.rfbsRowsWithStatus === 'number') parts.push(`rFBS строк со статусом: ${m.rfbsRowsWithStatus}`)
+      if (typeof m?.statusMatchedRows === 'number') parts.push(`совпало по posting_number (статус): ${m.statusMatchedRows}`)
+      if (typeof m?.statusResolvedRows === 'number') parts.push(`статус применён: ${m.statusResolvedRows}`)
+      if (typeof m?.statusClearedRows === 'number') parts.push(`очищено старых API статусов: ${m.statusClearedRows}`)
+      if (typeof m?.deliveredRowsWithClearedDetails === 'number') parts.push(`доставлен + детали очищены: ${m.deliveredRowsWithClearedDetails}`)
+      if (typeof m?.reportStatusKeyCount === 'number') parts.push(`ключей статуса из CSV: ${m.reportStatusKeyCount}`)
+      const statusSample = Array.isArray(m?.reportStatusSample) ? m.reportStatusSample : []
+      if (statusSample.length > 0) parts.push(`пример статусов из CSV: ${statusSample.slice(0, 5).join(', ')}`)
       const missing = Array.isArray(m?.trace?.missingShipmentDatePostingNumbers) ? m.trace.missingShipmentDatePostingNumbers : []
       if (missing.length > 0) parts.push(`без даты отгрузки: ${missing.slice(0, 3).join(', ')}`)
       const missingDelivery = Array.isArray(m?.missingDeliveryDatePostingNumbers) ? m.missingDeliveryDatePostingNumbers : []
       if (missingDelivery.length > 0) parts.push(`без даты доставки: ${missingDelivery.slice(0, 5).join(', ')}`)
+      const missingStatus = Array.isArray(m?.missingStatusPostingNumbers) ? m.missingStatusPostingNumbers : []
+      if (missingStatus.length > 0) parts.push(`без статуса: ${missingStatus.slice(0, 5).join(', ')}`)
       const missingDetails = Array.isArray(m?.trace?.missingDetailPostingNumbers) ? m.trace.missingDetailPostingNumbers : []
       if (missingDetails.length > 0) parts.push(`без detail: ${missingDetails.slice(0, 3).join(', ')}`)
       if (typeof m?.reportCode === 'string' && m.reportCode) parts.push(`код отчёта: ${m.reportCode}`)
