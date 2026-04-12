@@ -36,7 +36,7 @@ declare global {
     delivery_model?: string | null
     currency?: string | null
     item_currency?: string | null
-    customer_currency_in_item_currency?: string | null
+    customer_currency_in_item_currency?: number | string | null
     price?: number | string | null
     quantity?: number | string | null
     paid_by_customer?: number | string | null
