@@ -657,7 +657,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    return ctx.measureText(text).width
  }
 
- function getCellString(p: GridRow, colId: ColDef['id']): string {
+ const getCellString = useCallback((p: GridRow, colId: ColDef['id']): string => {
    if (colId === 'archived') return ''
    if (colId === 'is_visible') return visibilityText(p)
    if (colId === 'hidden_reasons') return visibilityReasonText((p as any)[colId])
@@ -690,7 +690,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    if (dataset === 'sales' && colId === 'paid_by_customer') return formatCellNumberWithCurrency((p as any)[colId], (p as any).currency)
    if (isMoneyColumnId(colId)) return formatMoneyValue((p as any)[colId])
    return toText((p as any)[colId])
- }
+ }, [dataset])
 
  function autoSizeColumn(colId: string, rows: GridRow[], mode: 'default' | 'fit' = 'default') {
    const col = cols.find((c) => String(c.id) === colId)
