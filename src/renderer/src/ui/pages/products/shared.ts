@@ -23,6 +23,7 @@ export type GridRow = {
   posting_number?: string | null
   related_postings?: string | null
   delivery_model?: string | null
+  currency?: string | null
   shipment_date?: string | null
   shipment_date_source?: string | null
   status?: string | null
@@ -343,6 +344,7 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
       asMainCol({ id: 'related_postings', title: 'Связанные отправления', w: 300, visible: true }),
       asMainCol({ id: 'delivery_model', title: 'Метод доставки', w: 150, visible: true }),
       asMainCol({ id: 'price', title: 'Ваша цена', w: 130, visible: true, getSortValue: (row) => toSortNumber(row.price) }),
+      asMainCol({ id: 'currency', title: 'Валюта', w: 110, visible: true }),
       asMainCol({ id: 'paid_by_customer', title: 'Оплачено покупателем', w: 180, visible: true, getSortValue: (row) => toSortNumber(row.paid_by_customer) }),
       asMainCol({ id: 'quantity', title: 'Количество', w: 120, visible: true, getSortValue: (row) => toSortNumber(row.quantity) }),
       asMainCol({ id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.shipment_date) ?? '' }),
