@@ -7,20 +7,16 @@
      "moduleResolution": "Node",
      "strict": true,
      "esModuleInterop": true,
-     "skipLibCheck": true,
-+    "noImplicitAny": false,
      "forceConsistentCasingInFileNames": true,
-     "outDir": "./dist",
-     "rootDir": "./src",
-     "resolveJsonModule": true,
-     "isolatedModules": true,
-     "noEmit": true
+     "skipLibCheck": true
    },
    "include": [
-     "src/**/*"
+     "src",
+     "electron",
+     "tests"
    ],
    "exclude": [
      "node_modules",
-     "dist"
+     "out"
    ]
  }
