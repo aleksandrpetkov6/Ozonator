@@ -22,6 +22,7 @@ export type SalesPostingsReportRow = {
   delivery_schema: string
   shipment_date: string
   delivery_date: string
+  status: string
   sku: string
   offer_id: string
   product_name: string
@@ -48,15 +49,19 @@ type ReportCsvTrace = {
   rowsWithPostingNumber: number
   rowsWithShipmentDate: number
   rowsWithDeliveryDate: number
+  rowsWithStatus: number
   rowsFbo: number
   rowsFboWithShipmentDate: number
   rowsFboWithDeliveryDate: number
+  rowsFboWithStatus: number
   rowsFbs: number
   rowsFbsWithDeliveryDate: number
+  rowsFbsWithStatus: number
   headerSample: string[]
   samplePostingNumbers: string[]
   sampleShipmentDates: string[]
   sampleDeliveryDates: string[]
+  sampleStatuses: string[]
 }
 
 export type SalesPostingsReportTraceSegment = {
@@ -574,6 +579,15 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
     'Дата отгрузки',
   ]))
   const deliveryDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата доставки', 'delivery_date', 'delivery date']))
+  const status = pickRowValue(row, [
+    'Статус',
+    'Статус отправления',
+    'Статус заказа',
+    'Статус доставки',
+    'posting_status',
+    'order_status',
+    'status',
+  ])
   const sku = pickRowValue(row, ['SKU', 'sku'])
   const offerId = pickRowValue(row, ['Артикул', 'offer_id', 'offer id'])
   const productName = pickRowValue(row, ['Название товара', 'Наименование товара', 'product_name', 'product name'])
@@ -587,6 +601,7 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
     delivery_schema: deliverySchema,
     shipment_date: shipmentDate,
     delivery_date: deliveryDate,
+    status,
     sku,
     offer_id: offerId,
     product_name: productName,
@@ -609,7 +624,7 @@ function parseSalesPostingsReportCsv(csvText: string): {
     if (!mapped) continue
     const key = buildSalesPostingsReportRowKey(mapped)
     const prev = out.get(key)
-    if (!prev || (!prev.shipment_date && mapped.shipment_date)) {
+    if (!prev || (!prev.shipment_date && mapped.shipment_date) || (!prev.delivery_date && mapped.delivery_date) || (!prev.status && mapped.status)) {
       out.set(key, mapped)
     }
   }
@@ -623,15 +638,19 @@ function parseSalesPostingsReportCsv(csvText: string): {
       rowsWithPostingNumber: rows.filter((row) => Boolean(row.posting_number)).length,
       rowsWithShipmentDate: rows.filter((row) => Boolean(row.shipment_date)).length,
       rowsWithDeliveryDate: rows.filter((row) => Boolean(row.delivery_date)).length,
+      rowsWithStatus: rows.filter((row) => Boolean(text(row.status))).length,
       rowsFbo: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO').length,
       rowsFboWithShipmentDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(row.shipment_date)).length,
       rowsFboWithDeliveryDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(row.delivery_date)).length,
+      rowsFboWithStatus: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(text(row.status))).length,
       rowsFbs: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS').length,
       rowsFbsWithDeliveryDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS' && Boolean(row.delivery_date)).length,
+      rowsFbsWithStatus: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS' && Boolean(text(row.status))).length,
       headerSample: buildCsvHeaderSample(rawRows),
       samplePostingNumbers: uniqueSample(rows.map((row) => row.posting_number), 10),
       sampleShipmentDates: uniqueSample(rows.filter((row) => row.shipment_date).map((row) => row.shipment_date), 10),
       sampleDeliveryDates: uniqueSample(rows.filter((row) => row.delivery_date).map((row) => row.delivery_date), 10),
+      sampleStatuses: uniqueSample(rows.filter((row) => text(row.status)).map((row) => row.status), 10),
     },
   }
 }

@@ -224,7 +224,7 @@ function normalizeSalesLookupKey(value: any): string {
     .replace(/^_+|_+$/g, '')
 }
 
-function translateSalesCodeValue(value: any, mode: 'status' | 'detail' | 'provider' = 'status'): string {
+export function translateSalesCodeValue(value: any, mode: 'status' | 'detail' | 'provider' = 'status'): string {
   const raw = normalizeTextValue(value)
   if (!raw) return ''
   if (raw.includes('|')) {
