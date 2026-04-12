@@ -137,9 +137,9 @@ function uniqueSample(values: unknown[], limit = 10): string[] {
 }
 
 
-function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownloadArtifact[]): Array<{ path: string; schema: string; reportCode: string; headers: string[]; cleanedLegacyFilesCount: number }> {
+function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownloadArtifact[]): { files: Array<{ path: string; schema: string; reportCode: string; headers: string[] }>; cleanedLegacyFilesCount: number } {
   const safeArtifacts = Array.isArray(artifacts) ? artifacts : []
-  if (safeArtifacts.length === 0) return []
+  if (safeArtifacts.length === 0) return { files: [], cleanedLegacyFilesCount: 0 }
 
   const prepared = safeArtifacts.map((artifact) => ({
     groupPath: ['reports', 'postings'],
@@ -152,13 +152,15 @@ function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownload
   }))
 
   const saved = saveCurrentPersistentArtifacts(prepared)
-  return saved.map((item, index) => ({
-    path: item.path,
-    schema: prepared[index].slot,
-    reportCode: prepared[index].reportCode,
-    headers: item.headers,
-    cleanedLegacyFilesCount: item.cleanedLegacyFilesCount,
-  }))
+  return {
+    files: saved.saved.map((item, index) => ({
+      path: item.path,
+      schema: prepared[index].slot,
+      reportCode: prepared[index].reportCode,
+      headers: item.headers,
+    })),
+    cleanedLegacyFilesCount: saved.cleanedLegacyFilesCount,
+  }
 }
 
 
@@ -1671,6 +1673,7 @@ export async function refreshSalesRawSnapshotFromApi(
     let reportLoaded = false
     let reportTrace: any = null
     let reportSavedCsvFiles: Array<{ path: string; schema: string; reportCode: string; headers: string[] }> = []
+    let reportSavedCsvCleanupCount = 0
 
     logFboShipmentTrace('api.refresh.report.begin', {
       storeClientId: secrets.clientId,
@@ -1703,7 +1706,9 @@ export async function refreshSalesRawSnapshotFromApi(
         }))
         .filter((row) => row.posting_number)
 
-      reportSavedCsvFiles = persistSalesPostingsCsvArtifacts(Array.isArray(report.downloads) ? report.downloads : [])
+      const reportSavedCsv = persistSalesPostingsCsvArtifacts(Array.isArray(report.downloads) ? report.downloads : [])
+      reportSavedCsvFiles = reportSavedCsv.files
+      reportSavedCsvCleanupCount = Number(reportSavedCsv.cleanedLegacyFilesCount || 0)
 
       const reportSegments = Array.isArray(reportTrace?.segments) ? reportTrace.segments : []
       const failedSegments = reportSegments.filter((segment: any) => normalizeTextValue(segment?.error))
@@ -1766,7 +1771,7 @@ export async function refreshSalesRawSnapshotFromApi(
           download: reportTrace?.download ?? null,
           reportSavedCsvCount: reportSavedCsvFiles.length,
           reportSavedCsvPaths: reportSavedCsvFiles.map((item) => item.path),
-          reportSavedCsvCleanupCount: reportSavedCsvFiles.reduce((sum, item) => sum + Number(item.cleanedLegacyFilesCount || 0), 0),
+          reportSavedCsvCleanupCount,
           reportCsvHeaderCount: Number(reportTrace?.csv?.headerCount ?? 0),
           reportCsvHeaderNames: Array.isArray(reportTrace?.csv?.headerNames) ? reportTrace.csv.headerNames : [],
           reportStrategy: reportTrace?.strategy ?? 'single',
@@ -1800,7 +1805,7 @@ export async function refreshSalesRawSnapshotFromApi(
           reportStatusSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.status)).map((row) => normalizeSalesReportStatusValue(row?.status)), 10),
           reportSavedCsvCount: reportSavedCsvFiles.length,
           reportSavedCsvPaths: reportSavedCsvFiles.map((item) => item.path),
-          reportSavedCsvCleanupCount: reportSavedCsvFiles.reduce((sum, item) => sum + Number(item.cleanedLegacyFilesCount || 0), 0),
+          reportSavedCsvCleanupCount,
           reportCsvHeaderCount: Number(reportTrace?.csv?.headerCount ?? 0),
           reportCsvHeaderNames: Array.isArray(reportTrace?.csv?.headerNames) ? reportTrace.csv.headerNames : [],
           reportStrategy: reportTrace?.strategy ?? 'single',
