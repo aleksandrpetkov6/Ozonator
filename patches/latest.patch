@@ -2,6 +2,6 @@
 +++ b/src/renderer/src/ui/pages/LogsPage.tsx
 @@
 -    return map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
-+    // Use parentheses to ensure correct precedence between nullish coalescing (??) and logical OR (||)
++    // Use parentheses to avoid ambiguity between ?? and || operators
 +    return (map[stage] ?? normalizeText(meta?.stageRu)) || 'Шаг синхронизации'
 *** End of File ***
