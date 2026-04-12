@@ -16,6 +16,10 @@ export type CurrentPersistentArtifactSaved = {
   slot: string
   fileName: string
   headers: string[]
+}
+
+export type SaveCurrentPersistentArtifactsResult = {
+  saved: CurrentPersistentArtifactSaved[]
   cleanedLegacyFilesCount: number
 }
 
@@ -34,9 +38,9 @@ function sanitizeFilePart(value: unknown): string {
   return normalized || 'unknown'
 }
 
-export function saveCurrentPersistentArtifacts(artifacts: CurrentPersistentArtifactInput[]): CurrentPersistentArtifactSaved[] {
+export function saveCurrentPersistentArtifacts(artifacts: CurrentPersistentArtifactInput[]): SaveCurrentPersistentArtifactsResult {
   const safeArtifacts = Array.isArray(artifacts) ? artifacts : []
-  if (safeArtifacts.length === 0) return []
+  if (safeArtifacts.length === 0) return { saved: [], cleanedLegacyFilesCount: 0 }
 
   const firstGroupPath = Array.isArray(safeArtifacts[0]?.groupPath) ? safeArtifacts[0].groupPath : []
   const root = join(getPersistentRootDir(), ...firstGroupPath)
@@ -70,8 +74,8 @@ export function saveCurrentPersistentArtifacts(artifacts: CurrentPersistentArtif
     }
   }
 
-  return prepared.map((item) => ({
-    ...item,
+  return {
+    saved: prepared,
     cleanedLegacyFilesCount,
-  }))
+  }
 }
