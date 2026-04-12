@@ -1,11 +1,14 @@
 import { ozonPostingFboList, ozonPostingFbsList } from './ozon'
 import { applyCbrConversionsToSalesRows } from './cbr-rates'
 import { buildSalesPaidByCustomerTrace, extractPostingsFromPayload, fetchSalesEndpointPages, fetchSalesPostingDetails, getSalesPostingDetailsKey, normalizeSalesRows, resolveFboShipmentDateFromSources, translateSalesCodeValue, type SalesPeriod } from './sales-sync'
-import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetProducts, dbGetStockViewRows, dbLogEvent, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
+import { dbGetApiRawResponses, dbGetDatasetSnapshotRows, dbGetLatestApiRawResponses, dbGetLatestApiRawStoredResponses, dbGetProducts, dbGetStockViewRows, dbLogEvent, dbRecordApiRawResponse, dbSaveDatasetSnapshot } from './storage/db'
 import { buildAndPersistFboSalesSnapshot, mergeSalesRowsWithFboLocalDb, persistFboPostingsReport, persistFboPushShipmentEvents } from './storage/fbo-sales'
 import { fetchFboPostingDetailsCompat } from './fbo-detail-compat'
-import { fetchSalesPostingsReportRows, type SalesPostingsReportRow } from './postings-report'
+import { fetchSalesPostingsReportRows, type SalesPostingsReportDownloadArtifact, type SalesPostingsReportRow } from './postings-report'
 import type { Secrets } from './types'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { getPersistentRootDir } from './storage/paths'
 
 const SALES_CACHE_SNAPSHOT_ENDPOINTS = {
   fbs: '/__local__/sales-cache/fbs',
@@ -133,6 +136,46 @@ function uniqueSample(values: unknown[], limit = 10): string[] {
   }
   return out
 }
+
+
+function sanitizeFilePart(value: unknown): string {
+  const normalized = normalizeTextValue(value).replace(/[\/:*?"<>|]+/g, '-').replace(/\s+/g, '_')
+  return normalized || 'unknown'
+}
+
+function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownloadArtifact[], fetchedAt: string): Array<{ path: string; schema: string; reportCode: string; headers: string[] }> {
+  const safeArtifacts = Array.isArray(artifacts) ? artifacts : []
+  if (safeArtifacts.length === 0) return []
+
+  const root = join(getPersistentRootDir(), 'reports', 'postings')
+  mkdirSync(root, { recursive: true })
+  const stamp = fetchedAt.replace(/[:.]/g, '-').replace(/[^0-9T\-Z]/g, '_')
+  const saved: Array<{ path: string; schema: string; reportCode: string; headers: string[] }> = []
+
+  for (const artifact of safeArtifacts) {
+    const schema = normalizeTextValue(artifact?.schema).toLowerCase() || 'unknown'
+    const reportCode = normalizeTextValue(artifact?.reportCode)
+    const from = sanitizeFilePart(artifact?.from)
+    const to = sanitizeFilePart(artifact?.to)
+    const entryName = sanitizeFilePart(artifact?.extractedEntryName || 'report.csv')
+    const fileName = `${stamp}__${schema}__${from}__${to}__${sanitizeFilePart(reportCode || 'report')}__${entryName.endsWith('.csv') ? entryName : `${entryName}.csv`}`
+    const filePath = join(root, fileName)
+    try {
+      writeFileSync(filePath, String(artifact?.csvText ?? ''), 'utf8')
+      saved.push({
+        path: filePath,
+        schema,
+        reportCode,
+        headers: Array.isArray(artifact?.headerNames) ? artifact.headerNames.map((v) => normalizeTextValue(v)).filter(Boolean) : [],
+      })
+    } catch {
+      // ignore write errors; they will be visible through empty saved list / paths in trace
+    }
+  }
+
+  return saved
+}
+
 
 function pushTraceSample(target: string[], value: string, limit = 10) {
   const normalized = normalizeTextValue(value)
@@ -561,8 +604,9 @@ function inspectPersistedPostingsReportSnapshot(
   storeClientId: string | null | undefined,
   requestedPeriod: SalesPeriod | null | undefined,
 ) {
+  const latestStored = dbGetLatestApiRawStoredResponses(storeClientId ?? null, [SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport])[0] ?? null
   const latest = dbGetLatestApiRawResponses(storeClientId ?? null, [SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport])[0] ?? null
-  const payload = parseJsonTextSafe(latest?.response_body ?? null) as any
+  const payload = parseJsonTextSafe((latest?.response_body ?? latestStored?.response_body ?? null)) as any
   const rows = Array.isArray(payload?.rows) ? payload.rows : []
   const normalizedRows = rows
     .map((row: any): SalesShipmentReportRow => ({
@@ -586,8 +630,8 @@ function inspectPersistedPostingsReportSnapshot(
   const snapshotPeriod = normalizeSalesPeriod(payload?.period ?? null)
   const expectedPeriod = normalizeSalesPeriod(requestedPeriod)
   return {
-    found: Boolean(latest),
-    fetchedAt: normalizeTextValue(latest?.fetched_at),
+    found: Boolean(latestStored),
+    fetchedAt: normalizeTextValue(latestStored?.fetched_at ?? latest?.fetched_at),
     rowsCount: normalizedRows.length,
     periodMatches: sameSalesPeriod(snapshotPeriod, expectedPeriod),
     rowsWithDeliveryDate: countRowsWithDeliveryDate(normalizedRows),
@@ -595,6 +639,12 @@ function inspectPersistedPostingsReportSnapshot(
     rowsWithStatus: countRowsWithStatus(normalizedRows),
     rowsFboWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(normalizedRows, 'fbo'),
     rowsFbsWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(normalizedRows, 'fbs'),
+    responseTruncated: Number(latestStored?.response_truncated ?? 0),
+    responseBodyLen: latestStored?.response_body_len ?? null,
+    csvHeaderCount: Array.isArray(payload?.csvHeaderNames) ? payload.csvHeaderNames.length : 0,
+    csvHeaderNames: Array.isArray(payload?.csvHeaderNames) ? payload.csvHeaderNames.map((value: any) => normalizeTextValue(value)).filter(Boolean) : [],
+    savedCsvFilesCount: Array.isArray(payload?.savedCsvFiles) ? payload.savedCsvFiles.length : 0,
+    savedCsvPaths: Array.isArray(payload?.savedCsvFiles) ? payload.savedCsvFiles.map((item: any) => normalizeTextValue(item?.path)).filter(Boolean) : [],
   }
 }
 
@@ -1633,6 +1683,7 @@ export async function refreshSalesRawSnapshotFromApi(
     let reportRows: SalesShipmentReportRow[] = []
     let reportLoaded = false
     let reportTrace: any = null
+    let reportSavedCsvFiles: Array<{ path: string; schema: string; reportCode: string; headers: string[] }> = []
 
     logFboShipmentTrace('api.refresh.report.begin', {
       storeClientId: secrets.clientId,
@@ -1664,6 +1715,8 @@ export async function refreshSalesRawSnapshotFromApi(
           raw_row: normalizeSalesShipmentReportRawRow(row?.raw_row),
         }))
         .filter((row) => row.posting_number)
+
+      reportSavedCsvFiles = persistSalesPostingsCsvArtifacts(Array.isArray(report.downloads) ? report.downloads : [], new Date().toISOString())
 
       const reportSegments = Array.isArray(reportTrace?.segments) ? reportTrace.segments : []
       const failedSegments = reportSegments.filter((segment: any) => normalizeTextValue(segment?.error))
@@ -1724,6 +1777,10 @@ export async function refreshSalesRawSnapshotFromApi(
         itemsCount: Number(reportTrace?.download?.bytes ?? 0),
         meta: {
           download: reportTrace?.download ?? null,
+          reportSavedCsvCount: reportSavedCsvFiles.length,
+          reportSavedCsvPaths: reportSavedCsvFiles.map((item) => item.path),
+          reportCsvHeaderCount: Number(reportTrace?.csv?.headerCount ?? 0),
+          reportCsvHeaderNames: Array.isArray(reportTrace?.csv?.headerNames) ? reportTrace.csv.headerNames : [],
           reportStrategy: reportTrace?.strategy ?? 'single',
           reportSegmentsTotal: reportSegments.length,
           reportSegmentsSucceeded: successfulSegments.length,
@@ -1753,6 +1810,10 @@ export async function refreshSalesRawSnapshotFromApi(
           reportDeliveryDateSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.delivery_date)).map((row) => row.delivery_date), 10),
           reportShipmentOriginSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.shipment_origin)).map((row) => row.shipment_origin), 10),
           reportStatusSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.status)).map((row) => normalizeSalesReportStatusValue(row?.status)), 10),
+          reportSavedCsvCount: reportSavedCsvFiles.length,
+          reportSavedCsvPaths: reportSavedCsvFiles.map((item) => item.path),
+          reportCsvHeaderCount: Number(reportTrace?.csv?.headerCount ?? 0),
+          reportCsvHeaderNames: Array.isArray(reportTrace?.csv?.headerNames) ? reportTrace.csv.headerNames : [],
           reportStrategy: reportTrace?.strategy ?? 'single',
           reportPartial: Boolean(reportTrace?.partial),
           reportSegmentsTotal: reportSegments.length,
@@ -1932,6 +1993,9 @@ export async function refreshSalesRawSnapshotFromApi(
     persistRawSnapshot(SALES_CACHE_SNAPSHOT_ENDPOINTS.postingsReport, {
       period: normalizedRequestedPeriod,
       rows: reportRows,
+      csvHeaderCount: Number(reportTrace?.csv?.headerCount ?? 0),
+      csvHeaderNames: Array.isArray(reportTrace?.csv?.headerNames) ? reportTrace.csv.headerNames : [],
+      savedCsvFiles: reportSavedCsvFiles,
     })
 
     const persistedReportSnapshot = inspectPersistedPostingsReportSnapshot(secrets.clientId, requestedPeriod)
@@ -1951,6 +2015,12 @@ export async function refreshSalesRawSnapshotFromApi(
         reportSnapshotRowsWithStatus: persistedReportSnapshot.rowsWithStatus,
         reportSnapshotRowsFboWithShipmentOrigin: persistedReportSnapshot.rowsFboWithShipmentOrigin,
         reportSnapshotRowsFbsWithShipmentOrigin: persistedReportSnapshot.rowsFbsWithShipmentOrigin,
+        reportSnapshotResponseTruncated: persistedReportSnapshot.responseTruncated,
+        reportSnapshotResponseBodyLen: persistedReportSnapshot.responseBodyLen,
+        reportSnapshotCsvHeaderCount: persistedReportSnapshot.csvHeaderCount,
+        reportSnapshotCsvHeaderNames: persistedReportSnapshot.csvHeaderNames,
+        reportSnapshotSavedCsvFilesCount: persistedReportSnapshot.savedCsvFilesCount,
+        reportSnapshotSavedCsvPaths: persistedReportSnapshot.savedCsvPaths,
       },
     })
 

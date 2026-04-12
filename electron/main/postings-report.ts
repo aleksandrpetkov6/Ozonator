@@ -44,6 +44,19 @@ type ReportDownloadTrace = {
   extractedBytes: number
 }
 
+export type SalesPostingsReportDownloadArtifact = {
+  schema: 'fbo' | 'fbs'
+  label: string
+  from: string
+  to: string
+  reportCode: string
+  fileUrl: string
+  archiveKind: 'plain' | 'gzip' | 'zip' | 'unknown'
+  extractedEntryName: string
+  csvText: string
+  headerNames: string[]
+}
+
 type ReportCsvTrace = {
   rowsRaw: number
   rowsMapped: number
@@ -65,6 +78,8 @@ type ReportCsvTrace = {
   rowsFbsWithShipmentWarehouse: number
   rowsFbsWithDeliveryDate: number
   rowsFbsWithStatus: number
+  headerCount: number
+  headerNames: string[]
   headerSample: string[]
   samplePostingNumbers: string[]
   sampleShipmentDates: string[]
@@ -402,7 +417,7 @@ function detectCsvDelimiter(line: string): string {
   return best
 }
 
-function parseCsv(textRaw: string): Array<Record<string, string>> {
+function parseCsv(textRaw: string): { headers: string[]; rows: Array<Record<string, string>> } {
   const text = textRaw.replace(/^\uFEFF/, '')
   const firstLine = text.split(/\r?\n/, 1)[0] ?? ''
   const delimiter = detectCsvDelimiter(firstLine)
@@ -449,9 +464,9 @@ function parseCsv(textRaw: string): Array<Record<string, string>> {
     rows.push(row)
   }
 
-  if (rows.length === 0) return []
+  if (rows.length === 0) return { headers: [], rows: [] }
 
-  const headers = rows[0].map((value) => value.trim())
+  const headers = rows[0].map((value, index) => value.trim() || `col_${index}`)
   const out: Array<Record<string, string>> = []
   for (const rawRow of rows.slice(1)) {
     const obj: Record<string, string> = {}
@@ -464,7 +479,7 @@ function parseCsv(textRaw: string): Array<Record<string, string>> {
     }
     if (hasValue) out.push(obj)
   }
-  return out
+  return { headers, rows: out }
 }
 
 function normalizeHeaderKey(value: unknown): string {
@@ -645,7 +660,9 @@ function parseSalesPostingsReportCsv(csvText: string): {
   rows: SalesPostingsReportRow[]
   trace: SalesPostingsReportTrace['csv']
 } {
-  const rawRows = parseCsv(csvText)
+  const parsedCsv = parseCsv(csvText)
+  const rawRows = parsedCsv.rows
+  const headerNames = parsedCsv.headers
   const out = new Map<string, SalesPostingsReportRow>()
 
   for (const rawRow of rawRows) {
@@ -706,7 +723,9 @@ function parseSalesPostingsReportCsv(csvText: string): {
       ])))).length,
       rowsFbsWithDeliveryDate: rows.filter((row) => ['FBS', 'rFBS'].includes(normalizeDeliverySchema(row.delivery_schema)) && Boolean(row.delivery_date)).length,
       rowsFbsWithStatus: rows.filter((row) => ['FBS', 'rFBS'].includes(normalizeDeliverySchema(row.delivery_schema)) && Boolean(text(row.status))).length,
-      headerSample: buildCsvHeaderSample(rawRows),
+      headerCount: headerNames.length,
+      headerNames: headerNames.slice(0, 200),
+      headerSample: headerNames.slice(0, 20),
       samplePostingNumbers: uniqueSample(rows.map((row) => row.posting_number), 10),
       sampleShipmentDates: uniqueSample(rows.filter((row) => row.shipment_date).map((row) => row.shipment_date), 10),
       sampleShipmentOrigins: uniqueSample(rows.filter((row) => text(row.shipment_origin)).map((row) => row.shipment_origin), 10),
@@ -734,7 +753,7 @@ async function fetchSingleSalesPostingsReportRows(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
   deliverySchema: 'fbo' | 'fbs',
-): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: { createBody: Record<string, unknown>; pollAttempts: ReportPollAttempt[]; download: ReportDownloadTrace; csv: ReportCsvTrace } }> {
+): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: { createBody: Record<string, unknown>; pollAttempts: ReportPollAttempt[]; download: ReportDownloadTrace; csv: ReportCsvTrace }; artifact: SalesPostingsReportDownloadArtifact }> {
   const createBody = buildPostingsReportCreateBody(period, deliverySchema)
   const createResponse = await ozonReportPostingsCreate(secrets, createBody)
   const createResult = (createResponse && typeof createResponse === 'object' && 'result' in createResponse)
@@ -773,6 +792,7 @@ async function fetchSingleSalesPostingsReportRows(
   const downloaded = await ozonDownloadReportFile(fileUrl)
   const extracted = extractReportText(downloaded.bytes)
   const parsed = parseSalesPostingsReportCsv(extracted.text)
+  const artifactBounds = resolvePeriodBounds(period)
 
   return {
     reportCode,
@@ -790,6 +810,18 @@ async function fetchSingleSalesPostingsReportRows(
         extractedBytes: extracted.extractedBytes,
       },
       csv: parsed.trace,
+    },
+    artifact: {
+      schema: deliverySchema,
+      label: `${deliverySchema}:${artifactBounds.from}..${artifactBounds.to}`,
+      from: artifactBounds.from,
+      to: artifactBounds.to,
+      reportCode,
+      fileUrl,
+      archiveKind: extracted.archiveKind,
+      extractedEntryName: extracted.extractedEntryName,
+      csvText: extracted.text,
+      headerNames: parsed.trace.headerNames,
     },
   }
 }
@@ -830,6 +862,7 @@ function mergeSalesPostingsReportRows(rows: SalesPostingsReportRow[]): SalesPost
 }
 
 function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesPostingsReportTraceSegment[]): ReportCsvTrace {
+  const headerNames: string[] = []
   const headerSample: string[] = []
   const samplePostingNumbers: string[] = []
   const sampleShipmentDates: string[] = []
@@ -881,6 +914,9 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
       rowsFbsWithShipmentWarehouse += Number(segment.csv.rowsFbsWithShipmentWarehouse ?? 0)
       rowsFbsWithDeliveryDate += Number(segment.csv.rowsFbsWithDeliveryDate ?? 0)
       rowsFbsWithStatus += Number(segment.csv.rowsFbsWithStatus ?? 0)
+      for (const key of segment.csv.headerNames ?? []) {
+        if (key && !headerNames.includes(key) && headerNames.length < 200) headerNames.push(key)
+      }
       for (const key of segment.csv.headerSample ?? []) {
         if (key && !headerSample.includes(key) && headerSample.length < 20) headerSample.push(key)
       }
@@ -957,6 +993,8 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
     rowsFbsWithShipmentWarehouse,
     rowsFbsWithDeliveryDate,
     rowsFbsWithStatus,
+    headerCount: headerNames.length,
+    headerNames,
     headerSample,
     samplePostingNumbers,
     sampleShipmentDates,
@@ -997,7 +1035,7 @@ async function fetchSalesPostingsReportRowsForSchema(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
   deliverySchema: 'fbo' | 'fbs',
-): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace }> {
+): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace; downloads: SalesPostingsReportDownloadArtifact[] }> {
   const bounds = resolvePeriodBounds(period)
   const totalDays = diffDaysInclusive(bounds.from, bounds.to)
   const strategies: Array<{ name: 'single' | 'chunked-7d' | 'chunked-1d'; segments: Array<{ from: string; to: string; label: string }> }> = [
@@ -1013,11 +1051,13 @@ async function fetchSalesPostingsReportRowsForSchema(
   for (const strategy of strategies) {
     const segmentTraces: SalesPostingsReportTraceSegment[] = []
     const collectedRows: SalesPostingsReportRow[] = []
+    const downloads: SalesPostingsReportDownloadArtifact[] = []
 
     for (const segment of strategy.segments) {
       try {
         const single = await fetchSingleSalesPostingsReportRows(secrets, segment, deliverySchema)
         collectedRows.push(...single.rows)
+        downloads.push(single.artifact)
         segmentTraces.push({
           label: `${deliverySchema}:${segment.label}`,
           from: segment.from,
@@ -1077,6 +1117,7 @@ async function fetchSalesPostingsReportRowsForSchema(
           partial,
           segments: segmentTraces,
         },
+        downloads,
       }
     }
   }
@@ -1088,10 +1129,11 @@ async function fetchSalesPostingsReportRowsForSchema(
 export async function fetchSalesPostingsReportRows(
   secrets: Secrets,
   period: ReportPeriodInput | null | undefined,
-): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace }> {
+): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace; downloads: SalesPostingsReportDownloadArtifact[] }> {
   const schemas: Array<'fbo' | 'fbs'> = ['fbo', 'fbs']
   const allRows: SalesPostingsReportRow[] = []
   const allSegments: SalesPostingsReportTraceSegment[] = []
+  const allDownloads: SalesPostingsReportDownloadArtifact[] = []
   let firstSuccess: { reportCode: string; fileUrl: string; trace: SalesPostingsReportTrace } | null = null
   let hasPartial = false
   let lastError: unknown = null
@@ -1101,6 +1143,7 @@ export async function fetchSalesPostingsReportRows(
       const result = await fetchSalesPostingsReportRowsForSchema(secrets, period, schema)
       allRows.push(...result.rows)
       allSegments.push(...(Array.isArray(result.trace?.segments) ? result.trace.segments : []))
+      allDownloads.push(...(Array.isArray(result.downloads) ? result.downloads : []))
       if (!firstSuccess) firstSuccess = result
       if (result.trace?.partial) hasPartial = true
     } catch (error) {
@@ -1140,6 +1183,7 @@ export async function fetchSalesPostingsReportRows(
         partial: hasPartial || allSegments.some((segment) => Boolean(segment.error)),
         segments: allSegments,
       },
+      downloads: allDownloads,
     }
   }
 
