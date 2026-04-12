@@ -28,6 +28,7 @@ export type GridRow = {
   customer_currency_in_item_currency?: number | string | null
   shipment_date?: string | null
   shipment_date_source?: string | null
+  shipment_origin?: string | null
   status?: string | null
   status_details?: string | null
   carrier_status_details?: string | null
@@ -386,6 +387,7 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
       asMainCol({ id: 'customer_currency_in_item_currency', title: 'Оплачено покупателем в валюте товара', w: 320, visible: true, getSortValue: (row) => toSortNumber(row.customer_currency_in_item_currency) }),
       asMainCol({ id: 'quantity', title: 'Количество', w: 120, visible: true, getSortValue: (row) => toSortNumber(row.quantity) }),
       asMainCol({ id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.shipment_date) ?? '' }),
+      asMainCol({ id: 'shipment_origin', title: 'Склад/кластер отгрузки', w: 220, visible: true }),
       asMainCol({ id: 'status', title: 'Статус', w: 180, visible: true }),
       asMainCol({ id: 'status_details', title: 'Детали статуса', w: 260, visible: true }),
       asMainCol({ id: 'carrier_status_details', title: 'Детали перевозчика по статусу', w: 320, visible: true }),
