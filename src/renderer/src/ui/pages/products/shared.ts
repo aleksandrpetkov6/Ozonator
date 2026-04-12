@@ -24,6 +24,8 @@ export type GridRow = {
   related_postings?: string | null
   delivery_model?: string | null
   currency?: string | null
+  item_currency?: string | null
+  customer_currency_in_item_currency?: string | null
   shipment_date?: string | null
   shipment_date_source?: string | null
   status?: string | null
@@ -344,8 +346,10 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
       asMainCol({ id: 'related_postings', title: 'Связанные отправления', w: 300, visible: true }),
       asMainCol({ id: 'delivery_model', title: 'Метод доставки', w: 150, visible: true }),
       asMainCol({ id: 'price', title: 'Ваша цена', w: 130, visible: true, getSortValue: (row) => toSortNumber(row.price) }),
-      asMainCol({ id: 'currency', title: 'Валюта', w: 110, visible: true }),
-      asMainCol({ id: 'paid_by_customer', title: 'Оплачено покупателем', w: 180, visible: true, getSortValue: (row) => toSortNumber(row.paid_by_customer) }),
+      asMainCol({ id: 'item_currency', title: 'Валюта товара', w: 140, visible: true }),
+      asMainCol({ id: 'paid_by_customer', title: 'Оплачено покупателем в (валюта покупателя)', w: 280, visible: true, getSortValue: (row) => toSortNumber(row.paid_by_customer) }),
+      asMainCol({ id: 'currency', title: 'Валюта покупателя', w: 170, visible: true }),
+      asMainCol({ id: 'customer_currency_in_item_currency', title: 'Валюта покупателя в (валюта товара)', w: 290, visible: true }),
       asMainCol({ id: 'quantity', title: 'Количество', w: 120, visible: true, getSortValue: (row) => toSortNumber(row.quantity) }),
       asMainCol({ id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.shipment_date) ?? '' }),
       asMainCol({ id: 'status', title: 'Статус', w: 180, visible: true }),
