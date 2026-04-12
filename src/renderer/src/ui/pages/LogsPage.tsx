@@ -297,7 +297,7 @@ function buildTraceStepTitle(meta: TraceMeta): string {
     'webhook.server.status': 'Webhook-контур активен',
     'webhook.probe.received': 'Проверочный ping webhook получен',
   }
-  return map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
+  return map[stage] ?? (normalizeText(meta?.stageRu) || 'Шаг синхронизации')
 }
 
 function buildTraceStepSummary(meta: TraceMeta): string {
