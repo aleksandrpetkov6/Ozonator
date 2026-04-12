@@ -399,28 +399,11 @@ function resolveSalesItemPriceValue(item: any): number | '' {
 }
 
 function resolveSalesItemCurrencyValue(item: any, detailPosting: any, posting: any): string {
-  const direct = normalizeCurrencyValue(pickFirstPresent(item, ['currency_code', 'currencyCode', 'currency']))
-  if (direct) return direct
-
-  const detailItem = detailPosting ? findMatchingSalesItemInSource(item, detailPosting) : null
-  const detailDirect = normalizeCurrencyValue(pickFirstPresent(detailItem, ['currency_code', 'currencyCode', 'currency']))
-  if (detailDirect) return detailDirect
-
   const financialProduct = findSalesFinancialProduct(item, detailPosting, posting)
-  const financialCurrency = normalizeCurrencyValue(pickFirstPresent(financialProduct, [
-    'currency_code',
-    'currencyCode',
+  return normalizeCurrencyValue(pickFirstPresent(financialProduct, [
     'customer_currency_code',
     'customerCurrencyCode',
-    'currency',
   ]))
-  if (financialCurrency) return financialCurrency
-
-  return normalizeCurrencyValue(pickFirstPresentFromSources([
-    'currency_code',
-    'currencyCode',
-    'currency',
-  ], detailPosting, posting))
 }
 
 function resolveSalesItemPaidByCustomerValue(item: any, detailPosting: any, posting: any): number | '' {
