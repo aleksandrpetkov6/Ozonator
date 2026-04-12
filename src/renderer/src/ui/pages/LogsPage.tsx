@@ -431,6 +431,10 @@ function buildSectionMetrics(key: TraceCategoryKey, merged: TraceMeta): TraceMet
     if (typeof merged?.salesRowsWithoutDeliveryDate === 'number') pushMetric(metrics, 'Строк без даты доставки', merged.salesRowsWithoutDeliveryDate)
     if (typeof merged?.reportSnapshotRowsCount === 'number') pushMetric(metrics, 'Строк в snapshot локальной БД', merged.reportSnapshotRowsCount)
     if (typeof merged?.reportSnapshotPersistedToApiRawCache === 'boolean') pushMetric(metrics, 'Snapshot записан в api_raw_cache', merged.reportSnapshotPersistedToApiRawCache ? 'Да' : 'Нет')
+    if (typeof merged?.reportSnapshotResponseTruncated === 'number') pushMetric(metrics, 'Snapshot в api_raw_cache обрезан', Number(merged.reportSnapshotResponseTruncated) ? 'Да' : 'Нет')
+    if (typeof merged?.reportSnapshotResponseBodyLen === 'number') pushMetric(metrics, 'Размер snapshot в api_raw_cache', merged.reportSnapshotResponseBodyLen)
+    if (typeof merged?.reportSavedCsvCount === 'number') pushMetric(metrics, 'CSV-файлов сохранено на диск', merged.reportSavedCsvCount)
+    if (typeof merged?.reportCsvHeaderCount === 'number') pushMetric(metrics, 'Колонок в CSV', merged.reportCsvHeaderCount)
     if (normalizeText(merged?.reportCode)) pushMetric(metrics, 'Код отчёта', merged.reportCode)
     return metrics
   }
@@ -480,6 +484,13 @@ function buildSectionNotes(key: TraceCategoryKey, merged: TraceMeta): string[] {
     if (typeof merged?.reportSnapshotPersistedToApiRawCache === 'boolean') {
       notes.push(`Snapshot отчёта в api_raw_cache: ${merged.reportSnapshotPersistedToApiRawCache ? 'да' : 'нет'}.`)
     }
+    if (typeof merged?.reportSnapshotResponseTruncated === 'number') {
+      notes.push(`Snapshot отчёта в api_raw_cache обрезан: ${Number(merged.reportSnapshotResponseTruncated) ? 'да' : 'нет'}.`)
+    }
+    const headerSample = uniqueSample(merged?.reportCsvHeaderNames ?? merged?.reportSnapshotCsvHeaderNames, 12)
+    if (headerSample.length) notes.push(`Заголовки CSV: ${headerSample.join(', ')}.`)
+    const savedCsvPaths = uniqueSample(merged?.reportSavedCsvPaths ?? merged?.reportSnapshotSavedCsvPaths, 4)
+    if (savedCsvPaths.length) notes.push(`CSV сохранён на диск: ${savedCsvPaths.join(' | ')}.`)
   }
   if (key === 'origin') {
     const sample = uniqueSample(merged?.reportShipmentOriginSample, 4)
