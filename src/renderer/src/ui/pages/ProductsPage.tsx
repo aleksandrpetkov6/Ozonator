@@ -49,6 +49,7 @@ const AUTO_MAX_W: Record<string, number> = {
  created_at: 240,
  updated_at: 240,
  in_process_at: 240,
+ currency: 120,
  warehouse_name: 240,
  placement_zone: 320,
  type: 380,
