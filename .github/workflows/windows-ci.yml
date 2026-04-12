@@ -117,8 +117,23 @@ jobs:
         if: always() && steps.install.outputs.ok == 'true'
         continue-on-error: true
         run: |
-          npm run dist -- --publish never *>&1 | Tee-Object -FilePath logs\dist.log
-          $ok = ($LASTEXITCODE -eq 0)
+          $attempts = 2
+          $ok = $false
+          if (Test-Path 'logs\dist.log') { Remove-Item 'logs\dist.log' -Force }
+
+          for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+            "== dist attempt $attempt/$attempts ==" | Tee-Object -FilePath logs\dist.log -Append
+            npm run dist -- --publish never *>&1 | Tee-Object -FilePath logs\dist.log -Append
+            if ($LASTEXITCODE -eq 0) {
+              $ok = $true
+              break
+            }
+            if ($attempt -lt $attempts) {
+              "dist failed on attempt $attempt. Retrying after 20 seconds..." | Tee-Object -FilePath logs\dist.log -Append
+              Start-Sleep -Seconds 20
+            }
+          }
+
           "ok=$($ok.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Collect artifacts (installer + portable)
