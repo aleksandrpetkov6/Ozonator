@@ -137,7 +137,7 @@ function uniqueSample(values: unknown[], limit = 10): string[] {
 }
 
 
-function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownloadArtifact[]): { files: Array<{ path: string; schema: string; reportCode: string; headers: string[] }>; cleanedLegacyFilesCount: number } {
+function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownloadArtifact[]): { files: Array<{ path: string; schema: string; reportCode: string; headers: string[]; artifactKey: string }>; cleanedLegacyFilesCount: number } {
   const safeArtifacts = Array.isArray(artifacts) ? artifacts : []
   if (safeArtifacts.length === 0) return { files: [], cleanedLegacyFilesCount: 0 }
 
@@ -149,6 +149,7 @@ function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownload
     content: String(artifact?.csvText ?? ''),
     headers: Array.isArray(artifact?.headerNames) ? artifact.headerNames.map((v) => normalizeTextValue(v)).filter(Boolean) : [],
     reportCode: normalizeTextValue(artifact?.reportCode),
+    artifactKey: `postings_report_${normalizeTextValue(artifact?.schema).toLowerCase() || 'unknown'}_current_file`,
   }))
 
   const saved = saveCurrentPersistentArtifacts(prepared)
@@ -158,6 +159,7 @@ function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownload
       schema: prepared[index].slot,
       reportCode: prepared[index].reportCode,
       headers: item.headers,
+      artifactKey: item.artifactKey,
     })),
     cleanedLegacyFilesCount: saved.cleanedLegacyFilesCount,
   }
@@ -1672,7 +1674,7 @@ export async function refreshSalesRawSnapshotFromApi(
     let reportRows: SalesShipmentReportRow[] = []
     let reportLoaded = false
     let reportTrace: any = null
-    let reportSavedCsvFiles: Array<{ path: string; schema: string; reportCode: string; headers: string[] }> = []
+    let reportSavedCsvFiles: Array<{ path: string; schema: string; reportCode: string; headers: string[]; artifactKey: string }> = []
     let reportSavedCsvCleanupCount = 0
 
     logFboShipmentTrace('api.refresh.report.begin', {

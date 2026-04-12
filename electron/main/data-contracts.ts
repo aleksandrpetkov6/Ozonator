@@ -1,6 +1,6 @@
-export type DataEntityKind = 'snapshot' | 'domain_table' | 'event_log' | 'raw_cache'
+export type DataEntityKind = 'snapshot' | 'domain_table' | 'event_log' | 'raw_cache' | 'persistent_file_artifact'
 
-export type DataMergeStrategy = 'replace' | 'incremental_upsert_backfill' | 'authoritative_upsert_prune_backfill' | 'append_only'
+export type DataMergeStrategy = 'replace' | 'incremental_upsert_backfill' | 'authoritative_upsert_prune_backfill' | 'append_only' | 'current_only_replace'
 
 export type DataEntityContract = {
   entityKey: string
@@ -113,9 +113,29 @@ const DOMAIN_CONTRACTS: Record<string, DataEntityContract> = {
   },
 }
 
+const FILE_ARTIFACT_CONTRACTS: Record<string, DataEntityContract> = {
+  postings_report_fbo_current_file: {
+    entityKey: 'postings_report_fbo_current_file',
+    entityKind: 'persistent_file_artifact',
+    schemaVersion: 2,
+    defaultMergeStrategy: 'current_only_replace',
+    stableKeyGroups: [['artifact_key'], ['delivery_schema']],
+    notes: 'Current-only persisted CSV artifact for FBO postings report.',
+  },
+  postings_report_fbs_current_file: {
+    entityKey: 'postings_report_fbs_current_file',
+    entityKind: 'persistent_file_artifact',
+    schemaVersion: 2,
+    defaultMergeStrategy: 'current_only_replace',
+    stableKeyGroups: [['artifact_key'], ['delivery_schema']],
+    notes: 'Current-only persisted CSV artifact for FBS postings report.',
+  },
+}
+
 const DATA_ENTITY_CONTRACTS = {
   ...SNAPSHOT_CONTRACTS,
   ...DOMAIN_CONTRACTS,
+  ...FILE_ARTIFACT_CONTRACTS,
 } as const
 
 export function listDataEntityContracts(): DataEntityContract[] {
@@ -191,6 +211,7 @@ export function inferStableRowKey(entityKey: string, row: any): string | null {
 
   const fallbackGroups: string[][] = [
     ['id'],
+    ['artifact_key'],
     ['posting_number', 'sku'],
     ['posting_number', 'offer_id'],
     ['warehouse_id', 'sku'],
