@@ -34,6 +34,7 @@ declare global {
     delivery_date?: string | null
     delivery_cluster?: string | null
     delivery_model?: string | null
+    currency?: string | null
     price?: number | string | null
     quantity?: number | string | null
     paid_by_customer?: number | string | null
