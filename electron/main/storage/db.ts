@@ -2,6 +2,7 @@ import { existsSync, rmSync, statSync } from 'fs'
 import { createHash } from 'crypto'
 import Database from 'better-sqlite3'
 import type { ProductPlacementRow, ProductRow, StockViewRow } from '../types'
+import { getDatasetSnapshotDefaultMergeStrategy, getDatasetSnapshotSchemaVersion, inferStableRowKey, listDataEntityContracts } from '../data-contracts'
 import { ensurePersistentStorageReady, getLifecycleMarkerPath, getPersistentDbPath } from './paths'
 
 let db: Database.Database | null = null
@@ -318,51 +319,16 @@ function buildSnapshotFieldCatalogJson(existingRaw: unknown, rows: any[]): strin
 }
 
 function inferDatasetSnapshotMergeStrategy(dataset: string, sourceKind: string): DatasetSnapshotMergeStrategy {
-  const normalizedDataset = String(dataset ?? '').trim().toLowerCase()
-  const normalizedSourceKind = String(sourceKind ?? '').trim().toLowerCase()
-  if (normalizedDataset === 'sales') return 'incremental_upsert_backfill'
-  if (normalizedSourceKind === 'db-table' || normalizedSourceKind === 'db-view' || normalizedSourceKind === 'derived-products') {
-    return 'authoritative_upsert_prune_backfill'
-  }
-  return 'incremental_upsert_backfill'
+  return getDatasetSnapshotDefaultMergeStrategy(dataset, sourceKind) as DatasetSnapshotMergeStrategy
 }
 
 function inferDatasetSnapshotRowKey(dataset: string, row: any): string | null {
   if (!isPlainObject(row)) return null
-  const normalizedDataset = String(dataset ?? '').trim().toLowerCase()
-  const pathGroups: string[][] = []
-  if (normalizedDataset === 'sales') {
-    pathGroups.push(['delivery_model', 'posting_number', 'sku', 'offer_id', 'name'])
-  } else if (normalizedDataset === 'stocks') {
-    pathGroups.push(['warehouse_id', 'sku'])
-    pathGroups.push(['warehouse_id', 'offer_id'])
-    pathGroups.push(['warehouse_id', 'ozon_sku'])
-    pathGroups.push(['warehouse_id', 'seller_sku'])
-  } else if (normalizedDataset === 'products' || normalizedDataset === 'returns' || normalizedDataset === 'forecast-demand') {
-    pathGroups.push(['offer_id'])
-    pathGroups.push(['product_id'])
-    pathGroups.push(['sku'])
-    pathGroups.push(['ozon_sku'])
-    pathGroups.push(['seller_sku'])
-  }
-  pathGroups.push(['id'])
-  pathGroups.push(['posting_number', 'sku'])
-  pathGroups.push(['posting_number', 'offer_id'])
-  pathGroups.push(['warehouse_id', 'sku'])
-  pathGroups.push(['warehouse_id', 'offer_id'])
-  pathGroups.push(['offer_id'])
-  pathGroups.push(['product_id'])
-  pathGroups.push(['sku'])
-  pathGroups.push(['ozon_sku'])
-  pathGroups.push(['seller_sku'])
-  pathGroups.push(['fbo_sku'])
-  pathGroups.push(['fbs_sku'])
-  for (const group of pathGroups) {
-    const parts = group.map((path) => normalizeSnapshotKeyPart(getSnapshotPathValue(row, path)))
-    if (parts.every(Boolean)) return `${normalizedDataset || 'dataset'}::${group.join('+')}::${parts.join('::')}`
-  }
+  const normalizedDataset = String(dataset ?? '').trim().toLowerCase() || 'dataset'
+  const inferred = inferStableRowKey(normalizedDataset, row)
+  if (inferred) return inferred
   try {
-    return `${normalizedDataset || 'dataset'}::row_sha256::${sha256Hex(JSON.stringify(row))}`
+    return `${normalizedDataset}::row_sha256::${sha256Hex(JSON.stringify(row))}`
   } catch {
     return null
   }
@@ -390,6 +356,24 @@ function mergeSnapshotRows(existingRow: any, incomingRow: any): any {
       : cloneSnapshotValue(existingValue)
   }
   return out
+}
+
+function mergePreferIncoming<T>(incoming: T, existing: T): T {
+  return hasMeaningfulSnapshotValue(incoming) ? cloneSnapshotValue(incoming) : cloneSnapshotValue(existing)
+}
+
+function mergeBooleanish(incoming: unknown, existing: unknown): number | null {
+  if (incoming === true) return 1
+  if (incoming === false) return 0
+  if (typeof incoming === 'number' && Number.isFinite(incoming)) return incoming ? 1 : 0
+  if (existing === true) return 1
+  if (existing === false) return 0
+  if (typeof existing === 'number' && Number.isFinite(existing)) return existing ? 1 : 0
+  return null
+}
+
+function buildCompositeKey(parts: Array<string | number | null | undefined>): string {
+  return parts.map((part) => String(part ?? '')).join('::')
 }
 
 function normalizeDatasetRowsForStorage(args: { dataset: string; rows: any[]; maxRows: number }): { rows: any[]; rowsCount: number } {
@@ -597,6 +581,16 @@ export function ensureDb() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS data_entity_contracts (
+      entity_key TEXT PRIMARY KEY,
+      entity_kind TEXT NOT NULL,
+      schema_version INTEGER NOT NULL,
+      default_merge_strategy TEXT NOT NULL,
+      stable_key_groups_json TEXT NULL,
+      notes TEXT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS product_placements (
       store_client_id TEXT NOT NULL,
       warehouse_id INTEGER NOT NULL,
@@ -711,6 +705,31 @@ export function ensureDb() {
   }
   if (!datasetSnapshotCols.has('merge_meta_json')) {
     db.exec(`ALTER TABLE dataset_snapshots ADD COLUMN merge_meta_json TEXT NULL;`)
+  }
+
+  const contractStmt = db.prepare(`
+    INSERT INTO data_entity_contracts (
+      entity_key, entity_kind, schema_version, default_merge_strategy, stable_key_groups_json, notes, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(entity_key) DO UPDATE SET
+      entity_kind = excluded.entity_kind,
+      schema_version = excluded.schema_version,
+      default_merge_strategy = excluded.default_merge_strategy,
+      stable_key_groups_json = excluded.stable_key_groups_json,
+      notes = excluded.notes,
+      updated_at = excluded.updated_at
+  `)
+  const contractsNow = new Date().toISOString()
+  for (const contract of listDataEntityContracts()) {
+    contractStmt.run(
+      contract.entityKey,
+      contract.entityKind,
+      contract.schemaVersion,
+      contract.defaultMergeStrategy,
+      contract.stableKeyGroups?.length ? JSON.stringify(contract.stableKeyGroups) : null,
+      contract.notes ?? null,
+      contractsNow,
+    )
   }
 
   if (getSettingValue('log_retention_days') == null) {
@@ -972,7 +991,7 @@ export function dbSaveDatasetSnapshot(args: {
 
   const scopeKey = String(args.scopeKey ?? '').trim()
   const fetchedAt = String(args.fetchedAt ?? '').trim() || new Date().toISOString()
-  const schemaVersion = Number.isFinite(Number(args.schemaVersion)) ? Math.max(1, Math.trunc(Number(args.schemaVersion))) : 1
+  const schemaVersion = Number.isFinite(Number(args.schemaVersion)) ? Math.max(1, Math.trunc(Number(args.schemaVersion))) : getDatasetSnapshotSchemaVersion(dataset)
   const sourceKind = String(args.sourceKind ?? '').trim() || 'projection'
   const sourceEndpoints = Array.from(new Set((Array.isArray(args.sourceEndpoints) ? args.sourceEndpoints : [])
     .map((value) => String(value ?? '').trim())
@@ -1300,49 +1319,60 @@ export function dbUpsertProducts(items: Array<{
       updated_at=excluded.updated_at
   `)
 
+  const selectExisting = mustDb().prepare(`
+    SELECT product_id, sku, ozon_sku, seller_sku, fbo_sku, fbs_sku,
+           barcode, brand, category, type, name, photo_url, is_visible, hidden_reasons, created_at,
+           store_client_id, archived
+    FROM products
+    WHERE offer_id = ?
+    LIMIT 1
+  `)
+
   const tx = mustDb().transaction((rows: any[]) => {
     for (const r of rows) {
-      const vis =
-        r.is_visible === true ? 1 :
-        r.is_visible === false ? 0 :
-        (typeof r.is_visible === 'number' ? r.is_visible : null)
+      const existing = selectExisting.get(r.offer_id) as Record<string, any> | undefined
+      const incomingSku = (() => {
+        const sku = r?.sku == null ? '' : String(r.sku).trim()
+        return sku || null
+      })()
+      const incomingOzonSku = (() => {
+        const v = r?.ozon_sku ?? r?.sku
+        const s = v == null ? '' : String(v).trim()
+        return s || null
+      })()
+      const incomingSellerSku = (() => {
+        const v = r?.seller_sku ?? r?.offer_id
+        const s = v == null ? '' : String(v).trim()
+        return s || null
+      })()
+      const incomingFboSku = (() => {
+        const s = r?.fbo_sku == null ? '' : String(r.fbo_sku).trim()
+        return s || null
+      })()
+      const incomingFbsSku = (() => {
+        const s = r?.fbs_sku == null ? '' : String(r.fbs_sku).trim()
+        return s || null
+      })()
 
       stmt.run({
         offer_id: r.offer_id,
-        product_id: r.product_id ?? null,
-        sku: (() => {
-          const sku = r?.sku == null ? '' : String(r.sku).trim()
-          return sku || null
-        })(),
-        ozon_sku: (() => {
-          const v = r?.ozon_sku ?? r?.sku
-          const s = v == null ? '' : String(v).trim()
-          return s || null
-        })(),
-        seller_sku: (() => {
-          const v = r?.seller_sku ?? r?.offer_id
-          const s = v == null ? '' : String(v).trim()
-          return s || null
-        })(),
-        fbo_sku: (() => {
-          const s = r?.fbo_sku == null ? '' : String(r.fbo_sku).trim()
-          return s || null
-        })(),
-        fbs_sku: (() => {
-          const s = r?.fbs_sku == null ? '' : String(r.fbs_sku).trim()
-          return s || null
-        })(),
-        barcode: r.barcode ?? null,
-        brand: r.brand ?? null,
-        category: r.category ?? null,
-        type: r.type ?? null,
-        name: r.name ?? null,
-        photo_url: r.photo_url ?? null,
-        is_visible: vis,
-        hidden_reasons: r.hidden_reasons ?? null,
-        created_at: r.created_at ?? null,
-        store_client_id: (r.store_client_id ?? null),
-        archived: typeof r.archived === 'boolean' ? (r.archived ? 1 : 0) : null,
+        product_id: Number.isFinite(Number(r?.product_id)) ? Number(r.product_id) : (existing?.product_id ?? null),
+        sku: mergePreferIncoming(incomingSku, existing?.sku ?? null),
+        ozon_sku: mergePreferIncoming(incomingOzonSku, existing?.ozon_sku ?? null),
+        seller_sku: mergePreferIncoming(incomingSellerSku, existing?.seller_sku ?? null),
+        fbo_sku: mergePreferIncoming(incomingFboSku, existing?.fbo_sku ?? null),
+        fbs_sku: mergePreferIncoming(incomingFbsSku, existing?.fbs_sku ?? null),
+        barcode: mergePreferIncoming(r?.barcode ?? null, existing?.barcode ?? null),
+        brand: mergePreferIncoming(r?.brand ?? null, existing?.brand ?? null),
+        category: mergePreferIncoming(r?.category ?? null, existing?.category ?? null),
+        type: mergePreferIncoming(r?.type ?? null, existing?.type ?? null),
+        name: mergePreferIncoming(r?.name ?? null, existing?.name ?? null),
+        photo_url: mergePreferIncoming(r?.photo_url ?? null, existing?.photo_url ?? null),
+        is_visible: mergeBooleanish(r?.is_visible, existing?.is_visible),
+        hidden_reasons: mergePreferIncoming(r?.hidden_reasons ?? null, existing?.hidden_reasons ?? null),
+        created_at: mergePreferIncoming(r?.created_at ?? null, existing?.created_at ?? null),
+        store_client_id: mergePreferIncoming(r?.store_client_id ?? null, existing?.store_client_id ?? null),
+        archived: typeof r?.archived === 'boolean' ? (r.archived ? 1 : 0) : (existing?.archived ?? null),
         updated_at: now,
       })
     }
@@ -1363,8 +1393,40 @@ export function dbReplaceProductPlacementsForStore(storeClientId: string, items:
   if (!cleanStore) return 0
 
   const now = new Date().toISOString()
-  const delStmt = mustDb().prepare('DELETE FROM product_placements WHERE store_client_id = ?')
-  const insStmt = mustDb().prepare(`
+  const selectExistingRows = mustDb().prepare(`
+    SELECT store_client_id, warehouse_id, warehouse_name, sku, ozon_sku, seller_sku, placement_zone, updated_at
+    FROM product_placements
+    WHERE store_client_id = ?
+  `)
+  const existingRows = (selectExistingRows.all(cleanStore) as Array<Record<string, any>> | undefined) ?? []
+  const existingByKey = new Map<string, Record<string, any>>()
+  for (const row of existingRows) {
+    existingByKey.set(buildCompositeKey([cleanStore, row?.warehouse_id ?? '', row?.sku ?? '']), row)
+  }
+
+  const incomingByKey = new Map<string, Record<string, any>>()
+  for (const r of items as any[]) {
+    const ozonSku = String(r?.ozon_sku ?? '').trim() || null
+    const sellerSku = String(r?.seller_sku ?? '').trim() || null
+    const legacySku = String(r?.sku ?? '').trim() || null
+    const sku = ozonSku || sellerSku || legacySku
+    const wid = Number(r?.warehouse_id)
+    if (!sku || !Number.isFinite(wid)) continue
+    const key = buildCompositeKey([cleanStore, Math.trunc(wid), sku])
+    const existing = existingByKey.get(key)
+    incomingByKey.set(key, {
+      store_client_id: cleanStore,
+      warehouse_id: Math.trunc(wid),
+      warehouse_name: mergePreferIncoming(r?.warehouse_name ?? null, existing?.warehouse_name ?? null),
+      sku,
+      ozon_sku: mergePreferIncoming(ozonSku, existing?.ozon_sku ?? null),
+      seller_sku: mergePreferIncoming(sellerSku, existing?.seller_sku ?? null),
+      placement_zone: mergePreferIncoming(r?.placement_zone ?? null, existing?.placement_zone ?? null),
+      updated_at: now,
+    })
+  }
+
+  const upsertStmt = mustDb().prepare(`
     INSERT INTO product_placements (
       store_client_id, warehouse_id, warehouse_name, sku, ozon_sku, seller_sku, placement_zone, updated_at
     ) VALUES (
@@ -1377,30 +1439,17 @@ export function dbReplaceProductPlacementsForStore(storeClientId: string, items:
       placement_zone = excluded.placement_zone,
       updated_at = excluded.updated_at
   `)
+  const deleteStmt = mustDb().prepare('DELETE FROM product_placements WHERE store_client_id = ? AND warehouse_id = ? AND sku = ?')
 
-  const tx = mustDb().transaction((rows: any[]) => {
-    delStmt.run(cleanStore)
-    for (const r of rows) {
-      const ozonSku = String(r?.ozon_sku ?? '').trim() || null
-      const sellerSku = String(r?.seller_sku ?? '').trim() || null
-      const legacySku = String(r?.sku ?? '').trim() || null
-      const sku = ozonSku || sellerSku || legacySku
-      const wid = Number(r?.warehouse_id)
-      if (!sku || !Number.isFinite(wid)) continue
-      insStmt.run({
-        store_client_id: cleanStore,
-        warehouse_id: Math.trunc(wid),
-        warehouse_name: r?.warehouse_name == null ? null : String(r.warehouse_name),
-        sku,
-        ozon_sku: ozonSku,
-        seller_sku: sellerSku,
-        placement_zone: r?.placement_zone == null ? null : String(r.placement_zone),
-        updated_at: now,
-      })
+  const tx = mustDb().transaction(() => {
+    for (const row of incomingByKey.values()) upsertStmt.run(row)
+    for (const [key, existing] of existingByKey.entries()) {
+      if (incomingByKey.has(key)) continue
+      deleteStmt.run(cleanStore, existing?.warehouse_id ?? null, existing?.sku ?? null)
     }
   })
 
-  tx(items as any[])
+  tx()
 
   const row = mustDb().prepare('SELECT COUNT(*) as cnt FROM product_placements WHERE store_client_id = ?').get(cleanStore) as { cnt?: number } | undefined
   return Number(row?.cnt ?? 0)
