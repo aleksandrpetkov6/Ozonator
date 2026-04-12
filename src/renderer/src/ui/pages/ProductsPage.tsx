@@ -793,10 +793,28 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
  const topSpace = startRow * rowH
  const bottomSpace = Math.max(0, (totalRows - endRow) * rowH)
 
+ const salesItemCurrencyHeaderSuffix = useMemo(() => {
+   if (dataset !== 'sales') return ''
+   const codes = Array.from(new Set(
+     sortedRows
+       .map((row) => String(row.item_currency ?? '').trim().toUpperCase())
+       .filter(Boolean),
+   ))
+   if (codes.length === 0) return ''
+   if (codes.length === 1) return codes[0]
+   return codes.join(' / ')
+ }, [dataset, sortedRows])
+
  const getHeaderTitleText = useCallback((c: ColDef): string => {
-   if (String(c.id) === 'offer_id' && dataset === 'products') return `${c.title} ${totalRows}`
+   const colId = String(c.id)
+   if (colId === 'offer_id' && dataset === 'products') return `${c.title} ${totalRows}`
+   if (colId === 'customer_currency_in_item_currency' && dataset === 'sales') {
+     return salesItemCurrencyHeaderSuffix
+       ? `Оплачено покупателем в (${salesItemCurrencyHeaderSuffix})`
+       : 'Оплачено покупателем в (валюта товара)'
+   }
    return c.title
- }, [dataset, totalRows])
+ }, [dataset, salesItemCurrencyHeaderSuffix, totalRows])
 
  const getRowKey = useCallback((p: GridRow, absoluteRowIndex: number): string => {
    if (dataset === 'stocks') return `${p.offer_id}__${p.sku ?? ''}__${p.warehouse_id ?? ''}__${(p.placement_zone ?? '').toString().trim()}`
