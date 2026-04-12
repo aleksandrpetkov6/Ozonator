@@ -19,7 +19,7 @@ type LogSortState = TableSortState<LogSortCol>
 type LogColDef = SortableColumn<LogRow, LogSortCol> & { id: LogSortCol; title: string }
 type LogGroup = { row: LogRow; children: LogRow[] }
 type DownloadState = 'idle' | 'saving' | 'done' | 'error'
-type TraceCategoryKey = 'shipment' | 'delivery' | 'status' | 'paid' | 'other'
+type TraceCategoryKey = 'shipment' | 'delivery' | 'origin' | 'status' | 'paid' | 'other'
 type TraceMeta = Record<string, any>
 type TraceEvent = {
   row: LogRow
@@ -62,9 +62,10 @@ const TRACE_PARENT_TYPES = new Set(['sync_products'])
 const TRACE_SECTION_ORDER: Record<TraceCategoryKey, number> = {
   shipment: 1,
   delivery: 2,
-  status: 3,
-  paid: 4,
-  other: 5,
+  origin: 3,
+  status: 4,
+  paid: 5,
+  other: 6,
 }
 
 function typeRu(v?: string | null) {
@@ -243,6 +244,7 @@ function classifyTraceCategory(meta: TraceMeta): TraceCategoryKey {
   const stage = normalizeText(meta?.stage)
   const traceKind = normalizeText(meta?.traceKind)
   if (traceKind === 'paid_by_customer' || stage.includes('paid_by_customer')) return 'paid'
+  if (stage.includes('origin.rows.built')) return 'origin'
   if (stage.includes('status.rows.built')) return 'status'
   if (stage.includes('report.') || stage.endsWith('.rows.built')) return 'delivery'
   if (stage.includes('webhook') || stage.includes('push.') || stage.includes('api.refresh') || stage.includes('raw-cache.rebuild')) return 'shipment'
@@ -282,12 +284,14 @@ function buildTraceStepTitle(meta: TraceMeta): string {
     'api.refresh.report.error': 'Ошибка формирования отчёта',
     'api.refresh.snapshot.persisted': 'Локальная база обновлена',
     'api.refresh.rows.built': 'Дата доставки применена к строкам продаж',
+    'api.refresh.origin.rows.built': 'Склад / кластер отгрузки применён к строкам продаж',
     'api.refresh.status.rows.built': 'Статус применён к строкам продаж',
     'api.refresh.paid_by_customer.trace': 'Проверка поля «Оплачено покупателем» выполнена',
     'api.refresh.error': 'Ошибка обновления',
     'raw-cache.rebuild.begin': 'Пересборка из raw-cache запущена',
     'raw-cache.rebuild.snapshot.persisted': 'Локальная база обновлена из raw-cache',
     'raw-cache.rebuild.rows.built': 'Дата доставки пересобрана из raw-cache',
+    'raw-cache.rebuild.origin.rows.built': 'Склад / кластер отгрузки пересобран из raw-cache',
     'raw-cache.rebuild.status.rows.built': 'Статус пересобран из raw-cache',
     'raw-cache.rebuild.paid_by_customer.trace': 'Проверка поля «Оплачено покупателем» выполнена из raw-cache',
     'raw-cache.rebuild.error': 'Ошибка пересборки из raw-cache',
@@ -335,6 +339,12 @@ function buildTraceStepSummary(meta: TraceMeta): string {
     return createSentence([
       typeof meta?.deliveryDateResolvedRows === 'number' ? `Дат доставки применено: ${meta.deliveryDateResolvedRows}.` : '',
       typeof meta?.salesRowsWithoutDeliveryDate === 'number' ? `Строк без даты доставки: ${meta.salesRowsWithoutDeliveryDate}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.origin.rows.built' || stage === 'raw-cache.rebuild.origin.rows.built') {
+    return createSentence([
+      typeof meta?.shipmentOriginResolvedRows === 'number' ? `Заполнено строк: ${meta.shipmentOriginResolvedRows}.` : '',
+      typeof meta?.finalRowsWithoutShipmentOrigin === 'number' ? `Строк без значения: ${meta.finalRowsWithoutShipmentOrigin}.` : '',
     ])
   }
   if (stage === 'api.refresh.status.rows.built' || stage === 'raw-cache.rebuild.status.rows.built') {
@@ -414,6 +424,16 @@ function buildSectionMetrics(key: TraceCategoryKey, merged: TraceMeta): TraceMet
     if (normalizeText(merged?.reportCode)) pushMetric(metrics, 'Код отчёта', merged.reportCode)
     return metrics
   }
+  if (key === 'origin') {
+    pushMetric(metrics, 'Источник', 'Отчёт postings CSV')
+    if (typeof merged?.reportRowsWithShipmentOrigin === 'number') pushMetric(metrics, 'Строк с источником отгрузки в отчёте', merged.reportRowsWithShipmentOrigin)
+    if (typeof merged?.shipmentOriginMatchedRows === 'number') pushMetric(metrics, 'Совпало по posting_number', merged.shipmentOriginMatchedRows)
+    if (typeof merged?.shipmentOriginResolvedRows === 'number') pushMetric(metrics, 'Значение применено', merged.shipmentOriginResolvedRows)
+    if (typeof merged?.finalRowsWithoutShipmentOrigin === 'number') pushMetric(metrics, 'Строк без значения', merged.finalRowsWithoutShipmentOrigin)
+    if (typeof merged?.fboRowsWithShipmentOrigin === 'number') pushMetric(metrics, 'FBO с заполненным значением', merged.fboRowsWithShipmentOrigin)
+    if (typeof merged?.fbsRowsWithShipmentOrigin === 'number') pushMetric(metrics, 'FBS и rFBS с заполненным значением', Number(merged.fbsRowsWithShipmentOrigin ?? 0) + Number(merged.rfbsRowsWithShipmentOrigin ?? 0))
+    return metrics
+  }
   if (key === 'status') {
     pushMetric(metrics, 'Источник', 'Отчёт postings CSV')
     if (typeof merged?.reportRowsWithStatus === 'number') pushMetric(metrics, 'Строк со статусом в отчёте', merged.reportRowsWithStatus)
@@ -447,6 +467,12 @@ function buildSectionNotes(key: TraceCategoryKey, merged: TraceMeta): string[] {
     const dateSample = uniqueSample(merged?.reportDeliveryDateSample, 3)
     if (dateSample.length) notes.push(`Примеры дат из отчёта: ${dateSample.join(', ')}.`)
   }
+  if (key === 'origin') {
+    const sample = uniqueSample(merged?.reportShipmentOriginSample, 4)
+    if (sample.length) notes.push(`Примеры значений из отчёта: ${sample.join(', ')}.`)
+    const missing = uniqueSample(merged?.missingShipmentOriginPostingNumbers, 4)
+    if (missing.length) notes.push(`Без значения: ${missing.join(', ')}.`)
+  }
   if (key === 'status') {
     const sample = uniqueSample(merged?.reportStatusSample, 5)
     if (sample.length) notes.push(`Примеры статусов из отчёта: ${sample.join(', ')}.`)
@@ -459,6 +485,7 @@ function buildSectionNotes(key: TraceCategoryKey, merged: TraceMeta): string[] {
 function getSectionTitle(key: TraceCategoryKey): string {
   if (key === 'shipment') return 'FBO: дата отгрузки'
   if (key === 'delivery') return 'Продажи: дата доставки'
+  if (key === 'origin') return 'Продажи: склад / кластер отгрузки'
   if (key === 'status') return 'Продажи: статус'
   if (key === 'paid') return 'Продажи: оплачено покупателем'
   return 'Прочая трассировка'
@@ -467,6 +494,7 @@ function getSectionTitle(key: TraceCategoryKey): string {
 function getSectionIntro(key: TraceCategoryKey): string {
   if (key === 'shipment') return 'Показывает, как загружались отправления FBO и как дата отгрузки попала в локальную базу.'
   if (key === 'delivery') return 'Показывает путь даты доставки: от формирования postings CSV до применения в строки продаж.'
+  if (key === 'origin') return 'Показывает заполнение столбца «Склад / кластер отгрузки» из postings CSV.'
   if (key === 'status') return 'Показывает путь статуса: от postings CSV до применения в строки продаж и очистки деталей для «Доставлен».'
   if (key === 'paid') return 'Показывает, как собиралось поле «Оплачено покупателем» и сколько строк было заполнено.'
   return 'Служебная трассировка.'
@@ -610,10 +638,17 @@ export default function LogsPage() {
   }, [])
 
   const groups = useMemo(() => buildLogGroups(logs), [logs])
-  const visibleIdByRowId = useMemo(
-    () => new Map(groups.map((group, index) => [group.row.id, index + 1])),
-    [groups],
-  )
+  const visibleIdByRowId = useMemo(() => {
+    const ordered = groups
+      .slice()
+      .sort((a, b) => {
+        const aTime = toSortTimestamp(a.row.started_at) ?? toSortTimestamp(a.row.finished_at) ?? 0
+        const bTime = toSortTimestamp(b.row.started_at) ?? toSortTimestamp(b.row.finished_at) ?? 0
+        if (aTime !== bTime) return aTime - bTime
+        return a.row.id - b.row.id
+      })
+    return new Map(ordered.map((group, index) => [group.row.id, index + 1]))
+  }, [groups])
   const sortedTopLevelRows = useMemo(
     () => sortTableRows(groups.map((group) => group.row), LOG_COLUMNS, sortState),
     [groups, sortState],
@@ -759,7 +794,7 @@ export default function LogsPage() {
                               <div className="logDetailsToolbar">
                                 <div>
                                   <div className="logDetailsTitle">Детали синхронизации</div>
-                                  <div className="logDetailsSubtitle">ID синхронизации: {visibleId}. Здесь собраны только ключевые шаги и показатели.</div>
+                                  <div className="logDetailsSubtitle">Номер синхронизации: {visibleId}.</div>
                                 </div>
                                 <button
                                   type="button"
@@ -774,13 +809,11 @@ export default function LogsPage() {
                               </div>
 
                               <div className="logDetailsSummary">
-                                <div><span>ID:</span> {visibleId}</div>
+                                <div><span>Номер:</span> {visibleId}</div>
+                                <div><span>Статус:</span> {statusRu(row.status)}</div>
                                 <div><span>Старт:</span> {fmtDt('started_at', row.started_at)}</div>
                                 <div><span>Финиш:</span> {fmtDt('finished_at', row.finished_at)}</div>
-                                <div><span>Статус:</span> {statusRu(row.status)}</div>
-                                <div><span>Блоков:</span> {traceSections.length}</div>
                                 <div><span>Шагов:</span> {children.length}</div>
-                                <div><span>Системный ID:</span> {row.id}</div>
                               </div>
 
                               {row.error_details && (
@@ -854,7 +887,7 @@ export default function LogsPage() {
                                 </div>
                               ) : (
                                 <div className="logSection">
-                                  <div className="logSectionIntro">Вложенных блоков трассировки для этой синхронизации нет.</div>
+                                  <div className="logSectionIntro">Для этой синхронизации дополнительные этапы трассировки не зарегистрированы.</div>
                                 </div>
                               )}
                             </div>
