@@ -224,6 +224,36 @@ function safeJsonStringify(value: unknown): string | null {
   }
 }
 
+function mergePreferIncoming<T>(incoming: T, existing: T): T {
+  const incomingText = typeof incoming === 'string' ? incoming.trim() : incoming
+  if (incomingText !== null && incomingText !== undefined && incomingText !== '' && (!(Array.isArray(incomingText)) || incomingText.length > 0)) {
+    return incoming as T
+  }
+  return existing as T
+}
+
+function compositeKey(parts: Array<string | number | null | undefined>): string {
+  return parts.map((part) => String(part ?? '')).join('::')
+}
+
+function deleteMissingScopedRows(args: {
+  conn: Database.Database
+  tableName: string
+  keyColumns: string[]
+  scopeWhereSql: string
+  scopeParams: any[]
+  existingKeys: Map<string, Record<string, any>>
+  incomingKeys: Set<string>
+}) {
+  const whereKeySql = args.keyColumns.map((column) => `${column} = ?`).join(' AND ')
+  const deleteStmt = args.conn.prepare(`DELETE FROM ${args.tableName} WHERE ${args.scopeWhereSql} AND ${whereKeySql}`)
+  for (const [key, existing] of args.existingKeys.entries()) {
+    if (args.incomingKeys.has(key)) continue
+    const keyParams = args.keyColumns.map((column) => (existing as any)?.[column] ?? null)
+    deleteStmt.run(...args.scopeParams, ...keyParams)
+  }
+}
+
 function buildFboReportShipmentDateMap(rows: FboPostingsReportRow[] | null | undefined): Map<string, string> {
   const out = new Map<string, string>()
   for (const row of Array.isArray(rows) ? rows : []) {
@@ -464,11 +494,27 @@ export function buildAndPersistFboSalesSnapshot(args: {
 
   const conn = db()
   const tx = conn.transaction(() => {
-    conn.prepare('DELETE FROM posting_state_events WHERE store_client_id = ? AND period_key = ?').run(storeClientId, periodKey)
-    conn.prepare('DELETE FROM fbo_posting_items WHERE store_client_id = ? AND period_key = ?').run(storeClientId, periodKey)
-    conn.prepare('DELETE FROM fbo_postings WHERE store_client_id = ? AND period_key = ?').run(storeClientId, periodKey)
+    const existingPostingRows = conn.prepare(`
+      SELECT store_client_id, period_key, posting_number, order_id, related_postings, shipment_date, delivery_date, delivery_cluster
+      FROM fbo_postings
+      WHERE store_client_id = ? AND period_key = ?
+    `).all(storeClientId, periodKey) as Array<Record<string, any>>
+    const existingItemRows = conn.prepare(`
+      SELECT store_client_id, period_key, posting_number, line_no, sku, offer_id
+      FROM fbo_posting_items
+      WHERE store_client_id = ? AND period_key = ?
+    `).all(storeClientId, periodKey) as Array<Record<string, any>>
+    const existingEventRows = conn.prepare(`
+      SELECT store_client_id, period_key, posting_number, event_key, event_type, new_state, state, changed_state_date
+      FROM posting_state_events
+      WHERE store_client_id = ? AND period_key = ?
+    `).all(storeClientId, periodKey) as Array<Record<string, any>>
 
-    const insertPosting = conn.prepare(`
+    const existingPostingsByKey = new Map(existingPostingRows.map((row) => [compositeKey([row.store_client_id, row.period_key, row.posting_number]), row]))
+    const existingItemsByKey = new Map(existingItemRows.map((row) => [compositeKey([row.store_client_id, row.period_key, row.posting_number, row.line_no]), row]))
+    const existingEventsByKey = new Map(existingEventRows.map((row) => [compositeKey([row.store_client_id, row.period_key, row.posting_number, row.event_key]), row]))
+
+    const upsertPosting = conn.prepare(`
       INSERT INTO fbo_postings (
         store_client_id, period_key, posting_number, order_id, related_postings,
         shipment_date, delivery_date, delivery_cluster, updated_at
@@ -476,25 +522,107 @@ export function buildAndPersistFboSalesSnapshot(args: {
         @store_client_id, @period_key, @posting_number, @order_id, @related_postings,
         @shipment_date, @delivery_date, @delivery_cluster, @updated_at
       )
+      ON CONFLICT(store_client_id, period_key, posting_number) DO UPDATE SET
+        order_id = excluded.order_id,
+        related_postings = excluded.related_postings,
+        shipment_date = excluded.shipment_date,
+        delivery_date = excluded.delivery_date,
+        delivery_cluster = excluded.delivery_cluster,
+        updated_at = excluded.updated_at
     `)
-    const insertItem = conn.prepare(`
+    const upsertItem = conn.prepare(`
       INSERT INTO fbo_posting_items (
         store_client_id, period_key, posting_number, line_no, sku, offer_id, updated_at
       ) VALUES (
         @store_client_id, @period_key, @posting_number, @line_no, @sku, @offer_id, @updated_at
       )
+      ON CONFLICT(store_client_id, period_key, posting_number, line_no) DO UPDATE SET
+        sku = excluded.sku,
+        offer_id = excluded.offer_id,
+        updated_at = excluded.updated_at
     `)
-    const insertEvent = conn.prepare(`
+    const upsertEvent = conn.prepare(`
       INSERT INTO posting_state_events (
         store_client_id, period_key, posting_number, event_key, event_type, new_state, state, changed_state_date, updated_at
       ) VALUES (
         @store_client_id, @period_key, @posting_number, @event_key, @event_type, @new_state, @state, @changed_state_date, @updated_at
       )
+      ON CONFLICT(store_client_id, period_key, posting_number, event_key) DO UPDATE SET
+        event_type = excluded.event_type,
+        new_state = excluded.new_state,
+        state = excluded.state,
+        changed_state_date = excluded.changed_state_date,
+        updated_at = excluded.updated_at
     `)
 
-    for (const row of postingRows.values()) insertPosting.run(row)
-    for (const row of itemRows.values()) insertItem.run(row)
-    for (const row of eventRows.values()) insertEvent.run(row)
+    const incomingPostingKeys = new Set<string>()
+    for (const row of postingRows.values()) {
+      const existing = existingPostingsByKey.get(compositeKey([row.store_client_id, row.period_key, row.posting_number]))
+      const mergedRow = {
+        ...row,
+        order_id: mergePreferIncoming(row.order_id, existing?.order_id ?? null),
+        related_postings: mergePreferIncoming(row.related_postings, existing?.related_postings ?? null),
+        shipment_date: mergePreferIncoming(row.shipment_date, existing?.shipment_date ?? null),
+        delivery_date: mergePreferIncoming(row.delivery_date, existing?.delivery_date ?? null),
+        delivery_cluster: mergePreferIncoming(row.delivery_cluster, existing?.delivery_cluster ?? null),
+      }
+      incomingPostingKeys.add(compositeKey([mergedRow.store_client_id, mergedRow.period_key, mergedRow.posting_number]))
+      upsertPosting.run(mergedRow)
+    }
+
+    const incomingItemKeys = new Set<string>()
+    for (const row of itemRows.values()) {
+      const existing = existingItemsByKey.get(compositeKey([row.store_client_id, row.period_key, row.posting_number, row.line_no]))
+      const mergedRow = {
+        ...row,
+        sku: mergePreferIncoming(row.sku, existing?.sku ?? null),
+        offer_id: mergePreferIncoming(row.offer_id, existing?.offer_id ?? null),
+      }
+      incomingItemKeys.add(compositeKey([mergedRow.store_client_id, mergedRow.period_key, mergedRow.posting_number, mergedRow.line_no]))
+      upsertItem.run(mergedRow)
+    }
+
+    const incomingEventKeys = new Set<string>()
+    for (const row of eventRows.values()) {
+      const existing = existingEventsByKey.get(compositeKey([row.store_client_id, row.period_key, row.posting_number, row.event_key]))
+      const mergedRow = {
+        ...row,
+        event_type: mergePreferIncoming(row.event_type, existing?.event_type ?? null),
+        new_state: mergePreferIncoming(row.new_state, existing?.new_state ?? null),
+        state: mergePreferIncoming(row.state, existing?.state ?? null),
+        changed_state_date: mergePreferIncoming(row.changed_state_date, existing?.changed_state_date ?? null),
+      }
+      incomingEventKeys.add(compositeKey([mergedRow.store_client_id, mergedRow.period_key, mergedRow.posting_number, mergedRow.event_key]))
+      upsertEvent.run(mergedRow)
+    }
+
+    deleteMissingScopedRows({
+      conn,
+      tableName: 'fbo_postings',
+      keyColumns: ['store_client_id', 'period_key', 'posting_number'],
+      scopeWhereSql: 'store_client_id = ? AND period_key = ?',
+      scopeParams: [storeClientId, periodKey],
+      existingKeys: existingPostingsByKey,
+      incomingKeys: incomingPostingKeys,
+    })
+    deleteMissingScopedRows({
+      conn,
+      tableName: 'fbo_posting_items',
+      keyColumns: ['store_client_id', 'period_key', 'posting_number', 'line_no'],
+      scopeWhereSql: 'store_client_id = ? AND period_key = ?',
+      scopeParams: [storeClientId, periodKey],
+      existingKeys: existingItemsByKey,
+      incomingKeys: incomingItemKeys,
+    })
+    deleteMissingScopedRows({
+      conn,
+      tableName: 'posting_state_events',
+      keyColumns: ['store_client_id', 'period_key', 'posting_number', 'event_key'],
+      scopeWhereSql: 'store_client_id = ? AND period_key = ?',
+      scopeParams: [storeClientId, periodKey],
+      existingKeys: existingEventsByKey,
+      incomingKeys: incomingEventKeys,
+    })
   })
   tx()
 
@@ -622,9 +750,14 @@ export function persistFboPostingsReport(args: {
 
   const conn = db()
   const tx = conn.transaction(() => {
-    conn.prepare('DELETE FROM fbo_postings_report WHERE store_client_id = ? AND period_key = ?').run(storeClientId, periodKey)
+    const existingRows = conn.prepare(`
+      SELECT store_client_id, period_key, posting_number, order_number, delivery_schema, shipment_date, delivery_date, raw_row_json
+      FROM fbo_postings_report
+      WHERE store_client_id = ? AND period_key = ?
+    `).all(storeClientId, periodKey) as Array<Record<string, any>>
+    const existingByKey = new Map(existingRows.map((row) => [compositeKey([row.store_client_id, row.period_key, row.posting_number]), row]))
 
-    const insertRow = conn.prepare(`
+    const upsertRow = conn.prepare(`
       INSERT INTO fbo_postings_report (
         store_client_id, period_key, posting_number, order_number, delivery_schema,
         shipment_date, delivery_date, raw_row_json, updated_at
@@ -632,9 +765,39 @@ export function persistFboPostingsReport(args: {
         @store_client_id, @period_key, @posting_number, @order_number, @delivery_schema,
         @shipment_date, @delivery_date, @raw_row_json, @updated_at
       )
+      ON CONFLICT(store_client_id, period_key, posting_number) DO UPDATE SET
+        order_number = excluded.order_number,
+        delivery_schema = excluded.delivery_schema,
+        shipment_date = excluded.shipment_date,
+        delivery_date = excluded.delivery_date,
+        raw_row_json = excluded.raw_row_json,
+        updated_at = excluded.updated_at
     `)
 
-    for (const row of normalizedRows.values()) insertRow.run(row)
+    const incomingKeys = new Set<string>()
+    for (const row of normalizedRows.values()) {
+      const existing = existingByKey.get(compositeKey([row.store_client_id, row.period_key, row.posting_number]))
+      const mergedRow = {
+        ...row,
+        order_number: mergePreferIncoming(row.order_number, existing?.order_number ?? null),
+        delivery_schema: mergePreferIncoming(row.delivery_schema, existing?.delivery_schema ?? null),
+        shipment_date: mergePreferIncoming(row.shipment_date, existing?.shipment_date ?? null),
+        delivery_date: mergePreferIncoming(row.delivery_date, existing?.delivery_date ?? null),
+        raw_row_json: mergePreferIncoming(row.raw_row_json, existing?.raw_row_json ?? null),
+      }
+      incomingKeys.add(compositeKey([mergedRow.store_client_id, mergedRow.period_key, mergedRow.posting_number]))
+      upsertRow.run(mergedRow)
+    }
+
+    deleteMissingScopedRows({
+      conn,
+      tableName: 'fbo_postings_report',
+      keyColumns: ['store_client_id', 'period_key', 'posting_number'],
+      scopeWhereSql: 'store_client_id = ? AND period_key = ?',
+      scopeParams: [storeClientId, periodKey],
+      existingKeys: existingByKey,
+      incomingKeys,
+    })
   })
   tx()
 
