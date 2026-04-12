@@ -347,6 +347,25 @@ export function ensureDb() {
 
     CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_lookup ON dataset_snapshots(store_client_id, dataset, scope_key);
     CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_time ON dataset_snapshots(fetched_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cbr_rate_days (
+      requested_date TEXT PRIMARY KEY,
+      effective_date TEXT NULL,
+      is_success INTEGER NOT NULL DEFAULT 1,
+      error_message TEXT NULL,
+      fetched_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS cbr_rates_daily (
+      requested_date TEXT NOT NULL,
+      currency_code TEXT NOT NULL,
+      nominal INTEGER NOT NULL,
+      value_rub REAL NOT NULL,
+      rate_per_unit REAL NOT NULL,
+      PRIMARY KEY (requested_date, currency_code)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cbr_rates_daily_lookup ON cbr_rates_daily(requested_date, currency_code);
   `)
 
   const cols = new Set(
@@ -1332,4 +1351,94 @@ export function dbGetSyncLog(storeClientId?: string | null) {
 
 export function dbClearLogs() {
   mustDb().prepare('DELETE FROM sync_log').run()
+}
+
+
+type CbrRateDaySaveArgs = {
+  requestedDate: string
+  effectiveDate?: string | null
+  isSuccess: boolean
+  errorMessage?: string | null
+  fetchedAt?: string | null
+}
+
+type CbrDailyRateSaveArgs = {
+  requestedDate: string
+  effectiveDate?: string | null
+  rates: Array<{ currencyCode: string; nominal: number; valueRub: number; ratePerUnit: number }>
+}
+
+export function dbGetMissingCbrRateDays(requestedDates: string[]): string[] {
+  const dates = Array.from(new Set((Array.isArray(requestedDates) ? requestedDates : []).map((value) => String(value ?? '').trim()).filter(Boolean)))
+  if (dates.length === 0) return []
+
+  const placeholders = dates.map(() => '?').join(', ')
+  const existingRows = mustDb().prepare(`
+    SELECT requested_date
+    FROM cbr_rate_days
+    WHERE requested_date IN (${placeholders})
+  `).all(...dates) as Array<{ requested_date?: string }>
+
+  const existing = new Set(existingRows.map((row) => String(row?.requested_date ?? '').trim()).filter(Boolean))
+  return dates.filter((date) => !existing.has(date))
+}
+
+export function dbSaveCbrRateDay(args: CbrRateDaySaveArgs) {
+  const requestedDate = String(args.requestedDate ?? '').trim()
+  if (!requestedDate) return
+  const fetchedAt = String(args.fetchedAt ?? '').trim() || new Date().toISOString()
+  const effectiveDate = String(args.effectiveDate ?? '').trim() || null
+  const errorMessage = String(args.errorMessage ?? '').trim() || null
+  mustDb().prepare(`
+    INSERT INTO cbr_rate_days (requested_date, effective_date, is_success, error_message, fetched_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(requested_date) DO UPDATE SET
+      effective_date = excluded.effective_date,
+      is_success = excluded.is_success,
+      error_message = excluded.error_message,
+      fetched_at = excluded.fetched_at
+  `).run(requestedDate, effectiveDate, args.isSuccess ? 1 : 0, errorMessage, fetchedAt)
+}
+
+export function dbSaveCbrRates(args: CbrDailyRateSaveArgs) {
+  const requestedDate = String(args.requestedDate ?? '').trim()
+  if (!requestedDate) return
+  const normalizedRates = (Array.isArray(args.rates) ? args.rates : [])
+    .map((entry) => ({
+      currencyCode: String(entry?.currencyCode ?? '').trim().toUpperCase(),
+      nominal: Number(entry?.nominal),
+      valueRub: Number(entry?.valueRub),
+      ratePerUnit: Number(entry?.ratePerUnit),
+    }))
+    .filter((entry) => /^[A-Z]{3}$/.test(entry.currencyCode) && Number.isFinite(entry.nominal) && entry.nominal > 0 && Number.isFinite(entry.valueRub) && entry.valueRub > 0 && Number.isFinite(entry.ratePerUnit) && entry.ratePerUnit > 0)
+
+  const txn = mustDb().transaction(() => {
+    mustDb().prepare('DELETE FROM cbr_rates_daily WHERE requested_date = ?').run(requestedDate)
+    if (normalizedRates.length === 0) return
+    const stmt = mustDb().prepare(`
+      INSERT INTO cbr_rates_daily (requested_date, currency_code, nominal, value_rub, rate_per_unit)
+      VALUES (?, ?, ?, ?, ?)
+    `)
+    for (const entry of normalizedRates) {
+      stmt.run(requestedDate, entry.currencyCode, Math.max(1, Math.trunc(entry.nominal)), entry.valueRub, entry.ratePerUnit)
+    }
+  })
+  txn()
+}
+
+export function dbGetCbrRatesByDate(requestedDate: string): Array<{ currencyCode: string; nominal: number; valueRub: number; ratePerUnit: number }> {
+  const dateKey = String(requestedDate ?? '').trim()
+  if (!dateKey) return []
+  const rows = mustDb().prepare(`
+    SELECT currency_code, nominal, value_rub, rate_per_unit
+    FROM cbr_rates_daily
+    WHERE requested_date = ?
+  `).all(dateKey) as Array<{ currency_code?: string; nominal?: number; value_rub?: number; rate_per_unit?: number }>
+
+  return rows.map((row) => ({
+    currencyCode: String(row?.currency_code ?? '').trim().toUpperCase(),
+    nominal: Number(row?.nominal ?? 0),
+    valueRub: Number(row?.value_rub ?? 0),
+    ratePerUnit: Number(row?.rate_per_unit ?? 0),
+  }))
 }
