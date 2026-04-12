@@ -1,20 +1,24 @@
---- tsconfig.json
-+++ tsconfig.json
+--- a/tsconfig.json
++++ b/tsconfig.json
 @@
      "compilerOptions": {
          "target": "ES2020",
          "module": "ESNext",
-         "moduleResolution": "node",
-         "jsx": "react-jsx",
+         "moduleResolution": "Node",
          "strict": true,
          "esModuleInterop": true,
          "skipLibCheck": true,
-         "forceConsistentCasingInFileNames": true
+         "forceConsistentCasingInFileNames": true,
+         "outDir": "./dist",
+         "rootDir": "./",
+         "resolveJsonModule": true,
+         "allowJs": false,
+         "noEmit": true
      },
      "include": [
-         "src",
-         "electron",
-         "tests"
+         "src/**/*",
+         "electron/**/*",
+         "tests/**/*"
      ],
      "exclude": [
          "node_modules",
