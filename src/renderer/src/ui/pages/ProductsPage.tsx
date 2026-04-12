@@ -14,6 +14,8 @@ import {
  getCachedRows,
  mergeColsWithDefaults,
  appendDiscoveredCols,
+ formatMoneyValue,
+ isMoneyColumnId,
  readCols,
  saveCols,
  toText,
@@ -69,8 +71,9 @@ function normalizeCurrencyCode(value: unknown): string {
 
 function formatCellNumberWithCurrency(value: unknown, currencyCode: unknown): string {
  if (value == null || value === '') return '-'
+ const formatted = formatMoneyValue(value)
  const code = normalizeCurrencyCode(currencyCode)
- return code ? `${String(value)} ${code}` : String(value)
+ return code ? `${formatted} ${code}` : formatted
 }
 function rowDay(value: unknown): string {
  const raw = typeof value === 'string' ? value.trim() : ''
@@ -611,6 +614,9 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    if (dataset === 'sales' && colId === 'paid_by_customer') {
      return { text: formatCellNumberWithCurrency(v, (p as any).currency) }
    }
+   if (isMoneyColumnId(colId)) {
+     return { text: formatMoneyValue(v) }
+   }
    return { text: (v == null || v === '') ? '-' : String(v) }
  }
 
@@ -680,6 +686,8 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
      return zone || 'Нет данных синхронизации'
    }
    if (isTemporalColumnId(colId)) return formatTemporalCellRu(colId, (p as any)[colId])
+   if (dataset === 'sales' && colId === 'paid_by_customer') return formatCellNumberWithCurrency((p as any)[colId], (p as any).currency)
+   if (isMoneyColumnId(colId)) return formatMoneyValue((p as any)[colId])
    return toText((p as any)[colId])
  }
 
