@@ -1000,12 +1000,10 @@ function getFallbackDeliveryDateValue(source: any): string {
   return normalizeDateValue(pickFirstPresent(source, SALES_DELIVERY_FALLBACK_PATHS)) || getFallbackDeliveredDateValue(source)
 }
 
-function resolvePostingDeliveryDate(detailPosting: any, posting: any): string {
-  const delivered = hasDeliveredStatusSignal(detailPosting) || hasDeliveredStatusSignal(posting)
-  if (!delivered) return ''
-  const exact = getFactDeliveryDateValue(detailPosting) || getFactDeliveryDateValue(posting)
-  if (exact) return exact
-  return getFallbackDeliveryDateValue(detailPosting) || getFallbackDeliveryDateValue(posting)
+function resolvePostingDeliveryDate(_detailPosting: any, _posting: any): string {
+  // По КС П «Дата доставки» для всех методов доставки берём только из postings-report CSV.
+  // Из posting/detail API это поле в строки продаж не подмешиваем.
+  return ''
 }
 
 function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO' | ''): boolean {
@@ -1019,16 +1017,10 @@ function shouldFetchSalesPostingDetails(posting: any, endpointKind: 'FBS' | 'FBO
       'cluster_to',
       'result.cluster_to',
     ])))
-    const needsDeliveryBackfill = (getFactDeliveryDateValue(posting) || hasDeliveryDateSignal(posting) || hasDeliveredStatusSignal(posting))
-      ? !Boolean(resolvePostingDeliveryDate(posting, posting))
-      : false
 
-    if (!hasRelated || !hasShipmentDate || !hasDeliveryCluster || needsDeliveryBackfill) return true
+    if (!hasRelated || !hasShipmentDate || !hasDeliveryCluster) return true
     return false
   }
-  if (getFactDeliveryDateValue(posting)) return false
-  if (hasDeliveryDateSignal(posting)) return true
-  if (hasDeliveredStatusSignal(posting)) return true
   if (!buildRelatedPostingsText(posting)) return true
   if (!getShipmentDateValue(null, posting, endpointKind)) return true
   if (!normalizeTextValue(pickFirstPresent(posting, ['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to']))) return true

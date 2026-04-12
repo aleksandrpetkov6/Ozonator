@@ -47,11 +47,16 @@ type ReportCsvTrace = {
   rowsMapped: number
   rowsWithPostingNumber: number
   rowsWithShipmentDate: number
+  rowsWithDeliveryDate: number
   rowsFbo: number
   rowsFboWithShipmentDate: number
+  rowsFboWithDeliveryDate: number
+  rowsFbs: number
+  rowsFbsWithDeliveryDate: number
   headerSample: string[]
   samplePostingNumbers: string[]
   sampleShipmentDates: string[]
+  sampleDeliveryDates: string[]
 }
 
 export type SalesPostingsReportTraceSegment = {
@@ -617,11 +622,16 @@ function parseSalesPostingsReportCsv(csvText: string): {
       rowsMapped: rows.length,
       rowsWithPostingNumber: rows.filter((row) => Boolean(row.posting_number)).length,
       rowsWithShipmentDate: rows.filter((row) => Boolean(row.shipment_date)).length,
+      rowsWithDeliveryDate: rows.filter((row) => Boolean(row.delivery_date)).length,
       rowsFbo: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO').length,
       rowsFboWithShipmentDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(row.shipment_date)).length,
+      rowsFboWithDeliveryDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(row.delivery_date)).length,
+      rowsFbs: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS').length,
+      rowsFbsWithDeliveryDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS' && Boolean(row.delivery_date)).length,
       headerSample: buildCsvHeaderSample(rawRows),
       samplePostingNumbers: uniqueSample(rows.map((row) => row.posting_number), 10),
       sampleShipmentDates: uniqueSample(rows.filter((row) => row.shipment_date).map((row) => row.shipment_date), 10),
+      sampleDeliveryDates: uniqueSample(rows.filter((row) => row.delivery_date).map((row) => row.delivery_date), 10),
     },
   }
 }
@@ -729,12 +739,17 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
   const headerSample: string[] = []
   const samplePostingNumbers: string[] = []
   const sampleShipmentDates: string[] = []
+  const sampleDeliveryDates: string[] = []
   let rowsRaw = 0
   let rowsMapped = 0
   let rowsWithPostingNumber = 0
   let rowsWithShipmentDate = 0
+  let rowsWithDeliveryDate = 0
   let rowsFbo = 0
   let rowsFboWithShipmentDate = 0
+  let rowsFboWithDeliveryDate = 0
+  let rowsFbs = 0
+  let rowsFbsWithDeliveryDate = 0
 
   for (const segment of segments) {
     if (segment.csv) {
@@ -742,8 +757,12 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
       rowsMapped += Number(segment.csv.rowsMapped ?? 0)
       rowsWithPostingNumber += Number(segment.csv.rowsWithPostingNumber ?? 0)
       rowsWithShipmentDate += Number(segment.csv.rowsWithShipmentDate ?? 0)
+      rowsWithDeliveryDate += Number(segment.csv.rowsWithDeliveryDate ?? 0)
       rowsFbo += Number(segment.csv.rowsFbo ?? 0)
       rowsFboWithShipmentDate += Number(segment.csv.rowsFboWithShipmentDate ?? 0)
+      rowsFboWithDeliveryDate += Number(segment.csv.rowsFboWithDeliveryDate ?? 0)
+      rowsFbs += Number(segment.csv.rowsFbs ?? 0)
+      rowsFbsWithDeliveryDate += Number(segment.csv.rowsFbsWithDeliveryDate ?? 0)
       for (const key of segment.csv.headerSample ?? []) {
         if (key && !headerSample.includes(key) && headerSample.length < 20) headerSample.push(key)
       }
@@ -762,6 +781,13 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
         if (sampleShipmentDates.length >= 10) break
       }
     }
+    if (!sampleDeliveryDates.length || sampleDeliveryDates.length < 10) {
+      for (const item of rows) {
+        const value = text(item.delivery_date)
+        if (value && !sampleDeliveryDates.includes(value)) sampleDeliveryDates.push(value)
+        if (sampleDeliveryDates.length >= 10) break
+      }
+    }
   }
 
   return {
@@ -769,11 +795,16 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
     rowsMapped,
     rowsWithPostingNumber,
     rowsWithShipmentDate,
+    rowsWithDeliveryDate,
     rowsFbo,
     rowsFboWithShipmentDate,
+    rowsFboWithDeliveryDate,
+    rowsFbs,
+    rowsFbsWithDeliveryDate,
     headerSample,
     samplePostingNumbers,
     sampleShipmentDates,
+    sampleDeliveryDates,
   }
 }
 
