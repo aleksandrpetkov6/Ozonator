@@ -738,7 +738,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
      }
      return { ...c, w: Math.max(AUTO_MIN_W, Math.min(baseCap, Math.round(max + AUTO_PAD))) }
    }))
- }, [autoInitSample, colsSyncReady, hasStoredCols, dataset])
+ }, [autoInitSample, colsSyncReady, getCellString, hasStoredCols, dataset])
 
  const tableWidth = useMemo(() => Math.max(1, visibleCols.reduce((s, c) => s + c.w, 0)), [visibleCols])
 
