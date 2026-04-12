@@ -240,6 +240,22 @@ function buildFboReportShipmentDateMap(rows: FboPostingsReportRow[] | null | und
   return out
 }
 
+function buildFboReportDeliveryDateMap(rows: FboPostingsReportRow[] | null | undefined): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const deliverySchema = text(row?.delivery_schema).toLowerCase().replace(/[^a-z]/g, '')
+    if (deliverySchema && deliverySchema !== 'fbo') continue
+
+    const postingNumber = text(row?.posting_number)
+    const deliveryDate = dateText(row?.delivery_date)
+    if (!postingNumber || !deliveryDate) continue
+
+    const prev = text(out.get(postingNumber))
+    if (!prev || deliveryDate > prev) out.set(postingNumber, deliveryDate)
+  }
+  return out
+}
+
 function getPersistedShipmentDateForPosting(storeClientId: string, postingNumber: string, periodKey: string): string {
   const row = db().prepare(`
     SELECT MAX(changed_state_date) AS shipment_date
@@ -331,12 +347,14 @@ export function buildAndPersistFboSalesSnapshot(args: {
       itemsCount: 0,
       eventsCount: 0,
       shipmentDateCount: 0,
+      deliveryDateCount: 0,
       shipmentTransferEventCount: 0,
     },
   }
   const periodKey = text(args.periodKey)
   const fetchedAt = text(args.fetchedAt) || new Date().toISOString()
   const reportShipmentDateByPosting = buildFboReportShipmentDateMap(args.reportRows ?? [])
+  const reportDeliveryDateByPosting = buildFboReportDeliveryDateMap(args.reportRows ?? [])
   const orderPostings = new Map<string, Set<string>>()
   const postingRows = new Map<string, any>()
   const itemRows = new Map<string, any>()
@@ -373,6 +391,7 @@ export function buildAndPersistFboSalesSnapshot(args: {
       const orderId = orderIdOf(detail) || orderIdOf(posting)
       const fallback = orderId ? Array.from(orderPostings.get(orderId) ?? []).filter((v) => v !== postingNumber) : []
       const reportShipmentDate = text(reportShipmentDateByPosting.get(postingNumber) ?? reportShipmentDateByPosting.get(basePostingNumber) ?? '')
+      const reportDeliveryDate = text(reportDeliveryDateByPosting.get(postingNumber) ?? reportDeliveryDateByPosting.get(basePostingNumber) ?? '')
       const shipmentDate = reportShipmentDate || shipmentDateOf(detail, posting) || getPersistedShipmentDateForPosting(storeClientId, postingNumber, periodKey)
       const stateEvents = collectSalesStateEvents(detail, posting)
       const shipmentTransferEvents = stateEvents.filter((event) => (
@@ -398,7 +417,8 @@ export function buildAndPersistFboSalesSnapshot(args: {
         order_id: orderId || null,
         related_postings: relatedOf(detail, posting, fallback) || null,
         shipment_date: shipmentDate || null,
-        delivery_date: deliveryDateOf(detail, posting) || null,
+        // По КС П «Дата доставки» для FBO берётся только из postings-report CSV.
+        delivery_date: reportDeliveryDate || null,
         delivery_cluster: deliveryClusterOf(detail, posting) || null,
         updated_at: fetchedAt,
       })
@@ -508,6 +528,17 @@ export function buildAndPersistFboSalesSnapshot(args: {
     storeClientId,
     periodKey,
   )
+  const persistedDeliveryDateCount = countBySql(
+    connAfter,
+    `SELECT COUNT(*) AS cnt
+       FROM fbo_postings
+      WHERE store_client_id = ?
+        AND period_key = ?
+        AND delivery_date IS NOT NULL
+        AND delivery_date <> ''`,
+    storeClientId,
+    periodKey,
+  )
   const persistedShipmentTransferEventCount = countBySql(
     connAfter,
     `SELECT COUNT(*) AS cnt
@@ -540,6 +571,7 @@ export function buildAndPersistFboSalesSnapshot(args: {
       itemsCount: persistedItemsCount,
       eventsCount: persistedEventsCount,
       shipmentDateCount: persistedShipmentDateCount,
+      deliveryDateCount: persistedDeliveryDateCount,
       shipmentTransferEventCount: persistedShipmentTransferEventCount,
     },
   }
@@ -554,7 +586,7 @@ export function persistFboPostingsReport(args: {
 }) {
   const storeClientId = text(args.storeClientId)
   if (!storeClientId) {
-    return { rowsCount: 0, shipmentDateCount: 0 }
+    return { rowsCount: 0, shipmentDateCount: 0, deliveryDateCount: 0 }
   }
 
   const periodKey = text(args.periodKey)
@@ -623,8 +655,19 @@ export function persistFboPostingsReport(args: {
     storeClientId,
     periodKey,
   )
+  const deliveryDateCount = countBySql(
+    conn,
+    `SELECT COUNT(*) AS cnt
+       FROM fbo_postings_report
+      WHERE store_client_id = ?
+        AND period_key = ?
+        AND delivery_date IS NOT NULL
+        AND delivery_date <> ''`,
+    storeClientId,
+    periodKey,
+  )
 
-  return { rowsCount, shipmentDateCount }
+  return { rowsCount, shipmentDateCount, deliveryDateCount }
 }
 
 
@@ -818,7 +861,6 @@ export function mergeSalesRowsWithFboLocalDb(args: {
     const normalizedRowShipment = shipmentDateFromRow && shipmentDateFromRow !== acceptedAt ? shipmentDateFromRow : ''
     const shipmentDate = normalizedExtraShipment || normalizedRowShipment
 
-    const deliveryDateFromRow = text(row?.delivery_date)
     const deliveryDateFromExtra = text(extra?.delivery_date)
     const rowStatus = text(row?.status).toLowerCase()
     const isDelivered = Boolean(
@@ -829,7 +871,7 @@ export function mergeSalesRowsWithFboLocalDb(args: {
         || FBO_DELIVERED_STATES.has(rowStatus)
       )
     )
-    const deliveryDate = isDelivered ? (deliveryDateFromRow || deliveryDateFromExtra) : ''
+    const deliveryDate = isDelivered ? deliveryDateFromExtra : ''
 
     return {
       ...row,
