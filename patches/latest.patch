@@ -1,23 +1,7 @@
 --- a/src/renderer/src/ui/pages/LogsPage.tsx
 +++ b/src/renderer/src/ui/pages/LogsPage.tsx
 @@
-   }
-   return map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
--  }
-+  }
-+
-+  // NOTE: The original code used the expression
-+  //   map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
-+  // which triggers an esbuild error because the `||` operator has lower
-+  // precedence than `??`.  The intended logic is to return the mapped
-+  // value if it exists, otherwise fall back to the normalized stage
-+  // text, and finally to the default string.  Adding parentheses
-+  // clarifies the precedence and satisfies the linter/build.
-+  // eslint-disable-next-line no-undefined
+-  return map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
++  // Use parentheses to ensure correct precedence between nullish coalescing (??) and logical OR (||)
 +  return (map[stage] ?? normalizeText(meta?.stageRu)) || 'Шаг синхронизации'
-   }
- 
-   const stage = meta?.stage
-   const map = {
-     'webhook.probe.received': 'Проверочный ping webhook получен',
-*** End Patch ***
+*** End of File ***
