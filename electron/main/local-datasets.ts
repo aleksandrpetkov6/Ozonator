@@ -44,12 +44,14 @@ const FBO_SHIPMENT_TRACE_STAGE_LABELS: Record<string, string> = {
   'api.refresh.report.error': 'Продажи дата доставки: ошибка отчёта postings',
   'api.refresh.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена',
   'api.refresh.rows.built': 'Продажи дата доставки: строки продаж собраны',
+  'api.refresh.origin.rows.built': 'Продажи склад / кластер отгрузки: строки продаж собраны',
   'api.refresh.status.rows.built': 'Продажи статус: строки продаж собраны',
   'api.refresh.paid_by_customer.trace': 'Оплачено покупателем: диагностика собрана',
   'api.refresh.error': 'FBO дата отгрузки: ошибка API-обновления',
   'raw-cache.rebuild.begin': 'FBO дата отгрузки: старт пересборки из raw-cache',
   'raw-cache.rebuild.snapshot.persisted': 'FBO дата отгрузки: локальная БД заполнена из raw-cache',
   'raw-cache.rebuild.rows.built': 'Продажи дата доставки: строки продаж собраны из raw-cache',
+  'raw-cache.rebuild.origin.rows.built': 'Продажи склад / кластер отгрузки: строки продаж собраны из raw-cache',
   'raw-cache.rebuild.status.rows.built': 'Продажи статус: строки продаж собраны из raw-cache',
   'raw-cache.rebuild.paid_by_customer.trace': 'Оплачено покупателем: диагностика собрана из raw-cache',
   'raw-cache.rebuild.error': 'FBO дата отгрузки: ошибка пересборки из raw-cache',
@@ -150,6 +152,14 @@ function countRowsByDeliveryModelWithShipmentDate(rows: any[], modelRaw: string)
   )).length
 }
 
+function countRowsByDeliveryModelWithShipmentOrigin(rows: any[], modelRaw: string): number {
+  const model = normalizeDeliveryModelKey(modelRaw)
+  return (Array.isArray(rows) ? rows : []).filter((row) => (
+    normalizeDeliveryModelKey(row?.delivery_model) === model
+    && Boolean(normalizeTextValue(row?.shipment_origin))
+  )).length
+}
+
 function countRowsByDeliveryModelWithDeliveryDate(rows: any[], modelRaw: string): number {
   const model = normalizeDeliveryModelKey(modelRaw)
   return (Array.isArray(rows) ? rows : []).filter((row) => (
@@ -203,6 +213,10 @@ function countRowsWithShipmentDate(rows: SalesShipmentReportRow[]): number {
   return (Array.isArray(rows) ? rows : []).filter((row) => Boolean(normalizeTextValue(row?.shipment_date))).length
 }
 
+function countRowsWithShipmentOrigin(rows: SalesShipmentReportRow[]): number {
+  return (Array.isArray(rows) ? rows : []).filter((row) => Boolean(normalizeTextValue(row?.shipment_origin))).length
+}
+
 function countRowsWithDeliveryDate(rows: SalesShipmentReportRow[]): number {
   return (Array.isArray(rows) ? rows : []).filter((row) => Boolean(normalizeTextValue(row?.delivery_date))).length
 }
@@ -217,6 +231,14 @@ function countRowsByDeliverySchemaWithDeliveryDate(rows: SalesShipmentReportRow[
   return (Array.isArray(rows) ? rows : []).filter((row) => (
     normalizeDeliveryModelKey(row?.delivery_schema) === schema
     && Boolean(normalizeTextValue(row?.delivery_date))
+  )).length
+}
+
+function countRowsByDeliverySchemaWithShipmentOrigin(rows: SalesShipmentReportRow[], schemaRaw: string): number {
+  const schema = normalizeDeliveryModelKey(schemaRaw)
+  return (Array.isArray(rows) ? rows : []).filter((row) => (
+    normalizeDeliveryModelKey(row?.delivery_schema) === schema
+    && Boolean(normalizeTextValue(row?.shipment_origin))
   )).length
 }
 
@@ -518,7 +540,7 @@ function parseJsonTextSafe(text: string | null | undefined) {
 }
 
 
-type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'order_number' | 'delivery_schema' | 'shipment_date' | 'delivery_date' | 'status' | 'sku' | 'offer_id' | 'product_name' | 'price' | 'quantity' | 'paid_by_customer' | 'raw_row'>
+type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'order_number' | 'delivery_schema' | 'shipment_date' | 'shipment_origin' | 'delivery_date' | 'status' | 'sku' | 'offer_id' | 'product_name' | 'price' | 'quantity' | 'paid_by_customer' | 'raw_row'>
 
 function normalizeSalesShipmentReportRawRow(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -549,8 +571,9 @@ function normalizeSalesReportStatusValue(value: unknown): string {
   return translateSalesCodeValue(raw, 'status') || raw
 }
 
-function buildSalesPostingsReportMaps(rows: SalesShipmentReportRow[]): { shipmentDateByKey: Map<string, string>; deliveryDateByKey: Map<string, string>; statusByKey: Map<string, string> } {
+function buildSalesPostingsReportMaps(rows: SalesShipmentReportRow[]): { shipmentDateByKey: Map<string, string>; shipmentOriginByKey: Map<string, string>; deliveryDateByKey: Map<string, string>; statusByKey: Map<string, string> } {
   const shipmentDateByKey = new Map<string, string>()
+  const shipmentOriginByKey = new Map<string, string>()
   const deliveryDateByKey = new Map<string, string>()
   const statusByKey = new Map<string, string>()
 
@@ -565,6 +588,7 @@ function buildSalesPostingsReportMaps(rows: SalesShipmentReportRow[]): { shipmen
     if (!postingNumber) continue
 
     const shipmentDate = normalizeTextValue(row?.shipment_date)
+    const shipmentOrigin = normalizeTextValue(row?.shipment_origin)
     const deliveryDate = normalizeTextValue(row?.delivery_date)
     const status = normalizeSalesReportStatusValue(row?.status)
     const modelKey = normalizeDeliveryModelKey(row?.delivery_schema)
@@ -573,12 +597,13 @@ function buildSalesPostingsReportMaps(rows: SalesShipmentReportRow[]): { shipmen
 
     for (const key of keys) {
       save(shipmentDateByKey, key, shipmentDate)
+      if (shipmentOrigin && !normalizeTextValue(shipmentOriginByKey.get(key))) shipmentOriginByKey.set(key, shipmentOrigin)
       save(deliveryDateByKey, key, deliveryDate)
       if (status && !normalizeTextValue(statusByKey.get(key))) statusByKey.set(key, status)
     }
   }
 
-  return { shipmentDateByKey, deliveryDateByKey, statusByKey }
+  return { shipmentDateByKey, shipmentOriginByKey, deliveryDateByKey, statusByKey }
 }
 
 function buildSalesShipmentReportRowsFromSnapshotMap(
@@ -600,6 +625,7 @@ function buildSalesShipmentReportRowsFromSnapshotMap(
       order_number: normalizeTextValue(row?.order_number),
       delivery_schema: normalizeTextValue(row?.delivery_schema),
       shipment_date: normalizeTextValue(row?.shipment_date),
+      shipment_origin: normalizeTextValue(row?.shipment_origin),
       delivery_date: normalizeTextValue(row?.delivery_date),
       status: normalizeTextValue(row?.status),
       sku: normalizeTextValue(row?.sku),
@@ -622,28 +648,40 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
   const baseTrace = {
     reportRowsCount: safeReportRows.length,
     reportRowsWithDeliveryDate: countRowsWithDeliveryDate(safeReportRows),
+    reportRowsWithShipmentOrigin: countRowsWithShipmentOrigin(safeReportRows),
     reportRowsWithStatus: countRowsWithStatus(safeReportRows),
     reportRowsFboWithDeliveryDate: countRowsByDeliverySchemaWithDeliveryDate(safeReportRows, 'fbo'),
+    reportRowsFboWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(safeReportRows, 'fbo'),
     reportRowsFboWithStatus: countRowsByDeliverySchemaWithStatus(safeReportRows, 'fbo'),
     reportRowsFbsWithDeliveryDate: countRowsByDeliverySchemaWithDeliveryDate(safeReportRows, 'fbs'),
+    reportRowsFbsWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(safeReportRows, 'fbs'),
     reportRowsFbsWithStatus: countRowsByDeliverySchemaWithStatus(safeReportRows, 'fbs'),
     reportDeliveryDateKeyCount: 0,
+    reportShipmentOriginKeyCount: 0,
     reportStatusKeyCount: 0,
     deliveryDateMatchedRows: 0,
     deliveryDateResolvedRows: 0,
     deliveryDateClearedRows: 0,
+    shipmentOriginMatchedRows: 0,
+    shipmentOriginResolvedRows: 0,
+    shipmentOriginClearedRows: 0,
     statusMatchedRows: 0,
     statusResolvedRows: 0,
     statusClearedRows: 0,
     deliveredRowsWithClearedDetails: 0,
     finalRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(safeRows, 'fbo') + countRowsByDeliveryModelWithDeliveryDate(safeRows, 'fbs') + countRowsByDeliveryModelWithDeliveryDate(safeRows, 'rfbs'),
     finalRowsWithoutDeliveryDate: safeRows.length - (countRowsByDeliveryModelWithDeliveryDate(safeRows, 'fbo') + countRowsByDeliveryModelWithDeliveryDate(safeRows, 'fbs') + countRowsByDeliveryModelWithDeliveryDate(safeRows, 'rfbs')),
+    finalRowsWithShipmentOrigin: countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'fbo') + countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'fbs') + countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'rfbs'),
+    finalRowsWithoutShipmentOrigin: safeRows.length - (countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'fbo') + countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'fbs') + countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'rfbs')),
     finalRowsWithStatus: countRowsByDeliveryModelWithStatus(safeRows, 'fbo') + countRowsByDeliveryModelWithStatus(safeRows, 'fbs') + countRowsByDeliveryModelWithStatus(safeRows, 'rfbs'),
     finalRowsWithoutStatus: safeRows.length - (countRowsByDeliveryModelWithStatus(safeRows, 'fbo') + countRowsByDeliveryModelWithStatus(safeRows, 'fbs') + countRowsByDeliveryModelWithStatus(safeRows, 'rfbs')),
     finalDeliveredRows: countRowsWithDeliveredStatus(safeRows),
     fboRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(safeRows, 'fbo'),
     fbsRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(safeRows, 'fbs'),
     rfbsRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(safeRows, 'rfbs'),
+    fboRowsWithShipmentOrigin: countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'fbo'),
+    fbsRowsWithShipmentOrigin: countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'fbs'),
+    rfbsRowsWithShipmentOrigin: countRowsByDeliveryModelWithShipmentOrigin(safeRows, 'rfbs'),
     fboRowsWithStatus: countRowsByDeliveryModelWithStatus(safeRows, 'fbo'),
     fbsRowsWithStatus: countRowsByDeliveryModelWithStatus(safeRows, 'fbs'),
     rfbsRowsWithStatus: countRowsByDeliveryModelWithStatus(safeRows, 'rfbs'),
@@ -651,19 +689,25 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     fbsRowsWithDeliveredStatus: countRowsByDeliveryModelWithDeliveredStatus(safeRows, 'fbs'),
     rfbsRowsWithDeliveredStatus: countRowsByDeliveryModelWithDeliveredStatus(safeRows, 'rfbs'),
     missingDeliveryDatePostingNumbers: [] as string[],
+    missingShipmentOriginPostingNumbers: [] as string[],
     missingStatusPostingNumbers: [] as string[],
     reportDeliveryDateSample: uniqueSample(safeReportRows.filter((row) => normalizeTextValue(row?.delivery_date)).map((row) => row.delivery_date), 10),
+    reportShipmentOriginSample: uniqueSample(safeReportRows.filter((row) => normalizeTextValue(row?.shipment_origin)).map((row) => row.shipment_origin), 10),
     reportStatusSample: uniqueSample(safeReportRows.filter((row) => normalizeTextValue(row?.status)).map((row) => normalizeSalesReportStatusValue(row?.status)), 10),
   }
   if (safeRows.length === 0) return { rows: safeRows, trace: baseTrace }
 
-  const { shipmentDateByKey, deliveryDateByKey, statusByKey } = buildSalesPostingsReportMaps(safeReportRows)
+  const { shipmentDateByKey, shipmentOriginByKey, deliveryDateByKey, statusByKey } = buildSalesPostingsReportMaps(safeReportRows)
 
   const missingDeliveryDatePostingNumbers: string[] = []
+  const missingShipmentOriginPostingNumbers: string[] = []
   const missingStatusPostingNumbers: string[] = []
   let deliveryDateMatchedRows = 0
   let deliveryDateResolvedRows = 0
   let deliveryDateClearedRows = 0
+  let shipmentOriginMatchedRows = 0
+  let shipmentOriginResolvedRows = 0
+  let shipmentOriginClearedRows = 0
   let statusMatchedRows = 0
   let statusResolvedRows = 0
   let statusClearedRows = 0
@@ -681,6 +725,10 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     const reportDeliveryDate = normalizeTextValue(
       (modelKey ? deliveryDateByKey.get(`${modelKey}|${postingNumber}`) : '')
       || deliveryDateByKey.get(`*|${postingNumber}`),
+    )
+    const reportShipmentOrigin = normalizeTextValue(
+      (modelKey ? shipmentOriginByKey.get(`${modelKey}|${postingNumber}`) : '')
+      || shipmentOriginByKey.get(`*|${postingNumber}`),
     )
     const reportStatus = normalizeTextValue(
       (modelKey ? statusByKey.get(`${modelKey}|${postingNumber}`) : '')
@@ -709,6 +757,21 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     }
     if (nextDeliveryDate) deliveryDateResolvedRows += 1
     else pushTraceSample(missingDeliveryDatePostingNumbers, postingNumber, 10)
+
+    const hasShipmentOriginKey = shipmentOriginByKey.has(`*|${postingNumber}`) || Boolean(modelKey && shipmentOriginByKey.has(`${modelKey}|${postingNumber}`))
+    if (hasShipmentOriginKey) {
+      shipmentOriginMatchedRows += 1
+    }
+
+    const prevShipmentOrigin = normalizeTextValue(row?.shipment_origin)
+    const nextShipmentOrigin = hasShipmentOriginKey ? (reportShipmentOrigin || '') : (safeReportRows.length > 0 ? '' : prevShipmentOrigin)
+    if (prevShipmentOrigin !== nextShipmentOrigin) {
+      nextRow.shipment_origin = nextShipmentOrigin
+      changed = true
+      if (!nextShipmentOrigin && prevShipmentOrigin) shipmentOriginClearedRows += 1
+    }
+    if (nextShipmentOrigin) shipmentOriginResolvedRows += 1
+    else pushTraceSample(missingShipmentOriginPostingNumbers, postingNumber, 10)
 
     const hasStatusKey = statusByKey.has(`*|${postingNumber}`) || Boolean(modelKey && statusByKey.has(`${modelKey}|${postingNumber}`))
     if (hasStatusKey) {
@@ -744,22 +807,31 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     trace: {
       ...baseTrace,
       reportDeliveryDateKeyCount: deliveryDateByKey.size,
+      reportShipmentOriginKeyCount: shipmentOriginByKey.size,
       reportStatusKeyCount: statusByKey.size,
       deliveryDateMatchedRows,
       deliveryDateResolvedRows,
       deliveryDateClearedRows,
+      shipmentOriginMatchedRows,
+      shipmentOriginResolvedRows,
+      shipmentOriginClearedRows,
       statusMatchedRows,
       statusResolvedRows,
       statusClearedRows,
       deliveredRowsWithClearedDetails,
       finalRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(nextRows, 'fbo') + countRowsByDeliveryModelWithDeliveryDate(nextRows, 'fbs') + countRowsByDeliveryModelWithDeliveryDate(nextRows, 'rfbs'),
       finalRowsWithoutDeliveryDate: nextRows.length - (countRowsByDeliveryModelWithDeliveryDate(nextRows, 'fbo') + countRowsByDeliveryModelWithDeliveryDate(nextRows, 'fbs') + countRowsByDeliveryModelWithDeliveryDate(nextRows, 'rfbs')),
+      finalRowsWithShipmentOrigin: countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'fbo') + countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'fbs') + countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'rfbs'),
+      finalRowsWithoutShipmentOrigin: nextRows.length - (countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'fbo') + countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'fbs') + countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'rfbs')),
       finalRowsWithStatus: countRowsByDeliveryModelWithStatus(nextRows, 'fbo') + countRowsByDeliveryModelWithStatus(nextRows, 'fbs') + countRowsByDeliveryModelWithStatus(nextRows, 'rfbs'),
       finalRowsWithoutStatus: nextRows.length - (countRowsByDeliveryModelWithStatus(nextRows, 'fbo') + countRowsByDeliveryModelWithStatus(nextRows, 'fbs') + countRowsByDeliveryModelWithStatus(nextRows, 'rfbs')),
       finalDeliveredRows: countRowsWithDeliveredStatus(nextRows),
       fboRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(nextRows, 'fbo'),
       fbsRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(nextRows, 'fbs'),
       rfbsRowsWithDeliveryDate: countRowsByDeliveryModelWithDeliveryDate(nextRows, 'rfbs'),
+      fboRowsWithShipmentOrigin: countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'fbo'),
+      fbsRowsWithShipmentOrigin: countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'fbs'),
+      rfbsRowsWithShipmentOrigin: countRowsByDeliveryModelWithShipmentOrigin(nextRows, 'rfbs'),
       fboRowsWithStatus: countRowsByDeliveryModelWithStatus(nextRows, 'fbo'),
       fbsRowsWithStatus: countRowsByDeliveryModelWithStatus(nextRows, 'fbs'),
       rfbsRowsWithStatus: countRowsByDeliveryModelWithStatus(nextRows, 'rfbs'),
@@ -767,8 +839,10 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
       fbsRowsWithDeliveredStatus: countRowsByDeliveryModelWithDeliveredStatus(nextRows, 'fbs'),
       rfbsRowsWithDeliveredStatus: countRowsByDeliveryModelWithDeliveredStatus(nextRows, 'rfbs'),
       missingDeliveryDatePostingNumbers,
+      missingShipmentOriginPostingNumbers,
       missingStatusPostingNumbers,
       reportDeliveryDateSample: uniqueSample(safeReportRows.filter((row) => normalizeTextValue(row?.delivery_date)).map((row) => row.delivery_date), 10),
+      reportShipmentOriginSample: uniqueSample(safeReportRows.filter((row) => normalizeTextValue(row?.shipment_origin)).map((row) => row.shipment_origin), 10),
       reportStatusSample: uniqueSample(safeReportRows.filter((row) => normalizeTextValue(row?.status)).map((row) => normalizeSalesReportStatusValue(row?.status)), 10),
     },
   }
@@ -1197,6 +1271,29 @@ function buildSalesRowsFromLocalRawCache(storeClientId: string | null | undefine
         sourceEndpoints: result.sourceEndpoints,
       },
     })
+    logFboShipmentTrace('raw-cache.rebuild.origin.rows.built', {
+      storeClientId,
+      period: requestedPeriod,
+      itemsCount: Number(deliveryDateTrace?.finalRowsWithShipmentOrigin ?? 0),
+      meta: {
+        salesRowsCount: result.rows.length,
+        salesRowsWithShipmentOrigin: Number(deliveryDateTrace?.finalRowsWithShipmentOrigin ?? 0),
+        salesRowsWithoutShipmentOrigin: Number(deliveryDateTrace?.finalRowsWithoutShipmentOrigin ?? 0),
+        fboRowsWithShipmentOrigin: Number(deliveryDateTrace?.fboRowsWithShipmentOrigin ?? 0),
+        fbsRowsWithShipmentOrigin: Number(deliveryDateTrace?.fbsRowsWithShipmentOrigin ?? 0),
+        rfbsRowsWithShipmentOrigin: Number(deliveryDateTrace?.rfbsRowsWithShipmentOrigin ?? 0),
+        shipmentOriginMatchedRows: Number(deliveryDateTrace?.shipmentOriginMatchedRows ?? 0),
+        shipmentOriginResolvedRows: Number(deliveryDateTrace?.shipmentOriginResolvedRows ?? 0),
+        shipmentOriginClearedRows: Number(deliveryDateTrace?.shipmentOriginClearedRows ?? 0),
+        missingShipmentOriginPostingNumbers: Array.isArray(deliveryDateTrace?.missingShipmentOriginPostingNumbers) ? deliveryDateTrace.missingShipmentOriginPostingNumbers : [],
+        reportShipmentOriginKeyCount: Number(deliveryDateTrace?.reportShipmentOriginKeyCount ?? 0),
+        reportRowsWithShipmentOrigin: Number(deliveryDateTrace?.reportRowsWithShipmentOrigin ?? 0),
+        reportRowsFboWithShipmentOrigin: Number(deliveryDateTrace?.reportRowsFboWithShipmentOrigin ?? 0),
+        reportRowsFbsWithShipmentOrigin: Number(deliveryDateTrace?.reportRowsFbsWithShipmentOrigin ?? 0),
+        reportShipmentOriginSample: Array.isArray(deliveryDateTrace?.reportShipmentOriginSample) ? deliveryDateTrace.reportShipmentOriginSample : [],
+        sourceEndpoints: result.sourceEndpoints,
+      },
+    })
     logFboShipmentTrace('raw-cache.rebuild.status.rows.built', {
       storeClientId,
       period: requestedPeriod,
@@ -1513,6 +1610,7 @@ export async function refreshSalesRawSnapshotFromApi(
           order_number: normalizeTextValue(row?.order_number),
           delivery_schema: normalizeTextValue(row?.delivery_schema),
           shipment_date: normalizeTextValue(row?.shipment_date),
+          shipment_origin: normalizeTextValue(row?.shipment_origin),
           delivery_date: normalizeTextValue(row?.delivery_date),
           status: normalizeTextValue(row?.status),
           sku: normalizeTextValue(row?.sku),
@@ -1600,14 +1698,18 @@ export async function refreshSalesRawSnapshotFromApi(
           reportRowsCount: reportRows.length,
           reportRowsWithShipmentDate: countRowsWithShipmentDate(reportRows),
           reportRowsWithDeliveryDate: countRowsWithDeliveryDate(reportRows),
+          reportRowsWithShipmentOrigin: countRowsWithShipmentOrigin(reportRows),
           reportRowsWithStatus: countRowsWithStatus(reportRows),
           reportRowsFboCount: countRowsByDeliverySchema(reportRows, 'fbo'),
           reportRowsFboWithShipmentDate: (Array.isArray(reportRows) ? reportRows : []).filter((row) => normalizeDeliveryModelKey(row?.delivery_schema) === 'fbo' && Boolean(normalizeTextValue(row?.shipment_date))).length,
+          reportRowsFboWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(reportRows, 'fbo'),
           reportRowsFboWithDeliveryDate: countRowsByDeliverySchemaWithDeliveryDate(reportRows, 'fbo'),
           reportRowsFboWithStatus: countRowsByDeliverySchemaWithStatus(reportRows, 'fbo'),
+          reportRowsFbsWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(reportRows, 'fbs'),
           reportRowsFbsWithDeliveryDate: countRowsByDeliverySchemaWithDeliveryDate(reportRows, 'fbs'),
           reportRowsFbsWithStatus: countRowsByDeliverySchemaWithStatus(reportRows, 'fbs'),
           reportDeliveryDateSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.delivery_date)).map((row) => row.delivery_date), 10),
+          reportShipmentOriginSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.shipment_origin)).map((row) => row.shipment_origin), 10),
           reportStatusSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.status)).map((row) => normalizeSalesReportStatusValue(row?.status)), 10),
           reportStrategy: reportTrace?.strategy ?? 'single',
           reportPartial: Boolean(reportTrace?.partial),
@@ -1672,10 +1774,13 @@ export async function refreshSalesRawSnapshotFromApi(
           reportRowsCount: reportRows.length,
           reportRowsWithShipmentDate: countRowsWithShipmentDate(reportRows),
           reportRowsWithDeliveryDate: countRowsWithDeliveryDate(reportRows),
+          reportRowsWithShipmentOrigin: countRowsWithShipmentOrigin(reportRows),
           reportRowsWithStatus: countRowsWithStatus(reportRows),
           reportRowsFboWithDeliveryDate: countRowsByDeliverySchemaWithDeliveryDate(reportRows, 'fbo'),
+          reportRowsFboWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(reportRows, 'fbo'),
           reportRowsFboWithStatus: countRowsByDeliverySchemaWithStatus(reportRows, 'fbo'),
           reportRowsFbsWithDeliveryDate: countRowsByDeliverySchemaWithDeliveryDate(reportRows, 'fbs'),
+          reportRowsFbsWithShipmentOrigin: countRowsByDeliverySchemaWithShipmentOrigin(reportRows, 'fbs'),
           reportRowsFbsWithStatus: countRowsByDeliverySchemaWithStatus(reportRows, 'fbs'),
           reportDeliveryDateSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.delivery_date)).map((row) => row.delivery_date), 10),
           reportStatusSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.status)).map((row) => normalizeSalesReportStatusValue(row?.status)), 10),
@@ -1814,6 +1919,30 @@ export async function refreshSalesRawSnapshotFromApi(
         sourceEndpoints,
       },
     })
+    logFboShipmentTrace('api.refresh.origin.rows.built', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      itemsCount: Number(deliveryDateTrace?.finalRowsWithShipmentOrigin ?? 0),
+      meta: {
+        salesRowsCount: rows.length,
+        salesRowsWithShipmentOrigin: Number(deliveryDateTrace?.finalRowsWithShipmentOrigin ?? 0),
+        salesRowsWithoutShipmentOrigin: Number(deliveryDateTrace?.finalRowsWithoutShipmentOrigin ?? 0),
+        fboRowsWithShipmentOrigin: Number(deliveryDateTrace?.fboRowsWithShipmentOrigin ?? 0),
+        fbsRowsWithShipmentOrigin: Number(deliveryDateTrace?.fbsRowsWithShipmentOrigin ?? 0),
+        rfbsRowsWithShipmentOrigin: Number(deliveryDateTrace?.rfbsRowsWithShipmentOrigin ?? 0),
+        shipmentOriginMatchedRows: Number(deliveryDateTrace?.shipmentOriginMatchedRows ?? 0),
+        shipmentOriginResolvedRows: Number(deliveryDateTrace?.shipmentOriginResolvedRows ?? 0),
+        shipmentOriginClearedRows: Number(deliveryDateTrace?.shipmentOriginClearedRows ?? 0),
+        missingShipmentOriginPostingNumbers: Array.isArray(deliveryDateTrace?.missingShipmentOriginPostingNumbers) ? deliveryDateTrace.missingShipmentOriginPostingNumbers : [],
+        reportShipmentOriginKeyCount: Number(deliveryDateTrace?.reportShipmentOriginKeyCount ?? 0),
+        reportRowsWithShipmentOrigin: Number(deliveryDateTrace?.reportRowsWithShipmentOrigin ?? 0),
+        reportRowsFboWithShipmentOrigin: Number(deliveryDateTrace?.reportRowsFboWithShipmentOrigin ?? 0),
+        reportRowsFbsWithShipmentOrigin: Number(deliveryDateTrace?.reportRowsFbsWithShipmentOrigin ?? 0),
+        reportShipmentOriginSample: Array.isArray(deliveryDateTrace?.reportShipmentOriginSample) ? deliveryDateTrace.reportShipmentOriginSample : [],
+        sourceEndpoints,
+      },
+    })
+
     logFboShipmentTrace('api.refresh.status.rows.built', {
       storeClientId: secrets.clientId,
       period: requestedPeriod,

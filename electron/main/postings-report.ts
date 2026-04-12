@@ -21,6 +21,7 @@ export type SalesPostingsReportRow = {
   order_number: string
   delivery_schema: string
   shipment_date: string
+  shipment_origin: string
   delivery_date: string
   status: string
   sku: string
@@ -48,18 +49,22 @@ type ReportCsvTrace = {
   rowsMapped: number
   rowsWithPostingNumber: number
   rowsWithShipmentDate: number
+  rowsWithShipmentOrigin: number
   rowsWithDeliveryDate: number
   rowsWithStatus: number
   rowsFbo: number
   rowsFboWithShipmentDate: number
+  rowsFboWithShipmentOrigin: number
   rowsFboWithDeliveryDate: number
   rowsFboWithStatus: number
   rowsFbs: number
+  rowsFbsWithShipmentOrigin: number
   rowsFbsWithDeliveryDate: number
   rowsFbsWithStatus: number
   headerSample: string[]
   samplePostingNumbers: string[]
   sampleShipmentDates: string[]
+  sampleShipmentOrigins: string[]
   sampleDeliveryDates: string[]
   sampleStatuses: string[]
 }
@@ -578,6 +583,23 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
     'shipment date',
     'Дата отгрузки',
   ]))
+  const shipmentWarehouse = pickRowValue(row, [
+    'Склад отгрузки',
+    'Склад отправления',
+    'warehouse_from',
+    'shipment_warehouse',
+    'shipment warehouse',
+  ])
+  const shipmentCluster = pickRowValue(row, [
+    'Кластер отгрузки',
+    'Кластер отправления',
+    'cluster_from',
+    'shipment_cluster',
+    'shipment cluster',
+  ])
+  const shipmentOrigin = deliverySchema === 'FBO'
+    ? (shipmentCluster || shipmentWarehouse)
+    : (shipmentWarehouse || shipmentCluster)
   const deliveryDate = parseOzonLocalDateToIso(pickRowValue(row, ['Дата доставки', 'delivery_date', 'delivery date']))
   const status = pickRowValue(row, [
     'Статус',
@@ -600,6 +622,7 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
     order_number: orderNumber,
     delivery_schema: deliverySchema,
     shipment_date: shipmentDate,
+    shipment_origin: shipmentOrigin,
     delivery_date: deliveryDate,
     status,
     sku,
@@ -624,7 +647,7 @@ function parseSalesPostingsReportCsv(csvText: string): {
     if (!mapped) continue
     const key = buildSalesPostingsReportRowKey(mapped)
     const prev = out.get(key)
-    if (!prev || (!prev.shipment_date && mapped.shipment_date) || (!prev.delivery_date && mapped.delivery_date) || (!prev.status && mapped.status)) {
+    if (!prev || (!prev.shipment_date && mapped.shipment_date) || (!prev.shipment_origin && mapped.shipment_origin) || (!prev.delivery_date && mapped.delivery_date) || (!prev.status && mapped.status)) {
       out.set(key, mapped)
     }
   }
@@ -637,18 +660,22 @@ function parseSalesPostingsReportCsv(csvText: string): {
       rowsMapped: rows.length,
       rowsWithPostingNumber: rows.filter((row) => Boolean(row.posting_number)).length,
       rowsWithShipmentDate: rows.filter((row) => Boolean(row.shipment_date)).length,
+      rowsWithShipmentOrigin: rows.filter((row) => Boolean(text(row.shipment_origin))).length,
       rowsWithDeliveryDate: rows.filter((row) => Boolean(row.delivery_date)).length,
       rowsWithStatus: rows.filter((row) => Boolean(text(row.status))).length,
       rowsFbo: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO').length,
       rowsFboWithShipmentDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(row.shipment_date)).length,
+      rowsFboWithShipmentOrigin: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(text(row.shipment_origin))).length,
       rowsFboWithDeliveryDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(row.delivery_date)).length,
       rowsFboWithStatus: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBO' && Boolean(text(row.status))).length,
       rowsFbs: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS').length,
+      rowsFbsWithShipmentOrigin: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS' && Boolean(text(row.shipment_origin))).length,
       rowsFbsWithDeliveryDate: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS' && Boolean(row.delivery_date)).length,
       rowsFbsWithStatus: rows.filter((row) => normalizeDeliverySchema(row.delivery_schema) === 'FBS' && Boolean(text(row.status))).length,
       headerSample: buildCsvHeaderSample(rawRows),
       samplePostingNumbers: uniqueSample(rows.map((row) => row.posting_number), 10),
       sampleShipmentDates: uniqueSample(rows.filter((row) => row.shipment_date).map((row) => row.shipment_date), 10),
+      sampleShipmentOrigins: uniqueSample(rows.filter((row) => text(row.shipment_origin)).map((row) => row.shipment_origin), 10),
       sampleDeliveryDates: uniqueSample(rows.filter((row) => row.delivery_date).map((row) => row.delivery_date), 10),
       sampleStatuses: uniqueSample(rows.filter((row) => text(row.status)).map((row) => row.status), 10),
     },
@@ -758,19 +785,23 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
   const headerSample: string[] = []
   const samplePostingNumbers: string[] = []
   const sampleShipmentDates: string[] = []
+  const sampleShipmentOrigins: string[] = []
   const sampleDeliveryDates: string[] = []
   const sampleStatuses: string[] = []
   let rowsRaw = 0
   let rowsMapped = 0
   let rowsWithPostingNumber = 0
   let rowsWithShipmentDate = 0
+  let rowsWithShipmentOrigin = 0
   let rowsWithDeliveryDate = 0
   let rowsWithStatus = 0
   let rowsFbo = 0
   let rowsFboWithShipmentDate = 0
+  let rowsFboWithShipmentOrigin = 0
   let rowsFboWithDeliveryDate = 0
   let rowsFboWithStatus = 0
   let rowsFbs = 0
+  let rowsFbsWithShipmentOrigin = 0
   let rowsFbsWithDeliveryDate = 0
   let rowsFbsWithStatus = 0
 
@@ -780,13 +811,16 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
       rowsMapped += Number(segment.csv.rowsMapped ?? 0)
       rowsWithPostingNumber += Number(segment.csv.rowsWithPostingNumber ?? 0)
       rowsWithShipmentDate += Number(segment.csv.rowsWithShipmentDate ?? 0)
+      rowsWithShipmentOrigin += Number(segment.csv.rowsWithShipmentOrigin ?? 0)
       rowsWithDeliveryDate += Number(segment.csv.rowsWithDeliveryDate ?? 0)
       rowsWithStatus += Number(segment.csv.rowsWithStatus ?? 0)
       rowsFbo += Number(segment.csv.rowsFbo ?? 0)
       rowsFboWithShipmentDate += Number(segment.csv.rowsFboWithShipmentDate ?? 0)
+      rowsFboWithShipmentOrigin += Number(segment.csv.rowsFboWithShipmentOrigin ?? 0)
       rowsFboWithDeliveryDate += Number(segment.csv.rowsFboWithDeliveryDate ?? 0)
       rowsFboWithStatus += Number(segment.csv.rowsFboWithStatus ?? 0)
       rowsFbs += Number(segment.csv.rowsFbs ?? 0)
+      rowsFbsWithShipmentOrigin += Number(segment.csv.rowsFbsWithShipmentOrigin ?? 0)
       rowsFbsWithDeliveryDate += Number(segment.csv.rowsFbsWithDeliveryDate ?? 0)
       rowsFbsWithStatus += Number(segment.csv.rowsFbsWithStatus ?? 0)
       for (const key of segment.csv.headerSample ?? []) {
@@ -805,6 +839,13 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
         const value = text(item.shipment_date)
         if (value && !sampleShipmentDates.includes(value)) sampleShipmentDates.push(value)
         if (sampleShipmentDates.length >= 10) break
+      }
+    }
+    if (!sampleShipmentOrigins.length || sampleShipmentOrigins.length < 10) {
+      for (const item of rows) {
+        const value = text(item.shipment_origin)
+        if (value && !sampleShipmentOrigins.includes(value)) sampleShipmentOrigins.push(value)
+        if (sampleShipmentOrigins.length >= 10) break
       }
     }
     if (!sampleDeliveryDates.length || sampleDeliveryDates.length < 10) {
@@ -828,18 +869,22 @@ function buildAggregateCsvTrace(rows: SalesPostingsReportRow[], segments: SalesP
     rowsMapped,
     rowsWithPostingNumber,
     rowsWithShipmentDate,
+    rowsWithShipmentOrigin,
     rowsWithDeliveryDate,
     rowsWithStatus,
     rowsFbo,
     rowsFboWithShipmentDate,
+    rowsFboWithShipmentOrigin,
     rowsFboWithDeliveryDate,
     rowsFboWithStatus,
     rowsFbs,
+    rowsFbsWithShipmentOrigin,
     rowsFbsWithDeliveryDate,
     rowsFbsWithStatus,
     headerSample,
     samplePostingNumbers,
     sampleShipmentDates,
+    sampleShipmentOrigins,
     sampleDeliveryDates,
     sampleStatuses,
   }

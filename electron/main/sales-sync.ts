@@ -11,6 +11,7 @@ export type SalesRow = GridApiRow & {
   posting_number?: string | null
   related_postings?: string | null
   shipment_date?: string | null
+  shipment_origin?: string | null
   status?: string | null
   status_details?: string | null
   carrier_status_details?: string | null
@@ -1152,6 +1153,7 @@ export function normalizeSalesRows(
           posting_number: postingNumber,
           related_postings: related || '',
           shipment_date: shipmentDate || '',
+          shipment_origin: '',
           status: status || '',
           status_details: statusDetails || '',
           carrier_status_details: carrierStatusDetails || '',
