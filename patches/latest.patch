@@ -1,12 +1,23 @@
---- a/electron/main/storage/db.ts
-+++ b/electron/main/storage/db.ts
+--- tsconfig.json
++++ tsconfig.json
 @@
-+// @ts-nocheck
-+
- import { open, Database } from 'better-sqlite3';
- import { join } from 'path';
- import { app } from 'electron';
- import { getDbPath } from './paths';
-@@
- // Existing code remains unchanged
-*** End of File ***
+     "compilerOptions": {
+         "target": "ES2020",
+         "module": "ESNext",
+         "moduleResolution": "node",
+         "jsx": "react-jsx",
+         "strict": true,
+         "esModuleInterop": true,
+         "skipLibCheck": true,
+         "forceConsistentCasingInFileNames": true
+     },
+     "include": [
+         "src",
+         "electron",
+         "tests"
+     ],
+     "exclude": [
+         "node_modules",
+         "dist"
+     ]
+ }
