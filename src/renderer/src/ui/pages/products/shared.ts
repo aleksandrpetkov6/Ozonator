@@ -69,6 +69,42 @@ const VISIBILITY_REASON_MAP_RU: Record<string, string> = {
   banned: 'Заблокирован',
 }
 
+const HIDDEN_INTERNAL_COL_IDS = new Set(['item_currency', 'currency'])
+const MONEY_COLUMN_ID_RE = /(?:^|_)(?:price|paid|amount|cost|revenue|income|expense|fee|commission|discount|accrual|payout|payment|refund|sum|total|turnover|margin|profit)(?:_|$)/i
+const MONEY_CELL_FORMATTER = new Intl.NumberFormat('ru-RU', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+})
+
+function parseNumericLike(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const normalized = trimmed.replace(/\s+/g, '').replace(',', '.')
+  if (!/^-?\d+(?:\.\d+)?$/.test(normalized)) return null
+  const num = Number(normalized)
+  return Number.isFinite(num) ? num : null
+}
+
+export function isHiddenInternalColId(colId: unknown): boolean {
+  return HIDDEN_INTERNAL_COL_IDS.has(String(colId ?? '').trim())
+}
+
+export function isMoneyColumnId(colId: unknown): boolean {
+  const id = String(colId ?? '').trim()
+  if (!id) return false
+  if (id === 'price' || id === 'paid_by_customer' || id === 'customer_currency_in_item_currency') return true
+  return MONEY_COLUMN_ID_RE.test(id)
+}
+
+export function formatMoneyValue(value: unknown): string {
+  if (value == null || value === '') return '-'
+  const numeric = parseNumericLike(value)
+  if (numeric == null) return toText(value)
+  return MONEY_CELL_FORMATTER.format(numeric)
+}
+
 export function toText(v: unknown): string {
   if (v == null) return ''
   if (typeof v === 'string') return v
@@ -311,7 +347,7 @@ export function appendDiscoveredCols(current: ColDef[], rows: GridRow[]): ColDef
     if (!row || typeof row !== 'object') continue
     for (const key of Object.keys(row as any)) {
       const id = String(key ?? '').trim()
-      if (!id || seen.has(id) || id === '__proto__') continue
+      if (!id || seen.has(id) || id === '__proto__' || isHiddenInternalColId(id)) continue
       discovered.push(buildDynamicCol(id))
       seen.add(id)
     }
@@ -392,7 +428,7 @@ function normalizePersistedCols(value: unknown): PersistedColLayout[] {
   for (const raw of value) {
     if (!raw || typeof raw !== 'object') continue
     const id = String((raw as any).id ?? '').trim()
-    if (!id || seen.has(id)) continue
+    if (!id || seen.has(id) || isHiddenInternalColId(id)) continue
 
     const wNum = Number((raw as any).w)
     const w = Number.isFinite(wNum) ? Math.max(60, Math.min(2000, Math.round(wNum))) : 120
