@@ -142,7 +142,7 @@ function resolveRatePerRub(cbrRatesByCurrency: Map<string, number>, currencyCode
   if (!normalizedCurrency) return null
   if (normalizedCurrency === 'RUB') return 1
   const rate = cbrRatesByCurrency.get(normalizedCurrency)
-  return Number.isFinite(rate) && rate > 0 ? rate : null
+  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : null
 }
 
 export async function applyCbrConversionsToSalesRows(rows: SalesRow[]): Promise<SalesRow[]> {
