@@ -18,6 +18,8 @@ export type SalesRow = GridApiRow & {
   delivery_cluster?: string | null
   delivery_model?: string | null
   currency?: string | null
+  item_currency?: string | null
+  customer_currency_in_item_currency?: string | null
   price?: number | ''
   quantity?: number | ''
   paid_by_customer?: number | ''
@@ -403,6 +405,17 @@ function resolveSalesItemCurrencyValue(item: any, detailPosting: any, posting: a
   return normalizeCurrencyValue(pickFirstPresent(financialProduct, [
     'customer_currency_code',
     'customerCurrencyCode',
+  ]))
+}
+
+function resolveSalesItemProductCurrencyValue(item: any, detailPosting: any): string {
+  const detailItem = findMatchingSalesItemInSource(item, detailPosting)
+  return normalizeCurrencyValue(pickFirstPresent(item, [
+    'currency_code',
+    'currencyCode',
+  ])) || normalizeCurrencyValue(pickFirstPresent(detailItem, [
+    'currency_code',
+    'currencyCode',
   ]))
 }
 
@@ -1154,6 +1167,8 @@ export function normalizeSalesRows(
           delivery_cluster: deliveryCluster || '',
           delivery_model: deliverySchema || '',
           currency: resolveSalesItemCurrencyValue(item, detailPosting, posting) || '',
+          item_currency: resolveSalesItemProductCurrencyValue(item, detailPosting) || '',
+          customer_currency_in_item_currency: '',
           price: resolveSalesItemPriceValue(item),
           quantity: resolveSalesItemQuantityValue(item),
           paid_by_customer: resolveSalesItemPaidByCustomerValue(item, detailPosting, posting),
