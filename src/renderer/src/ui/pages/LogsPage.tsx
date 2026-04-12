@@ -18,6 +18,26 @@ type LogSortCol = 'id' | 'type' | 'status' | 'started_at' | 'finished_at' | 'det
 type LogSortState = TableSortState<LogSortCol>
 type LogColDef = SortableColumn<LogRow, LogSortCol> & { id: LogSortCol; title: string }
 type LogGroup = { row: LogRow; children: LogRow[] }
+type DownloadState = 'idle' | 'saving' | 'done' | 'error'
+type TraceCategoryKey = 'shipment' | 'delivery' | 'status' | 'paid' | 'other'
+type TraceMeta = Record<string, any>
+type TraceEvent = {
+  row: LogRow
+  meta: TraceMeta
+  category: TraceCategoryKey
+  title: string
+  summary: string
+}
+type TraceMetric = { label: string; value: string }
+type TraceSection = {
+  key: TraceCategoryKey
+  title: string
+  intro: string
+  events: TraceEvent[]
+  metrics: TraceMetric[]
+  notes: string[]
+  errors: string[]
+}
 
 const TYPE_RU: Record<string, string> = {
   sync_products: 'Синхронизация',
@@ -26,7 +46,7 @@ const TYPE_RU: Record<string, string> = {
   app_update: 'Обновление программы',
   app_reinstall: 'Переустановка программы',
   app_uninstall: 'Удаление программы',
-  admin_settings: 'Настройки Админ',
+  admin_settings: 'Настройки админки',
   sales_fbo_shipment_trace: 'Трассировка синхронизации продаж',
 }
 
@@ -39,6 +59,13 @@ const STATUS_RU: Record<string, string> = {
 
 const TRACE_TYPES = new Set(['sales_fbo_shipment_trace'])
 const TRACE_PARENT_TYPES = new Set(['sync_products'])
+const TRACE_SECTION_ORDER: Record<TraceCategoryKey, number> = {
+  shipment: 1,
+  delivery: 2,
+  status: 3,
+  paid: 4,
+  other: 5,
+}
 
 function typeRu(v?: string | null) {
   if (!v) return '-'
@@ -55,159 +82,44 @@ function fmtDt(colId: 'started_at' | 'finished_at', value?: string | null) {
   return formatTemporalCellRu(colId, value) || '-'
 }
 
+function normalizeText(value: unknown): string {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
+  return ''
+}
+
 function detailsRu(type?: string | null, meta?: string | null, itemsCount?: number | null): string {
-  if (type === 'app_uninstall') return ''
-  if (!meta) return '-'
+  if (type === 'app_uninstall') return 'Удаление выполнено.'
+  const safeItemsCount = typeof itemsCount === 'number' && Number.isFinite(itemsCount) ? itemsCount : null
+  if (!meta) {
+    return safeItemsCount != null ? `Обработано записей: ${safeItemsCount}.` : '—'
+  }
+
   try {
     const m = JSON.parse(meta)
     if (typeof m?.updated === 'number' || typeof m?.added === 'number') {
-      const add = (typeof m?.added === 'number') ? m.added : 0
-      const synced = (typeof itemsCount === 'number' && Number.isFinite(itemsCount)) ? itemsCount : Math.max(0, add)
-      return `синхронизировано: ${synced}, новых: ${add}`
+      const synced = safeItemsCount ?? Math.max(0, Number(m?.updated) || 0)
+      const added = Math.max(0, Number(m?.added) || 0)
+      return `Синхронизировано: ${synced}. Новых записей: ${added}.`
     }
-    if (typeof m?.logRetentionDays === 'number') return `жизнь лога: ${m.logRetentionDays} дн.`
+    if (typeof m?.logRetentionDays === 'number') return `Срок хранения журнала: ${m.logRetentionDays} дн.`
     if (m?.appVersion || m?.previousVersion) {
-      if (m?.appVersion && (type === 'app_install' || type === 'app_reinstall' || type === 'app_update')) return `версия: ${m.appVersion}`
       const parts: string[] = []
-      if (m?.appVersion) parts.push(`версия: ${m.appVersion}`)
-      if (m?.previousVersion) parts.push(`было: ${m.previousVersion}`)
-      return parts.join(', ') || meta
+      if (m?.appVersion) parts.push(`Текущая версия: ${m.appVersion}.`)
+      if (m?.previousVersion) parts.push(`Предыдущая версия: ${m.previousVersion}.`)
+      return parts.join(' ')
     }
-    const parts: string[] = []
-    if (type === 'sales_fbo_shipment_trace') {
-      const parts: string[] = []
-      const stage = String(m?.stage ?? '')
-      if (m?.stageRu || m?.stage) parts.push(String(m?.stageRu ?? m?.stage))
-      if (typeof m?.fboPostingCount === 'number') parts.push(`FBO отправлений: ${m.fboPostingCount}`)
-      if (typeof m?.mergedFboDetailCount === 'number') parts.push(`деталей FBO: ${m.mergedFboDetailCount}`)
-      if (typeof m?.compatLoadedCount === 'number') parts.push(`compat: ${m.compatLoadedCount}`)
-      if (typeof m?.fboRowsWithShipmentDate === 'number') parts.push(`строк с датой: ${m.fboRowsWithShipmentDate}`)
-      if (typeof m?.salesRowsCount === 'number') parts.push(`строк продаж: ${m.salesRowsCount}`)
-      if (typeof m?.reportRowsCount === 'number') parts.push(`строк отчёта: ${m.reportRowsCount}`)
-      if (typeof m?.reportRowsWithDeliveryDate === 'number') parts.push(`отчёт: дат доставки ${m.reportRowsWithDeliveryDate}`)
-      if (typeof m?.reportRowsFboWithDeliveryDate === 'number') parts.push(`отчёт FBO с датой: ${m.reportRowsFboWithDeliveryDate}`)
-      if (typeof m?.reportRowsFbsWithDeliveryDate === 'number') parts.push(`отчёт FBS/rFBS с датой: ${m.reportRowsFbsWithDeliveryDate}`)
-      if (typeof m?.reportStrategy === 'string' && m.reportStrategy) {
-        const strategyLabel = m.reportStrategy === 'chunked-1d'
-          ? 'отчёт по дням'
-          : (m.reportStrategy === 'chunked-7d' ? 'отчёт по неделям' : 'один отчёт')
-        parts.push(`стратегия: ${strategyLabel}`)
-      }
-      if (typeof m?.reportSegmentsTotal === 'number') parts.push(`сегментов: ${m.reportSegmentsTotal}`)
-      if (typeof m?.reportSegmentsSucceeded === 'number') parts.push(`успешно: ${m.reportSegmentsSucceeded}`)
-      if (typeof m?.reportSegmentsFailed === 'number') parts.push(`ошибок сегм.: ${m.reportSegmentsFailed}`)
-      if (typeof m?.incomingEventsCount === 'number') parts.push(`push событий: ${m.incomingEventsCount}`)
-      if (typeof m?.acceptedPushEventCount === 'number') parts.push(`push принято: ${m.acceptedPushEventCount}`)
-      const samplePostingNumbers = Array.isArray(m?.samplePostingNumbers) ? m.samplePostingNumbers : []
-      if (samplePostingNumbers.length > 0) {
-        const label = stage.startsWith('push.ingest') ? 'push sample' : 'FBO sample'
-        parts.push(`${label}: ${samplePostingNumbers.slice(0, 3).join(', ')}`)
-      }
-      if (stage === 'webhook.server.status') {
-        if (typeof m?.baseUrl === 'string' && m.baseUrl) parts.push(`сервер: ${m.baseUrl}`)
-        if (typeof m?.webhookUrlLocal === 'string' && m.webhookUrlLocal) parts.push(`webhook: ${m.webhookUrlLocal}`)
-        if (typeof m?.webhookProbeUrlLocal === 'string' && m.webhookProbeUrlLocal) parts.push(`ping: ${m.webhookProbeUrlLocal}`)
-      }
-      if (stage === 'webhook.probe.received') {
-        if (typeof m?.probeAt === 'string' && m.probeAt) parts.push(`время ping: ${m.probeAt}`)
-        if (typeof m?.pathname === 'string' && m.pathname) parts.push(`путь: ${m.pathname}`)
-      }
-      if (Array.isArray(m?.payloadTopLevelKeys) && m.payloadTopLevelKeys.length > 0) parts.push(`payload keys: ${m.payloadTopLevelKeys.slice(0, 6).join(', ')}`)
-      if (m?.trace && typeof m.trace === 'object') {
-        if (typeof m.trace?.postingsWithDetail === 'number') parts.push(`с деталями: ${m.trace.postingsWithDetail}`)
-        if (typeof m.trace?.postingsWithShipmentTransferEvent === 'number') parts.push(`с event даты: ${m.trace.postingsWithShipmentTransferEvent}`)
-        if (typeof m.trace?.postingsWithResolvedShipmentDate === 'number') parts.push(`дата отгрузки извлечена: ${m.trace.postingsWithResolvedShipmentDate}`)
-      }
-      if (m?.persisted && typeof m.persisted === 'object') {
-        if (typeof m.persisted?.shipmentTransferEventCount === 'number') parts.push(`event в БД: ${m.persisted.shipmentTransferEventCount}`)
-        if (typeof m.persisted?.shipmentDateCount === 'number') parts.push(`дат отгрузки в БД: ${m.persisted.shipmentDateCount}`)
-        if (typeof m.persisted?.deliveryDateCount === 'number') parts.push(`дат доставки в БД: ${m.persisted.deliveryDateCount}`)
-      }
-      const failedSegments = Array.isArray(m?.failedSegmentSample) ? m.failedSegmentSample : []
-      if (failedSegments.length > 0) {
-        const sample = failedSegments
-          .slice(0, 2)
-          .map((item: any) => {
-            const label = typeof item?.label === 'string' ? item.label : ''
-            const error = typeof item?.error === 'string' ? item.error : ''
-            return [label, error].filter(Boolean).join(' → ')
-          })
-          .filter(Boolean)
-        if (sample.length > 0) parts.push(`fail: ${sample.join(' | ')}`)
-      }
-      if (typeof m?.reportBuildError === 'string' && m.reportBuildError) parts.push(`ошибка отчёта: ${m.reportBuildError}`)
-      if (typeof m?.salesRowsWithDeliveryDate === 'number') parts.push(`строк продаж с датой доставки: ${m.salesRowsWithDeliveryDate}`)
-      if (typeof m?.salesRowsWithoutDeliveryDate === 'number') parts.push(`строк продаж без даты доставки: ${m.salesRowsWithoutDeliveryDate}`)
-      if (typeof m?.fboRowsWithDeliveryDate === 'number') parts.push(`FBO строк с датой: ${m.fboRowsWithDeliveryDate}`)
-      if (typeof m?.fbsRowsWithDeliveryDate === 'number') parts.push(`FBS строк с датой: ${m.fbsRowsWithDeliveryDate}`)
-      if (typeof m?.rfbsRowsWithDeliveryDate === 'number') parts.push(`rFBS строк с датой: ${m.rfbsRowsWithDeliveryDate}`)
-      if (typeof m?.deliveryDateMatchedRows === 'number') parts.push(`совпало по posting_number: ${m.deliveryDateMatchedRows}`)
-      if (typeof m?.deliveryDateResolvedRows === 'number') parts.push(`дата доставки применена: ${m.deliveryDateResolvedRows}`)
-      if (typeof m?.deliveryDateClearedRows === 'number') parts.push(`очищено старых API дат: ${m.deliveryDateClearedRows}`)
-      if (typeof m?.reportDeliveryDateKeyCount === 'number') parts.push(`ключей даты доставки из CSV: ${m.reportDeliveryDateKeyCount}`)
-      const deliveryDateSample = Array.isArray(m?.reportDeliveryDateSample) ? m.reportDeliveryDateSample : []
-      if (deliveryDateSample.length > 0) parts.push(`пример дат из CSV: ${deliveryDateSample.slice(0, 3).join(', ')}`)
-      if (typeof m?.reportRowsWithStatus === 'number') parts.push(`отчёт: статусов ${m.reportRowsWithStatus}`)
-      if (typeof m?.reportRowsFboWithStatus === 'number') parts.push(`отчёт FBO со статусом: ${m.reportRowsFboWithStatus}`)
-      if (typeof m?.reportRowsFbsWithStatus === 'number') parts.push(`отчёт FBS/rFBS со статусом: ${m.reportRowsFbsWithStatus}`)
-      if (typeof m?.salesRowsWithStatus === 'number') parts.push(`строк продаж со статусом: ${m.salesRowsWithStatus}`)
-      if (typeof m?.salesRowsWithoutStatus === 'number') parts.push(`строк продаж без статуса: ${m.salesRowsWithoutStatus}`)
-      if (typeof m?.finalDeliveredRows === 'number') parts.push(`строк со статусом Доставлен: ${m.finalDeliveredRows}`)
-      if (typeof m?.fboRowsWithStatus === 'number') parts.push(`FBO строк со статусом: ${m.fboRowsWithStatus}`)
-      if (typeof m?.fbsRowsWithStatus === 'number') parts.push(`FBS строк со статусом: ${m.fbsRowsWithStatus}`)
-      if (typeof m?.rfbsRowsWithStatus === 'number') parts.push(`rFBS строк со статусом: ${m.rfbsRowsWithStatus}`)
-      if (typeof m?.statusMatchedRows === 'number') parts.push(`совпало по posting_number (статус): ${m.statusMatchedRows}`)
-      if (typeof m?.statusResolvedRows === 'number') parts.push(`статус применён: ${m.statusResolvedRows}`)
-      if (typeof m?.statusClearedRows === 'number') parts.push(`очищено старых API статусов: ${m.statusClearedRows}`)
-      if (typeof m?.deliveredRowsWithClearedDetails === 'number') parts.push(`доставлен + детали очищены: ${m.deliveredRowsWithClearedDetails}`)
-      if (typeof m?.reportStatusKeyCount === 'number') parts.push(`ключей статуса из CSV: ${m.reportStatusKeyCount}`)
-      const statusSample = Array.isArray(m?.reportStatusSample) ? m.reportStatusSample : []
-      if (statusSample.length > 0) parts.push(`пример статусов из CSV: ${statusSample.slice(0, 5).join(', ')}`)
-      const missing = Array.isArray(m?.trace?.missingShipmentDatePostingNumbers) ? m.trace.missingShipmentDatePostingNumbers : []
-      if (missing.length > 0) parts.push(`без даты отгрузки: ${missing.slice(0, 3).join(', ')}`)
-      const missingDelivery = Array.isArray(m?.missingDeliveryDatePostingNumbers) ? m.missingDeliveryDatePostingNumbers : []
-      if (missingDelivery.length > 0) parts.push(`без даты доставки: ${missingDelivery.slice(0, 5).join(', ')}`)
-      const missingStatus = Array.isArray(m?.missingStatusPostingNumbers) ? m.missingStatusPostingNumbers : []
-      if (missingStatus.length > 0) parts.push(`без статуса: ${missingStatus.slice(0, 5).join(', ')}`)
-      const missingDetails = Array.isArray(m?.trace?.missingDetailPostingNumbers) ? m.trace.missingDetailPostingNumbers : []
-      if (missingDetails.length > 0) parts.push(`без detail: ${missingDetails.slice(0, 3).join(', ')}`)
-      if (typeof m?.reportCode === 'string' && m.reportCode) parts.push(`код отчёта: ${m.reportCode}`)
-      if (typeof m?.fileUrl === 'string' && m.fileUrl) parts.push(`fileUrl: ${m.fileUrl}`)
-      if (m?.traceKind === 'paid_by_customer') {
-        if (typeof m?.totalPostingCount === 'number') parts.push(`отправлений: ${m.totalPostingCount}`)
-        if (typeof m?.totalItemCount === 'number') parts.push(`товарных строк: ${m.totalItemCount}`)
-        if (typeof m?.postingsWithDetailCount === 'number') parts.push(`с detail: ${m.postingsWithDetailCount}`)
-        if (typeof m?.listItemDirectValueCount === 'number') parts.push(`list item: ${m.listItemDirectValueCount}`)
-        if (typeof m?.listFinancialValueCount === 'number') parts.push(`list financial: ${m.listFinancialValueCount}`)
-        if (typeof m?.detailItemDirectValueCount === 'number') parts.push(`detail item: ${m.detailItemDirectValueCount}`)
-        if (typeof m?.detailFinancialValueCount === 'number') parts.push(`detail financial: ${m.detailFinancialValueCount}`)
-        if (typeof m?.detailWithFinancialDataObjectCount === 'number') parts.push(`detail financial_data obj: ${m.detailWithFinancialDataObjectCount}`)
-        if (typeof m?.detailWithFinancialProductsArrayCount === 'number') parts.push(`detail financial_data.products arr: ${m.detailWithFinancialProductsArrayCount}`)
-        if (typeof m?.detailWithNonEmptyFinancialProductsCount === 'number') parts.push(`detail financial products > 0: ${m.detailWithNonEmptyFinancialProductsCount}`)
-        if (typeof m?.reportRowsCount === 'number') parts.push(`report rows: ${m.reportRowsCount}`)
-        if (typeof m?.reportRowsWithPaidByCustomerCount === 'number') parts.push(`report с оплачено покупателем: ${m.reportRowsWithPaidByCustomerCount}`)
-        if (typeof m?.reportMatchedRowsCount === 'number') parts.push(`report matched: ${m.reportMatchedRowsCount}`)
-        if (typeof m?.reportResolvedRowsCount === 'number') parts.push(`report resolved: ${m.reportResolvedRowsCount}`)
-        if (typeof m?.finalRowsCount === 'number') parts.push(`строк продаж: ${m.finalRowsCount}`)
-        if (typeof m?.finalRowsWithPaidByCustomer === 'number') parts.push(`с оплачено покупателем: ${m.finalRowsWithPaidByCustomer}`)
-        if (typeof m?.finalRowsWithoutPaidByCustomer === 'number') parts.push(`без оплачено покупателем: ${m.finalRowsWithoutPaidByCustomer}`)
-        if (typeof m?.fbsRowsWithPaidByCustomer === 'number') parts.push(`FBS заполнено: ${m.fbsRowsWithPaidByCustomer}`)
-        if (typeof m?.fboRowsWithPaidByCustomer === 'number') parts.push(`FBO заполнено: ${m.fboRowsWithPaidByCustomer}`)
-        if (typeof m?.rfbsRowsWithPaidByCustomer === 'number') parts.push(`rFBS заполнено: ${m.rfbsRowsWithPaidByCustomer}`)
-        const missingPaid = Array.isArray(m?.missingPostingNumbers) ? m.missingPostingNumbers : []
-        if (missingPaid.length > 0) parts.push(`пример без значения: ${missingPaid.slice(0, 5).join(', ')}`)
-        const detailShapeSamples = Array.isArray(m?.detailShapeSamples) ? m.detailShapeSamples : []
-        if (detailShapeSamples.length > 0) parts.push(`shape sample: ${detailShapeSamples.slice(0, 3).join(' || ')}`)
-      }
-      return parts.length ? parts.join(', ') : meta
+    if (typeof m?.pages === 'number') {
+      const parts = [`Страниц загружено: ${m.pages}.`]
+      if (typeof m?.infoBatches === 'number') parts.push(`Пакетов деталей: ${m.infoBatches}.`)
+      if (typeof m?.infoFetched === 'number') parts.push(`Расширенных записей: ${m.infoFetched}.`)
+      return parts.join(' ')
     }
-    if (typeof m?.pages === 'number') parts.push(`страниц: ${m.pages}`)
-    if (typeof m?.infoBatches === 'number') parts.push(`батчей: ${m.infoBatches}`)
-    if (typeof m?.infoFetched === 'number') parts.push(`расширено: ${m.infoFetched}`)
-    return parts.length ? parts.join(', ') : meta
   } catch {
     return meta
   }
+
+  return safeItemsCount != null ? `Обработано записей: ${safeItemsCount}.` : '—'
 }
 
 function toSortTimestamp(value?: string | null): number | null {
@@ -294,8 +206,8 @@ function hasExpandableDetails(group: LogGroup): boolean {
 function getMainRowDetails(row: LogRow, traceCount: number): string {
   const base = detailsRu(row.type, row.meta, row.items_count)
   if (!traceCount) return base
-  if (base && base !== '-') return `${base}, деталей синхронизации: ${traceCount}`
-  return `деталей синхронизации: ${traceCount}`
+  if (base && base !== '—') return `${base} Этапов трассировки: ${traceCount}.`
+  return `Этапов трассировки: ${traceCount}.`
 }
 
 function escapeTxtLine(value?: string | null): string {
@@ -317,39 +229,341 @@ function formatFileStamp(value?: string | null): string {
   return `${dd}.${mm}.${yy} ${hh}：${min}：${ss}`
 }
 
-function buildSyncReportText(group: LogGroup): string {
-  const { row, children } = group
+function parseMeta(meta?: string | null): TraceMeta {
+  if (!meta) return {}
+  try {
+    const parsed = JSON.parse(meta)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function classifyTraceCategory(meta: TraceMeta): TraceCategoryKey {
+  const stage = normalizeText(meta?.stage)
+  const traceKind = normalizeText(meta?.traceKind)
+  if (traceKind === 'paid_by_customer' || stage.includes('paid_by_customer')) return 'paid'
+  if (stage.includes('status.rows.built')) return 'status'
+  if (stage.includes('report.') || stage.endsWith('.rows.built')) return 'delivery'
+  if (stage.includes('webhook') || stage.includes('push.') || stage.includes('api.refresh') || stage.includes('raw-cache.rebuild')) return 'shipment'
+  return 'other'
+}
+
+function formatStrategyLabel(strategy: unknown): string {
+  const text = normalizeText(strategy)
+  if (!text) return ''
+  if (text === 'chunked-1d') return 'По дням'
+  if (text === 'chunked-7d') return 'По неделям'
+  return 'Один отчёт'
+}
+
+function createSentence(parts: Array<string | null | undefined>): string {
+  const cleaned = parts.map((part) => normalizeText(part)).filter(Boolean)
+  if (!cleaned.length) return ''
+  return cleaned.join(' ')
+}
+
+function buildTraceStepTitle(meta: TraceMeta): string {
+  const stage = normalizeText(meta?.stage)
+  const map: Record<string, string> = {
+    'api.refresh.begin': 'Запуск обновления',
+    'api.refresh.list.loaded': 'Список отправлений загружен',
+    'api.refresh.details.loaded': 'Детали отправлений загружены',
+    'api.refresh.compat.loaded': 'Совместимые детали проверены',
+    'api.refresh.report.begin': 'Формирование отчёта запущено',
+    'api.refresh.report.created': 'Отчёт создан',
+    'api.refresh.report.strategy': 'Стратегия формирования выбрана',
+    'api.refresh.report.polled': 'Статус отчёта получен',
+    'api.refresh.report.downloaded': 'Файл отчёта скачан',
+    'api.refresh.report.parsed': 'CSV распарсен',
+    'api.refresh.report.partial': 'Отчёт собран частично',
+    'api.refresh.report.persisted': 'Строки отчёта сохранены',
+    'api.refresh.report.empty': 'Отчёт не вернул даты доставки',
+    'api.refresh.report.error': 'Ошибка формирования отчёта',
+    'api.refresh.snapshot.persisted': 'Локальная база обновлена',
+    'api.refresh.rows.built': 'Дата доставки применена к строкам продаж',
+    'api.refresh.status.rows.built': 'Статус применён к строкам продаж',
+    'api.refresh.paid_by_customer.trace': 'Проверка поля «Оплачено покупателем» выполнена',
+    'api.refresh.error': 'Ошибка обновления',
+    'raw-cache.rebuild.begin': 'Пересборка из raw-cache запущена',
+    'raw-cache.rebuild.snapshot.persisted': 'Локальная база обновлена из raw-cache',
+    'raw-cache.rebuild.rows.built': 'Дата доставки пересобрана из raw-cache',
+    'raw-cache.rebuild.status.rows.built': 'Статус пересобран из raw-cache',
+    'raw-cache.rebuild.paid_by_customer.trace': 'Проверка поля «Оплачено покупателем» выполнена из raw-cache',
+    'raw-cache.rebuild.error': 'Ошибка пересборки из raw-cache',
+    'push.ingest.received': 'Push получен',
+    'push.ingest.persisted': 'Push сохранён в локальной базе',
+    'push.ingest.error': 'Ошибка обработки push',
+    'webhook.server.status': 'Webhook-контур активен',
+    'webhook.probe.received': 'Проверочный ping webhook получен',
+  }
+  return map[stage] ?? normalizeText(meta?.stageRu) || 'Шаг синхронизации'
+}
+
+function buildTraceStepSummary(meta: TraceMeta): string {
+  const stage = normalizeText(meta?.stage)
+  if (stage === 'api.refresh.list.loaded') {
+    return createSentence([
+      typeof meta?.fboPostingCount === 'number' ? `Отправлений FBO: ${meta.fboPostingCount}.` : '',
+      Array.isArray(meta?.samplePostingNumbers) && meta.samplePostingNumbers.length ? `Пример: ${meta.samplePostingNumbers.slice(0, 3).join(', ')}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.details.loaded') {
+    return createSentence([
+      typeof meta?.mergedFboDetailCount === 'number' ? `Деталей FBO: ${meta.mergedFboDetailCount}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.compat.loaded') {
+    return createSentence([
+      typeof meta?.compatLoadedCount === 'number' ? `Дополнительных compat-деталей: ${meta.compatLoadedCount}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.report.created') {
+    return createSentence([
+      normalizeText(meta?.reportCode) ? `Код отчёта: ${meta.reportCode}.` : '',
+      formatStrategyLabel(meta?.reportStrategy) ? `Режим: ${formatStrategyLabel(meta?.reportStrategy)}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.report.parsed' || stage === 'api.refresh.report.persisted') {
+    return createSentence([
+      typeof meta?.reportRowsCount === 'number' ? `Строк отчёта: ${meta.reportRowsCount}.` : '',
+      typeof meta?.reportRowsWithDeliveryDate === 'number' ? `Дат доставки найдено: ${meta.reportRowsWithDeliveryDate}.` : '',
+      typeof meta?.reportRowsWithStatus === 'number' ? `Статусов найдено: ${meta.reportRowsWithStatus}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.rows.built' || stage === 'raw-cache.rebuild.rows.built') {
+    return createSentence([
+      typeof meta?.deliveryDateResolvedRows === 'number' ? `Дат доставки применено: ${meta.deliveryDateResolvedRows}.` : '',
+      typeof meta?.salesRowsWithoutDeliveryDate === 'number' ? `Строк без даты доставки: ${meta.salesRowsWithoutDeliveryDate}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.status.rows.built' || stage === 'raw-cache.rebuild.status.rows.built') {
+    return createSentence([
+      typeof meta?.statusResolvedRows === 'number' ? `Статусов применено: ${meta.statusResolvedRows}.` : '',
+      typeof meta?.finalDeliveredRows === 'number' ? `Строк со статусом «Доставлен»: ${meta.finalDeliveredRows}.` : '',
+      typeof meta?.deliveredDetailsClearedRows === 'number' ? `Детали очищены у ${meta.deliveredDetailsClearedRows} строк.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.paid_by_customer.trace' || stage === 'raw-cache.rebuild.paid_by_customer.trace') {
+    return createSentence([
+      typeof meta?.finalRowsWithPaidByCustomer === 'number' ? `Заполнено строк: ${meta.finalRowsWithPaidByCustomer}.` : '',
+      typeof meta?.finalRowsWithoutPaidByCustomer === 'number' ? `Строк без значения: ${meta.finalRowsWithoutPaidByCustomer}.` : '',
+    ])
+  }
+  if (stage === 'api.refresh.snapshot.persisted' || stage === 'raw-cache.rebuild.snapshot.persisted') {
+    return createSentence([
+      typeof meta?.persisted?.shipmentDateCount === 'number' ? `Дат отгрузки в базе: ${meta.persisted.shipmentDateCount}.` : '',
+      typeof meta?.persisted?.deliveryDateCount === 'number' ? `Дат доставки в базе: ${meta.persisted.deliveryDateCount}.` : '',
+    ])
+  }
+  if (stage === 'webhook.server.status') {
+    return createSentence([
+      normalizeText(meta?.baseUrl) ? `Базовый адрес: ${meta.baseUrl}.` : '',
+      normalizeText(meta?.webhookUrlLocal) ? `Webhook: ${meta.webhookUrlLocal}.` : '',
+    ])
+  }
+  if (stage === 'push.ingest.received' || stage === 'push.ingest.persisted') {
+    return createSentence([
+      typeof meta?.incomingEventsCount === 'number' ? `Событий в пакете: ${meta.incomingEventsCount}.` : '',
+      typeof meta?.acceptedPushEventCount === 'number' ? `Принято событий: ${meta.acceptedPushEventCount}.` : '',
+    ])
+  }
+  if (normalizeText(meta?.errorMessage)) {
+    return `Сообщение: ${normalizeText(meta.errorMessage)}.`
+  }
+  return ''
+}
+
+function uniqueSample(values: unknown, limit = 5): string[] {
+  const arr = Array.isArray(values) ? values : []
+  const out: string[] = []
+  for (const value of arr) {
+    const text = normalizeText(value)
+    if (!text || out.includes(text)) continue
+    out.push(text)
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+function pushMetric(metrics: TraceMetric[], label: string, value: unknown) {
+  const text = normalizeText(value)
+  if (!text) return
+  metrics.push({ label, value: text })
+}
+
+function buildSectionMetrics(key: TraceCategoryKey, merged: TraceMeta): TraceMetric[] {
+  const metrics: TraceMetric[] = []
+  if (key === 'shipment') {
+    pushMetric(metrics, 'Источник', 'API Ozon')
+    if (typeof merged?.fboPostingCount === 'number') pushMetric(metrics, 'Отправлений FBO', merged.fboPostingCount)
+    if (typeof merged?.mergedFboDetailCount === 'number') pushMetric(metrics, 'Деталей FBO', merged.mergedFboDetailCount)
+    if (typeof merged?.trace?.postingsWithResolvedShipmentDate === 'number') pushMetric(metrics, 'Дат отгрузки найдено', merged.trace.postingsWithResolvedShipmentDate)
+    if (typeof merged?.persisted?.shipmentDateCount === 'number') pushMetric(metrics, 'Дат отгрузки записано в БД', merged.persisted.shipmentDateCount)
+    if (typeof merged?.persisted?.shipmentTransferEventCount === 'number') pushMetric(metrics, 'Событий отгрузки записано', merged.persisted.shipmentTransferEventCount)
+    return metrics
+  }
+  if (key === 'delivery') {
+    pushMetric(metrics, 'Источник', 'Отчёт postings CSV')
+    pushMetric(metrics, 'Режим формирования', formatStrategyLabel(merged?.reportStrategy))
+    if (typeof merged?.reportRowsCount === 'number') pushMetric(metrics, 'Строк в отчёте', merged.reportRowsCount)
+    if (typeof merged?.reportRowsWithDeliveryDate === 'number') pushMetric(metrics, 'Строк с датой доставки', merged.reportRowsWithDeliveryDate)
+    if (typeof merged?.deliveryDateMatchedRows === 'number') pushMetric(metrics, 'Совпало по posting_number', merged.deliveryDateMatchedRows)
+    if (typeof merged?.deliveryDateResolvedRows === 'number') pushMetric(metrics, 'Дат доставки применено', merged.deliveryDateResolvedRows)
+    if (typeof merged?.salesRowsWithoutDeliveryDate === 'number') pushMetric(metrics, 'Строк без даты доставки', merged.salesRowsWithoutDeliveryDate)
+    if (normalizeText(merged?.reportCode)) pushMetric(metrics, 'Код отчёта', merged.reportCode)
+    return metrics
+  }
+  if (key === 'status') {
+    pushMetric(metrics, 'Источник', 'Отчёт postings CSV')
+    if (typeof merged?.reportRowsWithStatus === 'number') pushMetric(metrics, 'Строк со статусом в отчёте', merged.reportRowsWithStatus)
+    if (typeof merged?.statusMatchedRows === 'number') pushMetric(metrics, 'Совпало по posting_number', merged.statusMatchedRows)
+    if (typeof merged?.statusResolvedRows === 'number') pushMetric(metrics, 'Статусов применено', merged.statusResolvedRows)
+    if (typeof merged?.salesRowsWithoutStatus === 'number') pushMetric(metrics, 'Строк без статуса', merged.salesRowsWithoutStatus)
+    if (typeof merged?.finalDeliveredRows === 'number') pushMetric(metrics, 'Строк со статусом «Доставлен»', merged.finalDeliveredRows)
+    if (typeof merged?.deliveredDetailsClearedRows === 'number') pushMetric(metrics, 'Строк, где очищены детали', merged.deliveredDetailsClearedRows)
+    return metrics
+  }
+  if (key === 'paid') {
+    pushMetric(metrics, 'Источник', 'API Ozon и отчёт postings')
+    if (typeof merged?.finalRowsCount === 'number') pushMetric(metrics, 'Строк продаж', merged.finalRowsCount)
+    if (typeof merged?.finalRowsWithPaidByCustomer === 'number') pushMetric(metrics, 'Строк с заполненной оплатой', merged.finalRowsWithPaidByCustomer)
+    if (typeof merged?.finalRowsWithoutPaidByCustomer === 'number') pushMetric(metrics, 'Строк без значения', merged.finalRowsWithoutPaidByCustomer)
+    if (typeof merged?.reportResolvedRowsCount === 'number') pushMetric(metrics, 'Строк подтверждено отчётом', merged.reportResolvedRowsCount)
+    return metrics
+  }
+  return metrics
+}
+
+function buildSectionNotes(key: TraceCategoryKey, merged: TraceMeta): string[] {
+  const notes: string[] = []
+  if (key === 'shipment') {
+    const sample = uniqueSample(merged?.missingShipmentDateSample, 4)
+    if (sample.length) notes.push(`Без даты отгрузки: ${sample.join(', ')}.`)
+  }
+  if (key === 'delivery') {
+    const sample = uniqueSample(merged?.missingDeliveryDatePostingNumbers, 4)
+    if (sample.length) notes.push(`Без даты доставки: ${sample.join(', ')}.`)
+    const dateSample = uniqueSample(merged?.reportDeliveryDateSample, 3)
+    if (dateSample.length) notes.push(`Примеры дат из отчёта: ${dateSample.join(', ')}.`)
+  }
+  if (key === 'status') {
+    const sample = uniqueSample(merged?.reportStatusSample, 5)
+    if (sample.length) notes.push(`Примеры статусов из отчёта: ${sample.join(', ')}.`)
+    const missing = uniqueSample(merged?.missingStatusPostingNumbers, 4)
+    if (missing.length) notes.push(`Без статуса: ${missing.join(', ')}.`)
+  }
+  return notes
+}
+
+function getSectionTitle(key: TraceCategoryKey): string {
+  if (key === 'shipment') return 'FBO: дата отгрузки'
+  if (key === 'delivery') return 'Продажи: дата доставки'
+  if (key === 'status') return 'Продажи: статус'
+  if (key === 'paid') return 'Продажи: оплачено покупателем'
+  return 'Прочая трассировка'
+}
+
+function getSectionIntro(key: TraceCategoryKey): string {
+  if (key === 'shipment') return 'Показывает, как загружались отправления FBO и как дата отгрузки попала в локальную базу.'
+  if (key === 'delivery') return 'Показывает путь даты доставки: от формирования postings CSV до применения в строки продаж.'
+  if (key === 'status') return 'Показывает путь статуса: от postings CSV до применения в строки продаж и очистки деталей для «Доставлен».'
+  if (key === 'paid') return 'Показывает, как собиралось поле «Оплачено покупателем» и сколько строк было заполнено.'
+  return 'Служебная трассировка.'
+}
+
+function buildTraceSections(children: LogRow[]): TraceSection[] {
+  const events: TraceEvent[] = children.map((child) => {
+    const meta = parseMeta(child.meta)
+    return {
+      row: child,
+      meta,
+      category: classifyTraceCategory(meta),
+      title: buildTraceStepTitle(meta),
+      summary: buildTraceStepSummary(meta),
+    }
+  })
+
+  const byKey = new Map<TraceCategoryKey, TraceEvent[]>()
+  for (const event of events) {
+    const bucket = byKey.get(event.category) ?? []
+    bucket.push(event)
+    byKey.set(event.category, bucket)
+  }
+
+  return Array.from(byKey.entries())
+    .sort((a, b) => TRACE_SECTION_ORDER[a[0]] - TRACE_SECTION_ORDER[b[0]])
+    .map(([key, sectionEvents]) => {
+      const merged = sectionEvents.reduce<TraceMeta>((acc, event) => ({ ...acc, ...event.meta }), {})
+      const errors = sectionEvents
+        .map((event) => normalizeText(event.row.error_message))
+        .filter(Boolean)
+      const explicitTraceError = normalizeText(merged?.reportBuildError)
+      if (explicitTraceError) errors.push(explicitTraceError)
+      return {
+        key,
+        title: getSectionTitle(key),
+        intro: getSectionIntro(key),
+        events: sectionEvents,
+        metrics: buildSectionMetrics(key, merged),
+        notes: buildSectionNotes(key, merged),
+        errors: Array.from(new Set(errors)),
+      }
+    })
+}
+
+function buildSyncReportText(group: LogGroup, visibleId: number): string {
+  const sections = buildTraceSections(group.children)
+  const childDisplayIdMap = new Map(group.children.map((child, index) => [child.id, `${visibleId}/${index + 1}`]))
   const lines: string[] = [
     'Синхронизация',
     '',
-    `ID: ${row.id}`,
-    `Статус: ${statusRu(row.status)}`,
-    `Старт: ${fmtDt('started_at', row.started_at)}`,
-    `Финиш: ${fmtDt('finished_at', row.finished_at)}`,
-    `Детали: ${getMainRowDetails(row, children.length)}`,
-    `Ошибка: ${row.error_message ?? '-'}`,
+    `ID: ${visibleId}`,
+    `Статус: ${statusRu(group.row.status)}`,
+    `Старт: ${fmtDt('started_at', group.row.started_at)}`,
+    `Финиш: ${fmtDt('finished_at', group.row.finished_at)}`,
+    `Сводка: ${getMainRowDetails(group.row, group.children.length)}`,
+    `Ошибка: ${group.row.error_message ?? '-'}`,
   ]
 
-  if (row.error_details) {
+  if (group.row.error_details) {
     lines.push('')
     lines.push('Технические детали ошибки:')
-    lines.push(escapeTxtLine(row.error_details) || '-')
+    lines.push(escapeTxtLine(group.row.error_details) || '-')
   }
 
   lines.push('')
-  lines.push('Детали синхронизации:')
+  lines.push('Блоки трассировки:')
 
-  if (children.length === 0) {
-    lines.push('— Нет вложенных трассировок.')
+  if (!sections.length) {
+    lines.push('— Дополнительных блоков трассировки нет.')
   } else {
-    for (const child of children) {
+    for (const section of sections) {
       lines.push('')
-      lines.push(`[${fmtDt('started_at', child.started_at)}] ${statusRu(child.status)}`)
-      lines.push(`ID: ${child.id}`)
-      lines.push(`Трассировка: ${detailsRu(child.type, child.meta, child.items_count)}`)
-      lines.push(`Ошибка: ${child.error_message ?? '-'}`)
-      if (child.error_details) {
-        lines.push(`Технические детали: ${escapeTxtLine(child.error_details) || '-'}`)
+      lines.push(section.title)
+      lines.push(section.intro)
+      if (section.metrics.length) {
+        lines.push('Ключевые показатели:')
+        for (const metric of section.metrics) {
+          lines.push(`- ${metric.label}: ${metric.value}`)
+        }
+      }
+      if (section.notes.length) {
+        lines.push('Комментарий:')
+        for (const note of section.notes) lines.push(`- ${note}`)
+      }
+      if (section.errors.length) {
+        lines.push('Ошибки:')
+        for (const error of section.errors) lines.push(`- ${error}`)
+      }
+      if (section.events.length) {
+        lines.push('Ход обработки:')
+        for (const event of section.events) {
+          const childId = childDisplayIdMap.get(event.row.id) ?? `${visibleId}/?`
+          const eventLine = [`[${childId}]`, `[${fmtDt('started_at', event.row.started_at)}]`, `[${statusRu(event.row.status)}]`, event.title].join(' ')
+          lines.push(`- ${eventLine}`)
+          if (event.summary) lines.push(`  ${event.summary}`)
+        }
       }
     }
   }
@@ -357,13 +571,14 @@ function buildSyncReportText(group: LogGroup): string {
   return `${lines.join('\n').trim()}\n`
 }
 
-async function downloadSyncReport(group: LogGroup): Promise<void> {
+async function downloadSyncReport(group: LogGroup, visibleId: number): Promise<string> {
   const fileName = `Синхронизация ${formatFileStamp(group.row.started_at)}.txt`
-  const content = buildSyncReportText(group)
+  const content = buildSyncReportText(group, visibleId)
   const resp = await window.api.saveLogReportToDesktop(fileName, content)
   if (!resp?.ok) {
     throw new Error(resp?.error || 'Не удалось сохранить отчёт на Рабочий стол')
   }
+  return normalizeText(resp?.path) || fileName
 }
 
 const LOG_COLUMNS: readonly LogColDef[] = [
@@ -372,7 +587,7 @@ const LOG_COLUMNS: readonly LogColDef[] = [
   { id: 'status', title: 'Статус', getSortValue: (row) => statusRu(row.status) },
   { id: 'started_at', title: 'Старт', getSortValue: (row) => toSortTimestamp(row.started_at) ?? '' },
   { id: 'finished_at', title: 'Финиш', getSortValue: (row) => toSortTimestamp(row.finished_at) ?? '' },
-  { id: 'details', title: 'Детали', getSortValue: (row) => detailsRu(row.type, row.meta, row.items_count) },
+  { id: 'details', title: 'Сводка', getSortValue: (row) => detailsRu(row.type, row.meta, row.items_count) },
   { id: 'error_message', title: 'Ошибка' },
 ]
 
@@ -380,20 +595,25 @@ export default function LogsPage() {
   const [logs, setLogs] = useState<LogRow[]>([])
   const [sortState, setSortState] = useState<LogSortState>(null)
   const [expandedIds, setExpandedIds] = useState<number[]>([])
+  const [downloadStateByRowId, setDownloadStateByRowId] = useState<Record<number, DownloadState>>({})
 
   async function load() {
     const resp = await window.api.getSyncLog()
     setLogs(resp.logs as any)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { void load() }, [])
   useEffect(() => {
-    const onUpdated = () => load()
+    const onUpdated = () => { void load() }
     window.addEventListener('ozon:logs-updated', onUpdated)
     return () => window.removeEventListener('ozon:logs-updated', onUpdated)
   }, [])
 
   const groups = useMemo(() => buildLogGroups(logs), [logs])
+  const visibleIdByRowId = useMemo(
+    () => new Map(groups.map((group, index) => [group.row.id, index + 1])),
+    [groups],
+  )
   const sortedTopLevelRows = useMemo(
     () => sortTableRows(groups.map((group) => group.row), LOG_COLUMNS, sortState),
     [groups, sortState],
@@ -421,13 +641,13 @@ export default function LogsPage() {
   }
 
   function handleTextAction(event: React.KeyboardEvent<HTMLElement>, action: () => void) {
-  if (event.key === 'Enter' || event.key === ' ') {
-    event.preventDefault()
-    action()
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      action()
+    }
   }
-}
 
-function renderSortHeader(label: string, colId: LogSortCol) {
+  function renderSortHeader(label: string, colId: LogSortCol) {
     const isSorted = sortState?.colId === colId
     return (
       <button
@@ -440,6 +660,32 @@ function renderSortHeader(label: string, colId: LogSortCol) {
         <span aria-hidden="true" style={{ flex: '0 0 auto', opacity: isSorted ? 1 : 0.4 }}>{isSorted ? (sortState?.dir === 'asc' ? '▲' : '▼') : '↕'}</span>
       </button>
     )
+  }
+
+  function handleDownload(group: LogGroup) {
+    const visibleId = visibleIdByRowId.get(group.row.id) ?? 0
+    setDownloadStateByRowId((prev) => ({ ...prev, [group.row.id]: 'saving' }))
+    void downloadSyncReport(group, visibleId)
+      .then(() => {
+        setDownloadStateByRowId((prev) => ({ ...prev, [group.row.id]: 'done' }))
+        window.setTimeout(() => {
+          setDownloadStateByRowId((prev) => ({ ...prev, [group.row.id]: 'idle' }))
+        }, 2200)
+      })
+      .catch((error: any) => {
+        setDownloadStateByRowId((prev) => ({ ...prev, [group.row.id]: 'error' }))
+        window.setTimeout(() => {
+          setDownloadStateByRowId((prev) => ({ ...prev, [group.row.id]: 'idle' }))
+        }, 2200)
+        window.alert(error?.message ?? 'Не удалось сохранить отчёт на Рабочий стол')
+      })
+  }
+
+  function getDownloadLabel(state: DownloadState): string {
+    if (state === 'saving') return 'Скачиваем…'
+    if (state === 'done') return 'Сохранено'
+    if (state === 'error') return 'Ошибка'
+    return 'Скачать отчёт'
   }
 
   return (
@@ -466,11 +712,19 @@ function renderSortHeader(label: string, colId: LogSortCol) {
                   const expandable = hasExpandableDetails(group)
                   const expanded = expandedIds.includes(row.id)
                   const mainDetails = getMainRowDetails(row, children.length)
+                  const visibleId = visibleIdByRowId.get(row.id) ?? 0
+                  const childDisplayIdMap = new Map(children.map((child, index) => [child.id, `${visibleId}/${index + 1}`]))
+                  const traceSections = buildTraceSections(children)
+                  const downloadState = downloadStateByRowId[row.id] ?? 'idle'
 
                   return (
                     <React.Fragment key={row.id}>
                       <tr className={expandable ? 'logMainRow logMainRowExpandable' : 'logMainRow'}>
-                        <td><div className="logCellWrap" title={String(row.id)}>{row.id}</div></td>
+                        <td>
+                          <div className="logCellWrap" title={`Видимый ID: ${visibleId}. Системный ID: ${row.id}.`}>
+                            {visibleId}
+                          </div>
+                        </td>
                         <td>
                           <div className="logTypeCell">
                             {expandable ? (
@@ -483,7 +737,6 @@ function renderSortHeader(label: string, colId: LogSortCol) {
                                 aria-expanded={expanded}
                                 aria-label={expanded ? 'Свернуть детали синхронизации' : 'Показать детали синхронизации'}
                                 title={expanded ? 'Свернуть детали синхронизации' : 'Показать детали синхронизации'}
-                                style={{ cursor: 'pointer', color: 'rgba(10,80,180,.96)', textDecoration: 'underline', textUnderlineOffset: '2px' }}
                               >
                                 {typeRu(row.type)}
                               </span>
@@ -504,66 +757,104 @@ function renderSortHeader(label: string, colId: LogSortCol) {
                           <td colSpan={7}>
                             <div className="logDetailsPanel">
                               <div className="logDetailsToolbar">
-                                <div className="logDetailsTitle">Детали синхронизации</div>
-                                <span
-                                  role="button"
-                                  tabIndex={0}
-                                  className="logActionText"
-                                  onClick={() => {
-                                    void downloadSyncReport(group).catch((error: any) => {
-                                      window.alert(error?.message ?? 'Не удалось сохранить отчёт на Рабочий стол')
-                                    })
-                                  }}
-                                  onKeyDown={(event) => handleTextAction(event, () => {
-                                    void downloadSyncReport(group).catch((error: any) => {
-                                      window.alert(error?.message ?? 'Не удалось сохранить отчёт на Рабочий стол')
-                                    })
-                                  })}
+                                <div>
+                                  <div className="logDetailsTitle">Детали синхронизации</div>
+                                  <div className="logDetailsSubtitle">ID синхронизации: {visibleId}. Здесь собраны только ключевые шаги и показатели.</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  className={`logActionButton is-${downloadState}`}
+                                  onClick={() => handleDownload(group)}
                                   aria-label="Скачать отчёт по синхронизации"
                                   title="Скачать отчёт по синхронизации"
                                 >
-                                  Скачать отчёт
-                                </span>
+                                  <span className="logActionButtonIcon" aria-hidden="true">{downloadState === 'done' ? '✓' : '↓'}</span>
+                                  <span>{getDownloadLabel(downloadState)}</span>
+                                </button>
                               </div>
 
                               <div className="logDetailsSummary">
+                                <div><span>ID:</span> {visibleId}</div>
                                 <div><span>Старт:</span> {fmtDt('started_at', row.started_at)}</div>
                                 <div><span>Финиш:</span> {fmtDt('finished_at', row.finished_at)}</div>
                                 <div><span>Статус:</span> {statusRu(row.status)}</div>
-                                <div><span>Трассировок:</span> {children.length}</div>
+                                <div><span>Блоков:</span> {traceSections.length}</div>
+                                <div><span>Шагов:</span> {children.length}</div>
+                                <div><span>Системный ID:</span> {row.id}</div>
                               </div>
 
                               {row.error_details && (
-                                <div className="logTraceItem" style={{ marginBottom: 10 }}>
-                                  <div className="logTraceMeta">
-                                    <span className="logTraceId">Технические детали ошибки</span>
+                                <div className="logSection logSectionError">
+                                  <div className="logSectionHeader">
+                                    <div>
+                                      <div className="logSectionTitle">Технические детали ошибки</div>
+                                      <div className="logSectionIntro">Этот блок показывается только если у самой синхронизации сохранены технические детали ошибки.</div>
+                                    </div>
                                   </div>
-                                  <div className="logTraceText">{escapeTxtLine(row.error_details) || '-'}</div>
+                                  <div className="logSectionErrorText">{escapeTxtLine(row.error_details) || '-'}</div>
                                 </div>
                               )}
 
-                              {children.length > 0 ? (
-                                <div className="logTraceList">
-                                  {children.map((child) => {
-                                    const childDetails = detailsRu(child.type, child.meta, child.items_count)
-                                    return (
-                                      <div key={child.id} className="logTraceItem">
-                                        <div className="logTraceMeta">
-                                          <span className="logTraceTime">{fmtDt('started_at', child.started_at)}</span>
-                                          <span className={`statusText ${child.status ?? ''}`.trim()}>{statusRu(child.status)}</span>
-                                          <span className="logTraceId">ID {child.id}</span>
+                              {traceSections.length > 0 ? (
+                                <div className="logSectionList">
+                                  {traceSections.map((section) => (
+                                    <div key={section.key} className="logSection">
+                                      <div className="logSectionHeader">
+                                        <div>
+                                          <div className="logSectionTitle">{section.title}</div>
+                                          <div className="logSectionIntro">{section.intro}</div>
                                         </div>
-                                        <div className="logTraceText">{childDetails}</div>
-                                        {child.error_message && child.error_message !== '-' && (
-                                          <div className="logTraceError">Ошибка: {child.error_message}</div>
-                                        )}
                                       </div>
-                                    )
-                                  })}
+
+                                      {section.metrics.length > 0 && (
+                                        <div className="logSectionMetrics">
+                                          {section.metrics.map((metric) => (
+                                            <div key={`${section.key}-${metric.label}`} className="logMetricItem">
+                                              <span className="logMetricLabel">{metric.label}</span>
+                                              <span className="logMetricValue">{metric.value}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      {section.notes.length > 0 && (
+                                        <div className="logSectionNotes">
+                                          {section.notes.map((note, index) => (
+                                            <div key={`${section.key}-note-${index}`} className="logSectionNote">{note}</div>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      {section.errors.length > 0 && (
+                                        <div className="logSectionErrors">
+                                          {section.errors.map((error, index) => (
+                                            <div key={`${section.key}-error-${index}`} className="logSectionErrorText">Ошибка: {error}</div>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      <div className="logSectionSteps">
+                                        {section.events.map((event) => {
+                                          const eventId = childDisplayIdMap.get(event.row.id) ?? `${visibleId}/?`
+                                          return (
+                                            <div key={event.row.id} className="logStepItem">
+                                              <div className="logStepMeta">
+                                                <span className="logStepId">{eventId}</span>
+                                                <span className="logStepTime">{fmtDt('started_at', event.row.started_at)}</span>
+                                                <span className={`statusText ${event.row.status ?? ''}`.trim()}>{statusRu(event.row.status)}</span>
+                                              </div>
+                                              <div className="logStepTitle">{event.title}</div>
+                                              {event.summary && <div className="logStepSummary">{event.summary}</div>}
+                                            </div>
+                                          )
+                                        })}
+                                      </div>
+                                    </div>
+                                  ))}
                                 </div>
                               ) : (
-                                <div className="logTraceItem">
-                                  <div className="logTraceText">Вложенных трассировок для этой синхронизации нет.</div>
+                                <div className="logSection">
+                                  <div className="logSectionIntro">Вложенных блоков трассировки для этой синхронизации нет.</div>
                                 </div>
                               )}
                             </div>
