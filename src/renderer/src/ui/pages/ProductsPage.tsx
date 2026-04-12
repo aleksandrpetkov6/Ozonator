@@ -830,13 +830,13 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    if (colId === 'offer_id' && dataset === 'products') return `${c.title} ${totalRows}`
    if (colId === 'price' && dataset === 'sales') {
      return salesItemCurrencyHeaderSuffix
-       ? `Ваша цена в (${salesItemCurrencyHeaderSuffix})`
-       : 'Ваша цена в (код валюты товара)'
+       ? `Ваша цена в ${salesItemCurrencyHeaderSuffix}`
+       : 'Ваша цена в коде валюты товара'
    }
    if (colId === 'customer_currency_in_item_currency' && dataset === 'sales') {
      return salesItemCurrencyHeaderSuffix
-       ? `Оплачено покупателем в (${salesItemCurrencyHeaderSuffix})`
-       : 'Оплачено покупателем в (валюта товара)'
+       ? `Оплачено покупателем в ${salesItemCurrencyHeaderSuffix}`
+       : 'Оплачено покупателем в валюте товара'
    }
    return c.title
  }, [dataset, salesItemCurrencyHeaderSuffix, totalRows])
