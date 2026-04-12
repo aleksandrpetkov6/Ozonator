@@ -47,6 +47,12 @@ export type ApiRawCacheEntryRow = {
   store_client_id?: string | null
 }
 
+export type ApiRawCacheStoredRow = ApiRawCacheEntryRow & {
+  request_truncated: number
+  response_truncated: number
+  response_body_len: number | null
+}
+
 const GRID_COLS_KEY_PREFIX = 'grid_cols_layout:'
 
 function dbPath() {
