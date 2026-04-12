@@ -809,6 +809,31 @@ function buildDeliveryModelValue(posting: any, detailPosting: any, endpoint: str
   )
 }
 
+function resolveSalesShipmentOriginValue(detailPosting: any, posting: any, endpoint: string, deliveryModelRaw: unknown): string {
+  const deliveryModel = normalizeDeliveryModelLabel(deliveryModelRaw) || buildDeliveryModelValue(posting, detailPosting, endpoint)
+  if (deliveryModel === 'FBO') {
+    return normalizeTextValue(pickFirstPresentFromSources([
+      'financial_data.cluster_from',
+      'result.financial_data.cluster_from',
+      'cluster_from',
+      'result.cluster_from',
+    ], detailPosting, posting))
+  }
+  if (deliveryModel === 'FBS' || deliveryModel === 'rFBS') {
+    return normalizeTextValue(pickFirstPresentFromSources([
+      'delivery_method.warehouse',
+      'result.delivery_method.warehouse',
+      'analytics_data.warehouse',
+      'result.analytics_data.warehouse',
+      'analytics_data.warehouse_name',
+      'result.analytics_data.warehouse_name',
+      'warehouse_name',
+      'warehouse',
+    ], detailPosting, posting))
+  }
+  return ''
+}
+
 function buildSalesStatusDetailsValue(posting: any, endpoint: string, secondaryPosting: any = null): string {
   const parts: string[] = []
   if (normalizeSalesEndpointName(endpoint) === 'FBO') {
@@ -1138,6 +1163,7 @@ export function normalizeSalesRows(
       const deliveredAt = resolvePostingDeliveryDate(detailPosting, posting)
       const deliveryCluster = normalizeTextValue(pickFirstPresentFromSources(['financial_data.cluster_to', 'result.financial_data.cluster_to', 'cluster_to', 'result.cluster_to'], detailPosting, posting))
       const deliverySchema = buildDeliveryModelValue(posting, detailPosting, envelope.endpoint)
+      const shipmentOrigin = resolveSalesShipmentOriginValue(detailPosting, posting, envelope.endpoint, deliverySchema)
       if (!postingNumber) continue
       for (const item of items) {
         const sku = normalizeTextValue(pickFirstPresent(item, ['sku', 'sku_id', 'id']))
@@ -1153,7 +1179,7 @@ export function normalizeSalesRows(
           posting_number: postingNumber,
           related_postings: related || '',
           shipment_date: shipmentDate || '',
-          shipment_origin: '',
+          shipment_origin: shipmentOrigin || '',
           status: status || '',
           status_details: statusDetails || '',
           carrier_status_details: carrierStatusDetails || '',

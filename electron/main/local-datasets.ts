@@ -856,7 +856,7 @@ function applySalesShipmentReportDates(rows: any[], reportRows: SalesShipmentRep
     }
 
     const prevShipmentOrigin = normalizeTextValue(row?.shipment_origin)
-    const nextShipmentOrigin = hasShipmentOriginKey ? (reportShipmentOrigin || '') : (safeReportRows.length > 0 ? '' : prevShipmentOrigin)
+    const nextShipmentOrigin = hasShipmentOriginKey ? (reportShipmentOrigin || '') : prevShipmentOrigin
     if (prevShipmentOrigin !== nextShipmentOrigin) {
       nextRow.shipment_origin = nextShipmentOrigin
       changed = true
