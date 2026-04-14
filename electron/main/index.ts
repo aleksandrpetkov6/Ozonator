@@ -7,7 +7,7 @@ import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } 
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
 import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, ingestOzonFboPushPayload, logFboShipmentTrace, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
-import { getPersistentRootDir } from './storage/paths'
+import { getLifecycleMarkerRootDir, getPersistentRootDir } from './storage/paths'
 import { startLocalHttpServer, type LocalHttpServerHandle } from './local-http-server'
 let mainWindow: BrowserWindow | null = null
 let localHttpServer: LocalHttpServerHandle | null = null
@@ -106,7 +106,7 @@ function mergeLocalServerWebhookDiag(patch: Partial<LocalServerWebhookDiag>) {
 
 function getInstallerMarkerDir() {
 try {
-const dir = getPersistentRootDir()
+const dir = getLifecycleMarkerRootDir()
 mkdirSync(dir, { recursive: true })
 return dir
 } catch {
@@ -211,7 +211,7 @@ if (gracefulShutdownInFlight === job) gracefulShutdownInFlight = null
 
 function startupLog(...args: any[]) {
 try {
-const dir = app?.isReady?.() ? app.getPath('userData') : app.getPath('temp')
+const dir = app?.isReady?.() ? getPersistentRootDir() : app.getPath('temp')
 mkdirSync(dir, { recursive: true })
 const line = `[${new Date().toISOString()}] ` + args.map((a) => {
 try { return typeof a === 'string' ? a : JSON.stringify(a) } catch { return String(a) }
