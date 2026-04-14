@@ -32,6 +32,7 @@ custom_init_done:
 
 !macro customInstall
   CreateDirectory "$APPDATA\Clothes Hub\OzonatorPersistent"
+  CreateDirectory "$INSTDIR\data"
   ClearErrors
   FileOpen $0 "$APPDATA\Clothes Hub\OzonatorPersistent\installer.marker" w
   IfErrors custom_install_done
