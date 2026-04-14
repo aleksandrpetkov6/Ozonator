@@ -1,23 +1,49 @@
 import { app } from 'electron'
 import { copyFileSync, existsSync, mkdirSync } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
+
+const LEGACY_VENDOR_ROOT_SEGMENTS = ['Clothes Hub', 'OzonatorPersistent']
+const INSTALL_LOCAL_STORAGE_DIRNAME = 'data'
 
 export function getLegacyUserDataDir() {
   return app.getPath('userData')
 }
 
+export function getLegacyPersistentRootDir() {
+  return join(app.getPath('appData'), ...LEGACY_VENDOR_ROOT_SEGMENTS)
+}
+
+export function getLifecycleMarkerRootDir() {
+  return getLegacyPersistentRootDir()
+}
+
+function getInstallRootDir() {
+  return dirname(app.getPath('exe'))
+}
+
 export function getPersistentRootDir() {
-  // Отдельная папка в Roaming, не привязанная к userData текущей сборки/идентификатору приложения.
-  // Это помогает сохранить лог при обновлении/переустановке/удалении.
-  return join(app.getPath('appData'), 'Clothes Hub', 'OzonatorPersistent')
+  if (app.isPackaged) {
+    return join(getInstallRootDir(), INSTALL_LOCAL_STORAGE_DIRNAME)
+  }
+  return getLegacyPersistentRootDir()
 }
 
 export function getPersistentDbPath() {
   return join(getPersistentRootDir(), 'app.db')
 }
 
+export function getPersistentSecretsPath() {
+  return join(getPersistentRootDir(), 'secrets.json')
+}
+
 export function getLifecycleMarkerPath(kind: 'installer' | 'uninstall') {
-  return join(getPersistentRootDir(), `${kind}.marker`)
+  return join(getLifecycleMarkerRootDir(), `${kind}.marker`)
+}
+
+function tryCopyFileIfMissing(src: string, dst: string) {
+  if (existsSync(dst) || !existsSync(src)) return false
+  copyFileSync(src, dst)
+  return true
 }
 
 export function ensurePersistentStorageReady() {
@@ -26,23 +52,26 @@ export function ensurePersistentStorageReady() {
 
   const targetDb = getPersistentDbPath()
   if (!existsSync(targetDb)) {
-    const legacyDir = getLegacyUserDataDir()
-    const legacyDb = join(legacyDir, 'app.db')
+    const candidates = [
+      join(getLegacyPersistentRootDir(), 'app.db'),
+      join(getLegacyUserDataDir(), 'app.db'),
+    ]
 
-    if (existsSync(legacyDb)) {
-      copyFileSync(legacyDb, targetDb)
-
-      const extras = ['app.db-wal', 'app.db-shm']
-      for (const name of extras) {
-        const src = join(legacyDir, name)
-        const dst = join(root, name)
-        if (existsSync(src)) {
-          try {
-            copyFileSync(src, dst)
-          } catch {
-            // не критично — БД обычно уже консистентна без wal/shm
+    for (const legacyDb of candidates) {
+      if (tryCopyFileIfMissing(legacyDb, targetDb)) {
+        for (const name of ['app.db-wal', 'app.db-shm']) {
+          const legacyDir = dirname(legacyDb)
+          const src = join(legacyDir, name)
+          const dst = join(root, name)
+          if (!existsSync(dst) && existsSync(src)) {
+            try {
+              copyFileSync(src, dst)
+            } catch {
+              // не критично — БД обычно уже консистентна без wal/shm
+            }
           }
         }
+        break
       }
     }
   }

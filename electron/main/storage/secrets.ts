@@ -1,8 +1,9 @@
-import { app, safeStorage } from 'electron'
+import { safeStorage } from 'electron'
+import { existsSync, readFileSync, writeFileSync, unlinkSync, copyFileSync } from 'fs'
 import { join } from 'path'
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { z } from 'zod'
 import type { Secrets } from '../types'
+import { ensurePersistentStorageReady, getLegacyPersistentRootDir, getLegacyUserDataDir, getPersistentSecretsPath } from './paths'
 
 const SecretsFileSchema = z.object({
   clientIdEncB64: z.string(),
@@ -14,14 +15,38 @@ const SecretsFileSchema = z.object({
 type SecretsFile = z.infer<typeof SecretsFileSchema>
 
 function secretsPath() {
-  return join(app.getPath('userData'), 'secrets.json')
+  return getPersistentSecretsPath()
+}
+
+function ensureSecretsReady() {
+  ensurePersistentStorageReady()
+
+  const target = secretsPath()
+  if (existsSync(target)) return
+
+  const candidates = [
+    join(getLegacyPersistentRootDir(), 'secrets.json'),
+    join(getLegacyUserDataDir(), 'secrets.json'),
+  ]
+
+  for (const src of candidates) {
+    if (!existsSync(src)) continue
+    try {
+      copyFileSync(src, target)
+      return
+    } catch {
+      // попробуем следующий кандидат
+    }
+  }
 }
 
 function writeSecretsFile(payload: SecretsFile) {
+  ensurePersistentStorageReady()
   writeFileSync(secretsPath(), JSON.stringify(payload, null, 2), 'utf-8')
 }
 
 export function hasSecrets(): boolean {
+  ensureSecretsReady()
   return existsSync(secretsPath())
 }
 
@@ -47,6 +72,8 @@ export function saveSecrets(secrets: Secrets) {
 }
 
 export function loadSecrets(): Secrets {
+  ensureSecretsReady()
+
   if (!existsSync(secretsPath())) {
     throw Object.assign(new Error('Ключи не сохранены. Откройте Настройки → Магазин и сохраните Client-Id и Api-Key.'), {
       details: { code: 'NO_SECRETS' },
@@ -67,6 +94,7 @@ export function loadSecrets(): Secrets {
 }
 
 export function updateStoreName(storeName: string | null) {
+  ensureSecretsReady()
   if (!existsSync(secretsPath())) return
 
   try {
@@ -79,6 +107,7 @@ export function updateStoreName(storeName: string | null) {
 }
 
 export function deleteSecrets() {
+  ensureSecretsReady()
   if (existsSync(secretsPath())) {
     unlinkSync(secretsPath())
   }
