@@ -54,7 +54,7 @@
       "**/*.node"
     ],
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
@@ -62,7 +62,8 @@
       "include": "build/installer.nsh",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico"
+      "installerHeaderIcon": "build/icon.ico",
+      "allowToChangeInstallationDirectory": true
     },
     "artifactName": "Озонатор.${ext}"
   }
