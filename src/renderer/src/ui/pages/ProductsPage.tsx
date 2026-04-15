@@ -219,7 +219,7 @@ export default function ProductsPage({ dataset = 'products', viewKey = dataset, 
  const bodyScrollRef = useRef<HTMLDivElement | null>(null)
  const scrollSyncLockRef = useRef(false)
  const headerRowRef = useRef<HTMLTableRowElement | null>(null)
- const filterPopoverRef = useRef<HTMLDivElement | null>(null)
+ const filterPopoverRef = useRef<HTMLDivElement>(null)
 
  const clearPhotoHoverTimer = useCallback(() => {
    if (photoHoverTimerRef.current != null) {
