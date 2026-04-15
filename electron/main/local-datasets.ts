@@ -571,7 +571,7 @@ function parseJsonTextSafe(text: string | null | undefined) {
 }
 
 
-type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'order_number' | 'delivery_schema' | 'shipment_date' | 'shipment_origin' | 'delivery_date' | 'status' | 'sku' | 'offer_id' | 'product_name' | 'price' | 'quantity' | 'paid_by_customer' | 'raw_row'>
+type SalesShipmentReportRow = Pick<SalesPostingsReportRow, 'posting_number' | 'order_number' | 'delivery_schema' | 'shipment_date' | 'shipment_origin' | 'delivery_date' | 'status' | 'sku' | 'offer_id' | 'product_name' | 'in_process_at' | 'price' | 'quantity' | 'paid_by_customer' | 'raw_row'>
 
 function normalizeSalesShipmentReportRawRow(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -607,6 +607,7 @@ function inspectPersistedPostingsReportSnapshot(
       sku: normalizeTextValue(row?.sku),
       offer_id: normalizeTextValue(row?.offer_id),
       product_name: normalizeTextValue(row?.product_name),
+      in_process_at: normalizeTextValue((row as any)?.in_process_at),
       price: normalizeSalesShipmentReportNumber(row?.price),
       quantity: normalizeSalesShipmentReportNumber(row?.quantity),
       paid_by_customer: normalizeSalesShipmentReportNumber(row?.paid_by_customer),
@@ -986,6 +987,9 @@ function filterSalesRowsStrictByPeriod(
 
   return (Array.isArray(rows) ? rows : []).filter((row) => {
     const day = extractSalesRowPeriodDay(row?.in_process_at)
+      || extractSalesRowPeriodDay(row?.accepted_at)
+      || extractSalesRowPeriodDay(row?.delivery_date)
+      || extractSalesRowPeriodDay(row?.shipment_date)
     return Boolean(day && day >= from! && day <= to!)
   })
 }
@@ -1707,6 +1711,7 @@ export async function refreshSalesRawSnapshotFromApi(
           sku: normalizeTextValue(row?.sku),
           offer_id: normalizeTextValue(row?.offer_id),
           product_name: normalizeTextValue(row?.product_name),
+          in_process_at: normalizeTextValue((row as any)?.in_process_at) || normalizeTextValue((row as any)?.raw_row?.['Принят в обработку']) || normalizeTextValue((row as any)?.raw_row?.['Принят в обработку (МСК)']),
           price: normalizeSalesShipmentReportNumber(row?.price),
           quantity: normalizeSalesShipmentReportNumber(row?.quantity),
           paid_by_customer: normalizeSalesShipmentReportNumber(row?.paid_by_customer),

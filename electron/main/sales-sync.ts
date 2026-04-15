@@ -1109,6 +1109,78 @@ export async function fetchSalesPostingDetails(
   return out
 }
 
+
+function pickReportRowValue(row: SalesPostingsReportRow | null | undefined, keys: string[]): string {
+  const rawRow = row && typeof row.raw_row === 'object' && row.raw_row ? row.raw_row : {}
+  for (const key of keys) {
+    const value = normalizeTextValue((rawRow as any)?.[key])
+    if (value) return value
+  }
+  return ''
+}
+
+function buildSalesRowFromReportRow(
+  reportRow: SalesPostingsReportRow,
+  productsByOfferId: Map<string, GridApiRow>,
+  productsBySku: Map<string, GridApiRow>,
+): SalesRow | null {
+  const postingNumber = normalizeTextValue(reportRow?.posting_number)
+  const sku = normalizeTextValue(reportRow?.sku)
+  if (!postingNumber || !sku) return null
+  const offerId = normalizeTextValue(reportRow?.offer_id)
+  const productMeta = productsByOfferId.get(offerId) ?? productsBySku.get(sku) ?? null
+  return {
+    ...(productMeta ?? {}),
+    offer_id: offerId || String((productMeta as any)?.offer_id ?? ''),
+    sku,
+    name: normalizeTextValue(reportRow?.product_name) || String((productMeta as any)?.name ?? ''),
+    in_process_at: normalizeDateValue((reportRow as any)?.in_process_at) || '',
+    posting_number: postingNumber,
+    related_postings: '',
+    shipment_date: normalizeDateValue(reportRow?.shipment_date) || '',
+    shipment_origin: normalizeTextValue(reportRow?.shipment_origin) || '',
+    status: normalizeTextValue(reportRow?.status) || '',
+    status_details: '',
+    carrier_status_details: '',
+    delivery_date: normalizeDateValue(reportRow?.delivery_date) || '',
+    delivery_cluster: pickReportRowValue(reportRow, ['Кластер отгрузки', 'Кластер отправления', 'cluster_from']) || '',
+    delivery_model: normalizeTextValue(reportRow?.delivery_schema) || '',
+    currency: pickReportRowValue(reportRow, ['Код валюты отправления', 'currency']) || '',
+    item_currency: pickReportRowValue(reportRow, ['Код валюты товара', 'item_currency']) || '',
+    customer_currency_in_item_currency: '',
+    price: normalizeNumberValue(reportRow?.price),
+    quantity: normalizeNumberValue(reportRow?.quantity),
+    paid_by_customer: normalizeNumberValue(reportRow?.paid_by_customer),
+  }
+}
+
+function mergeSalesRowWithReportRow(prev: SalesRow, reportRow: SalesPostingsReportRow): SalesRow {
+  const next = { ...prev }
+  const assignText = (field: keyof SalesRow, value: string) => {
+    if (!normalizeTextValue((next as any)[field]) && normalizeTextValue(value)) {
+      ;(next as any)[field] = value
+    }
+  }
+  const assignNumber = (field: keyof SalesRow, value: number | '') => {
+    if (normalizeNumberValue((next as any)[field]) === '' && normalizeNumberValue(value) !== '') {
+      ;(next as any)[field] = value
+    }
+  }
+  assignText('in_process_at', normalizeDateValue((reportRow as any)?.in_process_at) || '')
+  assignText('shipment_date', normalizeDateValue(reportRow?.shipment_date) || '')
+  assignText('shipment_origin', normalizeTextValue(reportRow?.shipment_origin) || '')
+  assignText('status', normalizeTextValue(reportRow?.status) || '')
+  assignText('delivery_date', normalizeDateValue(reportRow?.delivery_date) || '')
+  assignText('delivery_model', normalizeTextValue(reportRow?.delivery_schema) || '')
+  assignText('delivery_cluster', pickReportRowValue(reportRow, ['Кластер отгрузки', 'Кластер отправления', 'cluster_from']) || '')
+  assignText('currency', pickReportRowValue(reportRow, ['Код валюты отправления', 'currency']) || '')
+  assignText('item_currency', pickReportRowValue(reportRow, ['Код валюты товара', 'item_currency']) || '')
+  assignNumber('price', normalizeNumberValue(reportRow?.price))
+  assignNumber('quantity', normalizeNumberValue(reportRow?.quantity))
+  assignNumber('paid_by_customer', normalizeNumberValue(reportRow?.paid_by_customer))
+  return next
+}
+
 export function normalizeSalesRows(
   payloads: SalesPayloadEnvelope[],
   products: GridApiRow[],
@@ -1218,7 +1290,20 @@ export function normalizeSalesRows(
     const fallbackCluster = normalizeTextValue(fboOrderClusterMap.get(orderKey))
     if (fallbackCluster) row.delivery_cluster = fallbackCluster
   }
-  const rowsWithReportPaid = applySalesPaidByCustomerFromReportRows(rows, reportRows).rows
+  for (const reportRow of Array.isArray(reportRows) ? reportRows : []) {
+    const postingNumber = normalizeTextValue(reportRow?.posting_number)
+    const sku = normalizeTextValue(reportRow?.sku)
+    if (!postingNumber || !sku) continue
+    const dedupKey = `${postingNumber}|${sku}`
+    const prev = dedup.get(dedupKey)
+    if (!prev) {
+      const rowFromReport = buildSalesRowFromReportRow(reportRow, productsByOfferId, productsBySku)
+      if (rowFromReport) dedup.set(dedupKey, rowFromReport)
+      continue
+    }
+    dedup.set(dedupKey, mergeSalesRowWithReportRow(prev, reportRow))
+  }
+  const rowsWithReportPaid = applySalesPaidByCustomerFromReportRows(Array.from(dedup.values()), reportRows).rows
   return rowsWithReportPaid.sort((a, b) => {
     const aAccepted = String(a?.in_process_at ?? '')
     const bAccepted = String(b?.in_process_at ?? '')

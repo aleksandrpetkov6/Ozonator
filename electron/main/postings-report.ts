@@ -27,6 +27,7 @@ export type SalesPostingsReportRow = {
   sku: string
   offer_id: string
   product_name: string
+  in_process_at: string
   price: number | ''
   quantity: number | ''
   paid_by_customer: number | ''
@@ -634,6 +635,15 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
   const sku = pickRowValue(row, ['SKU', 'sku'])
   const offerId = pickRowValue(row, ['Артикул', 'offer_id', 'offer id'])
   const productName = pickRowValue(row, ['Название товара', 'Наименование товара', 'product_name', 'product name'])
+  const inProcessAt = parseOzonLocalDateToIso(pickRowValue(row, [
+    'Принят в обработку',
+    'Принят в обработку (МСК)',
+    'Дата принятия в обработку',
+    'Дата и время принятия в обработку',
+    'in_process_at',
+    'accepted_at',
+    'accepted at',
+  ]))
   const price = parseCsvNumber(pickRowValue(row, ['Ваша цена', 'price', 'seller_price']))
   const quantity = parseCsvNumber(pickRowValue(row, ['Количество', 'quantity', 'qty']))
   const paidByCustomer = parseCsvNumber(pickRowValue(row, ['Оплачено покупателем', 'client_price', 'paid_by_customer']))
@@ -649,6 +659,7 @@ function mapCsvRowToSalesReportRow(row: Record<string, string>): SalesPostingsRe
     sku,
     offer_id: offerId,
     product_name: productName,
+    in_process_at: inProcessAt,
     price,
     quantity,
     paid_by_customer: paidByCustomer,
@@ -1038,12 +1049,16 @@ async function fetchSalesPostingsReportRowsForSchema(
 ): Promise<{ reportCode: string; fileUrl: string; rows: SalesPostingsReportRow[]; trace: SalesPostingsReportTrace; downloads: SalesPostingsReportDownloadArtifact[] }> {
   const bounds = resolvePeriodBounds(period)
   const totalDays = diffDaysInclusive(bounds.from, bounds.to)
-  const strategies: Array<{ name: 'single' | 'chunked-7d' | 'chunked-1d'; segments: Array<{ from: string; to: string; label: string }> }> = [
-    { name: 'single', segments: [{ from: bounds.from, to: bounds.to, label: `${bounds.from}..${bounds.to}` }] },
-  ]
+  const preferChunked = totalDays > DEFAULT_REPORT_LOOKBACK_DAYS
+  const strategies: Array<{ name: 'single' | 'chunked-7d' | 'chunked-1d'; segments: Array<{ from: string; to: string; label: string }> }> = preferChunked
+    ? []
+    : [{ name: 'single', segments: [{ from: bounds.from, to: bounds.to, label: `${bounds.from}..${bounds.to}` }] }]
   if (totalDays > 1) {
     strategies.push({ name: 'chunked-7d', segments: splitPeriodIntoSegments(bounds, REPORT_PRIMARY_CHUNK_DAYS) })
     strategies.push({ name: 'chunked-1d', segments: splitPeriodIntoSegments(bounds, REPORT_FALLBACK_CHUNK_DAYS) })
+  }
+  if (preferChunked) {
+    strategies.push({ name: 'single', segments: [{ from: bounds.from, to: bounds.to, label: `${bounds.from}..${bounds.to}` }] })
   }
 
   let lastError: unknown = null
