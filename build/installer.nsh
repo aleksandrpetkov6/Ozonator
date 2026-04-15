@@ -18,18 +18,6 @@ un_preserve_file_done:
   Pop $1
 FunctionEnd
 
-Function RestorePersistentFile
-  Exch $1
-  Exch
-  Exch $0
-  IfFileExists "$0" 0 restore_file_done
-  CreateDirectory "$1"
-  CopyFiles /SILENT "$0" "$1"
-restore_file_done:
-  Pop $0
-  Pop $1
-FunctionEnd
-
 !macro customInit
   CreateDirectory "${PERSIST_ROOT}"
   Delete "${PERSIST_ROOT}\installer-ready.marker"
@@ -66,13 +54,13 @@ custom_init_done:
   CreateDirectory "${PERSIST_ROOT}"
   CreateDirectory "$INSTDIR\data"
 
-  Push "${PRESERVE_ROOT}\app.db"
-  Push "$INSTDIR\data"
-  Call RestorePersistentFile
+  IfFileExists "${PRESERVE_ROOT}\app.db" 0 +3
+    CreateDirectory "$INSTDIR\data"
+    CopyFiles /SILENT "${PRESERVE_ROOT}\app.db" "$INSTDIR\data"
 
-  Push "${PRESERVE_ROOT}\secrets.json"
-  Push "$INSTDIR\data"
-  Call RestorePersistentFile
+  IfFileExists "${PRESERVE_ROOT}\secrets.json" 0 +3
+    CreateDirectory "$INSTDIR\data"
+    CopyFiles /SILENT "${PRESERVE_ROOT}\secrets.json" "$INSTDIR\data"
 
   Delete "${PRESERVE_ROOT}\app.db"
   Delete "${PRESERVE_ROOT}\secrets.json"
