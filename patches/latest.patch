@@ -1,54 +1,48 @@
---- a/src/renderer/src/global.d.ts
-+++ b/src/renderer/src/global.d.ts
+--- a/tsconfig.json
++++ b/tsconfig.json
 @@
- // Existing global type declarations
- // ...
-+
-+/**
-+ * Minimal type declarations for modules without TypeScript typings.
-+ * These are intentionally broad (using `any`) to satisfy the compiler
-+ * while keeping the repository lightweight. Adjust as needed for stricter
-+ * type safety in the future.
-+ */
-+
-+declare module "better-sqlite3" {
-+  const content: any;
-+  export default content;
-+}
-+
-+declare module "electron" {
-+  const content: any;
-+  export default content;
-+}
-+
-+declare module "node-fetch" {
-+  const content: any;
-+  export default content;
-+}
-+
-+declare module "dotenv" {
-+  const content: any;
-+  export default content;
-+}
-+
-+declare module "fs-extra" {
-+  const content: any;
-+  export default content;
-+}
-+
-+declare module "express" {
-+  const content: any;
-+  export default content;
-+}
-+
-+declare module "cors" {
-+  const content: any;
-+  export default content;
-+}
-+
-+declare module "body-parser" {
-+  const content: any;
-+  export default content;
-+}
-+
-+declare module "
+   "compilerOptions": {
+     "target": "ES2020",
+     "module": "ESNext",
+     "moduleResolution": "node",
+     "strict": true,
+     "esModuleInterop": true,
+     "skipLibCheck": true,
+     "forceConsistentCasingInFileNames": true,
+     "outDir": "./dist",
+     "rootDir": "./src",
+     "resolveJsonModule": true,
+     "noImplicitAny": true,
+     "noUnusedLocals": true,
+     "noUnusedParameters": true,
+     "noFallthroughCasesInSwitch": true,
+     "noImplicitReturns": true,
+     "noUncheckedIndexedAccess": true,
+     "allowSyntheticDefaultImports": true,
+     "allowJs": false,
+     "declaration": true,
+     "declarationMap": true,
+     "sourceMap": true,
+     "inlineSourceMap": false,
+     "inlineSources": false,
+     "experimentalDecorators": true,
+     "emitDecoratorMetadata": true,
+     "lib": [
+       "ES2020",
+       "DOM"
+     ],
+     "types": [
+       "node",
+       "jest"
+     ]
+   },
+   "include": [
+     "src/**/*",
+     "electron/**/*",
+     "tests/**/*"
+   ],
+   "exclude": [
+     "node_modules",
+     "dist"
+   ]
+ }
