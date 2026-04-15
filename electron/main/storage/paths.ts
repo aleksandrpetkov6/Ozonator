@@ -1,10 +1,19 @@
 import { app } from 'electron'
 import { mkdirSync } from 'fs'
-import { basename, dirname, join } from 'path'
+import { dirname, join } from 'path'
 
 const LEGACY_VENDOR_ROOT_SEGMENTS = ['Clothes Hub', 'OzonatorPersistent']
 const INSTALL_LOCAL_STORAGE_DIRNAME = 'data'
-const LEGACY_INSTALL_SUBDIR = 'ozon-seller-os-mvp0'
+const LEGACY_INSTALL_SUBDIR_NAMES = new Set([
+  'ozon-seller-os-mvp0',
+  'resources',
+  'app',
+  'win-unpacked',
+])
+
+function normalizeLastPathSegment(input: string) {
+  return input.replace(/[\\/]+$/, '').split(/[\\/]/).pop()?.trim().toLowerCase() ?? ''
+}
 
 export function getLegacyUserDataDir() {
   return app.getPath('userData')
@@ -20,10 +29,12 @@ export function getLifecycleMarkerRootDir() {
 
 function getInstallRootDir() {
   const exeDir = dirname(app.getPath('exe'))
-  const dirName = basename(exeDir).trim().toLowerCase()
-  if (dirName === LEGACY_INSTALL_SUBDIR) {
+  const exeDirName = normalizeLastPathSegment(exeDir)
+
+  if (LEGACY_INSTALL_SUBDIR_NAMES.has(exeDirName)) {
     return dirname(exeDir)
   }
+
   return exeDir
 }
 
