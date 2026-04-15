@@ -184,6 +184,7 @@ type BootstrapUiState = {
   required: boolean
   hasSecrets: boolean
   storageRoot: string
+  skipInitialSync: boolean
   step: BootstrapStep
   error: string | null
 }
@@ -217,6 +218,7 @@ const INITIAL_BOOTSTRAP_UI_STATE: BootstrapUiState = {
   required: false,
   hasSecrets: false,
   storageRoot: '',
+  skipInitialSync: false,
   step: 'idle',
   error: null,
 }
@@ -237,7 +239,7 @@ const INITIAL_BOOTSTRAP_PROGRESS_STATE: BootstrapProgressUiState = {
 }
 
 function formatBootstrapEta(seconds: number | null | undefined): string {
-  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return 'Считаем время…'
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return 'Уточняется'
   if (seconds < 60) return `~${seconds} сек.`
   const minutes = Math.floor(seconds / 60)
   const restSeconds = seconds % 60
@@ -551,6 +553,7 @@ export default function App() {
       const required = !!resp.requiresInitialSync
       const hasSecrets = !!resp.hasSecrets
       const storageRoot = String(resp.storageRoot ?? '')
+      const skipInitialSync = !!resp.skipInitialSync
 
       setBootstrapUi((prev) => {
         const nextStep: BootstrapStep = !required
@@ -566,6 +569,7 @@ export default function App() {
           required,
           hasSecrets,
           storageRoot,
+          skipInitialSync,
           step: nextStep,
           error: nextStep === 'error' ? prev.error : null,
         }
@@ -577,6 +581,7 @@ export default function App() {
         ...prev,
         checked: true,
         required: true,
+        skipInitialSync: false,
         step: 'error',
         error: e?.message ?? 'Не удалось подготовить локальную базу',
       }))
@@ -652,6 +657,14 @@ export default function App() {
       return
     }
 
+    if (bootstrapUi.skipInitialSync) {
+      bootstrapAutoStartedRef.current = false
+      if (bootstrapUi.step !== 'idle' || bootstrapUi.error) {
+        setBootstrapUi((prev) => ({ ...prev, step: 'idle', error: null }))
+      }
+      return
+    }
+
     if (!online) {
       bootstrapAutoStartedRef.current = false
       if (bootstrapUi.step !== 'waiting-online' || bootstrapUi.error) {
@@ -682,6 +695,7 @@ export default function App() {
               required: false,
               hasSecrets: !!state.hasSecrets,
               storageRoot: String(state.storageRoot ?? ''),
+              skipInitialSync: !!state.skipInitialSync,
               step: 'done',
               error: null,
             })
@@ -718,7 +732,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [bootstrapUi.checked, bootstrapUi.required, bootstrapUi.hasSecrets, bootstrapUi.step, bootstrapUi.error, online, syncNow])
+  }, [bootstrapUi.checked, bootstrapUi.required, bootstrapUi.hasSecrets, bootstrapUi.skipInitialSync, bootstrapUi.step, bootstrapUi.error, online, syncNow])
 
   useEffect(() => {
     let cancelled = false
@@ -802,20 +816,14 @@ export default function App() {
   const adminParsed = parseLogLifeDays(adminLogLifeDraft)
   const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
   const visibleLastError = lastError && lastError !== 'Нет интернета' ? lastError : null
-  const showBootstrapWelcome = bootstrapUi.checked && bootstrapUi.required && bootstrapUi.step !== 'done' && bootstrapUi.step !== 'needs-secrets'
+  const showBootstrapWelcome = bootstrapUi.checked && bootstrapUi.required && !bootstrapUi.skipInitialSync && bootstrapUi.step !== 'done' && bootstrapUi.step !== 'needs-secrets'
   const bootstrapTitle = bootstrapUi.step === 'waiting-online'
     ? 'Ждём интернет для первой загрузки'
     : bootstrapUi.step === 'error'
       ? 'Загрузка локальной базы остановилась'
       : 'Подготавливаем локальную базу'
-  const bootstrapDescription = bootstrapUi.step === 'waiting-online'
-    ? 'Как только интернет появится, Ozonator продолжит первичную загрузку базы в выбранную папку установки.'
-    : bootstrapUi.step === 'error'
-      ? (bootstrapUi.error ?? bootstrapProgress.error ?? 'Не удалось загрузить локальную базу. Попробуй ещё раз.')
-      : 'Ozonator заново скачивает и собирает локальную базу в выбранной папке. Ниже видно, сколько уже загружено, сколько осталось и на каком этапе процесс сейчас.'
-  const bootstrapRemaining = typeof bootstrapProgress.currentTotal === 'number'
-    ? Math.max(0, bootstrapProgress.currentTotal - bootstrapProgress.currentLoaded)
-    : null
+  const bootstrapCompletedStages = Math.min(bootstrapProgress.totalStages, Math.max(0, bootstrapProgress.completedStages))
+  const bootstrapRemainingStages = Math.max(0, bootstrapProgress.totalStages - bootstrapCompletedStages)
   const bootstrapEta = formatBootstrapEta(bootstrapProgress.etaSeconds)
   const bootstrapCurrentStageNumber = Math.min(
     bootstrapProgress.totalStages,
@@ -1142,12 +1150,6 @@ export default function App() {
               <div className="bootstrapWelcomeCard bootstrapProgressCard">
                 <div className="bootstrapWelcomeBadge">Первая загрузка базы</div>
                 <h2 className="bootstrapWelcomeTitle">{bootstrapTitle}</h2>
-                <p className="bootstrapWelcomeText">{bootstrapDescription}</p>
-                {bootstrapUi.storageRoot && (
-                  <div className="bootstrapWelcomePath">
-                    Локальная папка данных: <span>{bootstrapUi.storageRoot}</span>
-                  </div>
-                )}
 
                 <div className="bootstrapWelcomeStatus bootstrapProgressStatus">
                   <span className={`bootstrapWelcomeDot ${bootstrapUi.step}`} aria-hidden />
@@ -1172,11 +1174,11 @@ export default function App() {
                 <div className="bootstrapProgressMetrics">
                   <div className="bootstrapProgressMetric">
                     <span className="bootstrapProgressMetricLabel">Загружено</span>
-                    <strong>{bootstrapProgress.currentLoaded} {bootstrapProgress.currentUnitLabel}</strong>
+                    <strong>{bootstrapCompletedStages} из {bootstrapProgress.totalStages} этапов</strong>
                   </div>
                   <div className="bootstrapProgressMetric">
                     <span className="bootstrapProgressMetricLabel">Осталось</span>
-                    <strong>{bootstrapRemaining == null ? 'считаем…' : `${bootstrapRemaining} ${bootstrapProgress.currentUnitLabel}`}</strong>
+                    <strong>{bootstrapRemainingStages} этапов</strong>
                   </div>
                   <div className="bootstrapProgressMetric">
                     <span className="bootstrapProgressMetricLabel">Готовность</span>
@@ -1217,14 +1219,6 @@ export default function App() {
                 </div>
 
                 <div className="bootstrapWelcomeActions">
-                  <button
-                    type="button"
-                    className="primary"
-                    onClick={() => navigate('/settings')}
-                  >
-                    Открыть Настройки
-                  </button>
-
                   {bootstrapUi.step === 'error' && (
                     <button
                       type="button"
