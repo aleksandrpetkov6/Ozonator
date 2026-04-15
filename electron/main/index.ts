@@ -22,6 +22,7 @@ const LOCAL_SERVER_WEBHOOK_TOKEN_KEY = 'local_server.webhook_token'
 const LOCAL_SERVER_WEBHOOK_DIAG_KEY = 'local_server.webhook_diag'
 const DEFAULT_LOCAL_SERVER_PORT = 45711
 const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
+const BOOTSTRAP_SKIP_INITIAL_SYNC_KEY = 'bootstrap.skip_initial_sync'
 const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
 let installerShutdownInFlight: Promise<void> | null = null
 let gracefulShutdownInFlight: Promise<void> | null = null
@@ -116,12 +117,25 @@ function recalcBootstrapProgress() {
   if (bootstrapProgressState.finishedAt && !bootstrapProgressState.error) percent = 100
   if (bootstrapProgressState.error) percent = Math.max(1, percent)
 
-  const startedMs = bootstrapProgressState.startedAt ? Date.parse(bootstrapProgressState.startedAt) : NaN
+  const activeEntry = bootstrapProgressState.stageKey
+    ? bootstrapProgressState.timeline.find((step) => step.key === bootstrapProgressState.stageKey) ?? null
+    : null
+  const stageStartedMs = activeEntry?.startedAt ? Date.parse(activeEntry.startedAt) : NaN
   const updatedMs = bootstrapProgressState.updatedAt ? Date.parse(bootstrapProgressState.updatedAt) : NaN
+  const total = bootstrapProgressState.currentTotal
   let etaSeconds: number | null = null
-  if (Number.isFinite(startedMs) && Number.isFinite(updatedMs) && percent > 3 && percent < 100) {
-    const elapsedMs = Math.max(1, updatedMs - startedMs)
-    etaSeconds = Math.max(0, Math.round((elapsedMs * (100 - percent)) / percent / 1000))
+  if (
+    bootstrapProgressState.active
+    && Number.isFinite(stageStartedMs)
+    && Number.isFinite(updatedMs)
+    && typeof total === 'number'
+    && Number.isFinite(total)
+    && total > 0
+    && bootstrapProgressState.currentLoaded > 0
+    && bootstrapProgressState.currentLoaded < total
+  ) {
+    const elapsedMs = Math.max(1, updatedMs - stageStartedMs)
+    etaSeconds = Math.max(0, Math.round((elapsedMs * (total - bootstrapProgressState.currentLoaded)) / bootstrapProgressState.currentLoaded / 1000))
   }
 
   bootstrapProgressState = {
@@ -315,6 +329,8 @@ function getAppBootstrapState() {
     productsCount = 0
   }
 
+  const skipInitialSync = String(dbGetAppSetting(BOOTSTRAP_SKIP_INITIAL_SYNC_KEY) ?? '').trim() === '1'
+
   return {
     ok: true,
     storageMode: app.isPackaged ? 'install-local' : 'legacy-dev',
@@ -326,6 +342,7 @@ function getAppBootstrapState() {
     hasSecrets: secretsReady,
     productsCount,
     requiresInitialSync: startupDbWasMissing || productsCount === 0,
+    skipInitialSync,
   }
 }
 
@@ -1316,6 +1333,16 @@ ipcMain.handle('app:getBootstrapState', async () => {
 ipcMain.handle('app:getBootstrapProgress', async () => {
   try {
     return cloneBootstrapProgress()
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
+})
+
+ipcMain.handle('app:setBootstrapSkipInitialSync', async (_e, payload: { skipInitialSync?: boolean } | undefined) => {
+  try {
+    const skipInitialSync = !!payload?.skipInitialSync
+    dbSetAppSetting(BOOTSTRAP_SKIP_INITIAL_SYNC_KEY, skipInitialSync ? '1' : '0')
+    return { ok: true, skipInitialSync }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) }
   }
