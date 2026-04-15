@@ -6,18 +6,6 @@ Var DeleteSecretsChoice
 !define PERSIST_ROOT "$APPDATA\Clothes Hub\OzonatorPersistent"
 !define PRESERVE_ROOT "$APPDATA\Clothes Hub\OzonatorPersistent\preserve"
 
-Function un.PreservePersistentFile
-  Exch $1
-  Exch
-  Exch $0
-  IfFileExists "$0" 0 un_preserve_file_done
-  CreateDirectory "${PRESERVE_ROOT}"
-  CopyFiles /SILENT "$0" "$1"
-un_preserve_file_done:
-  Pop $0
-  Pop $1
-FunctionEnd
-
 !macro customInit
   CreateDirectory "${PERSIST_ROOT}"
   Delete "${PERSIST_ROOT}\installer-ready.marker"
@@ -96,18 +84,16 @@ uninit_done:
   CreateDirectory "${PRESERVE_ROOT}"
 
   ${If} $DeleteDbChoice == "0"
-    Push "$INSTDIR\data\app.db"
-    Push "${PRESERVE_ROOT}"
-    Call un.PreservePersistentFile
+    IfFileExists "$INSTDIR\data\app.db" 0 +2
+      CopyFiles /SILENT "$INSTDIR\data\app.db" "${PRESERVE_ROOT}\app.db"
   ${Else}
     Delete "${PRESERVE_ROOT}\app.db"
     Delete "$INSTDIR\data\app.db"
   ${EndIf}
 
   ${If} $DeleteSecretsChoice == "0"
-    Push "$INSTDIR\data\secrets.json"
-    Push "${PRESERVE_ROOT}"
-    Call un.PreservePersistentFile
+    IfFileExists "$INSTDIR\data\secrets.json" 0 +2
+      CopyFiles /SILENT "$INSTDIR\data\secrets.json" "${PRESERVE_ROOT}\secrets.json"
   ${Else}
     Delete "${PRESERVE_ROOT}\secrets.json"
     Delete "$INSTDIR\data\secrets.json"
