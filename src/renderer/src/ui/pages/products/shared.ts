@@ -119,6 +119,15 @@ function toSortNumber(value: unknown): number | '' {
   return Number.isFinite(num) ? num : ''
 }
 
+function toSalesLineTotal(row: GridRow, field: 'price' | 'paid_by_customer' | 'customer_currency_in_item_currency'): number | '' {
+  const base = toSortNumber((row as any)?.[field])
+  if (base === '') return ''
+  const quantityRaw = toSortNumber((row as any)?.quantity)
+  const quantity = quantityRaw === '' || quantityRaw <= 0 ? 1 : quantityRaw
+  const total = base * quantity
+  return Number.isFinite(total) ? Number(total.toFixed(2)) : base
+}
+
 export function visibilityReasonText(v: unknown): string {
   if (v == null || v === '') return '-'
   const mapOne = (s: string) => {
@@ -382,9 +391,9 @@ export function buildDefaultCols(dataset: DataSet): ColDef[] {
       asMainCol({ id: 'posting_number', title: 'Номер отправления', w: 220, visible: true }),
       asMainCol({ id: 'related_postings', title: 'Связанные отправления', w: 300, visible: true }),
       asMainCol({ id: 'delivery_model', title: 'Метод доставки', w: 150, visible: true }),
-      asMainCol({ id: 'price', title: 'Ваша цена в коде валюты товара', w: 210, visible: true, getSortValue: (row) => toSortNumber(row.price) }),
-      asMainCol({ id: 'paid_by_customer', title: 'Оплачено покупателем', w: 260, visible: true, getSortValue: (row) => toSortNumber(row.paid_by_customer) }),
-      asMainCol({ id: 'customer_currency_in_item_currency', title: 'Оплачено покупателем в валюте товара', w: 320, visible: true, getSortValue: (row) => toSortNumber(row.customer_currency_in_item_currency) }),
+      asMainCol({ id: 'price', title: 'Ваша цена в коде валюты товара', w: 210, visible: true, getSortValue: (row) => toSalesLineTotal(row, 'price') }),
+      asMainCol({ id: 'paid_by_customer', title: 'Оплачено покупателем', w: 260, visible: true, getSortValue: (row) => toSalesLineTotal(row, 'paid_by_customer') }),
+      asMainCol({ id: 'customer_currency_in_item_currency', title: 'Оплачено покупателем в валюте товара', w: 320, visible: true, getSortValue: (row) => toSalesLineTotal(row, 'customer_currency_in_item_currency') }),
       asMainCol({ id: 'quantity', title: 'Количество', w: 120, visible: true, getSortValue: (row) => toSortNumber(row.quantity) }),
       asMainCol({ id: 'shipment_date', title: 'Дата отгрузки', w: 180, visible: true, getSortValue: (row) => toSortTimestamp(row.shipment_date) ?? '' }),
       asMainCol({ id: 'shipment_origin', title: 'Склад/кластер отгрузки', w: 220, visible: true }),
