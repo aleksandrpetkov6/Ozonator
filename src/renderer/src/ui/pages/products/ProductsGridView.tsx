@@ -231,7 +231,7 @@ export default function ProductsGridView(props: Props) {
       headEl?.removeEventListener('scroll', update)
       bodyEl?.removeEventListener('scroll', update)
     }
-  }, [openFilterColId, updateFloatingPopover])
+  }, [openFilterColId, updateFloatingPopover, headScrollRef, bodyScrollRef])
 
   const openFilterCol = openFilterColId ? visibleCols.find((col) => String(col.id) === openFilterColId) ?? null : null
   const openColumnFilterState = openFilterColId ? getColumnFilterState(openFilterColId) : { needle: '', mode: 'all' as ColumnFilterMode, selectedKeys: [], active: false }
