@@ -27,6 +27,7 @@ type SortState = TableSortState<GridColId>
 
 type Props = {
  dataset?: DataSet
+ viewKey?: string
  query?: string
  period?: { from?: string; to?: string }
  onStats?: (s: { total: number; filtered: number }) => void
@@ -97,7 +98,83 @@ function scopeSalesRows(rows: GridRow[], period?: { from?: string; to?: string }
    return !!day && day >= from && day <= to
  })
 }
-export default function ProductsPage({ dataset = 'products', query = '', period, onStats }: Props) {
+
+const COLUMN_FILTER_STORAGE_KEY_PREFIX = 'ozonator_column_filters_'
+const EMPTY_FILTER_KEY = '__EMPTY__'
+
+type ColumnFilterMode = 'all' | 'empty' | 'nonempty'
+type ColumnFilter = {
+ needle?: string
+ selectedKeys?: string[]
+ mode?: ColumnFilterMode
+}
+type ColumnFiltersState = Record<string, ColumnFilter>
+type FilterOption = {
+ key: string
+ label: string
+ count: number
+}
+
+function columnFiltersStorageKey(viewKey: string): string {
+ return `${COLUMN_FILTER_STORAGE_KEY_PREFIX}${String(viewKey || 'products').trim() || 'products'}`
+}
+
+function normalizeColumnFilter(value: unknown): ColumnFilter | null {
+ if (!value || typeof value !== 'object') return null
+ const raw = value as ColumnFilter
+ const needle = typeof raw.needle === 'string' ? raw.needle.trim() : ''
+ const mode: ColumnFilterMode = raw.mode === 'empty' || raw.mode === 'nonempty' ? raw.mode : 'all'
+ const selectedKeys = Array.isArray(raw.selectedKeys)
+   ? Array.from(new Set(raw.selectedKeys.map((item) => String(item ?? '').trim()).filter(Boolean))).slice(0, 200)
+   : []
+ if (!needle && selectedKeys.length === 0 && mode === 'all') return null
+ return { needle, selectedKeys, mode }
+}
+
+function isColumnFilterActive(filter: ColumnFilter | null | undefined): boolean {
+ return !!normalizeColumnFilter(filter)
+}
+
+function readColumnFilters(viewKey: string): ColumnFiltersState {
+ try {
+   const raw = localStorage.getItem(columnFiltersStorageKey(viewKey))
+   if (!raw) return {}
+   const parsed = JSON.parse(raw)
+   if (!parsed || typeof parsed !== 'object') return {}
+   const out: ColumnFiltersState = {}
+   for (const [colId, filter] of Object.entries(parsed as Record<string, unknown>)) {
+     const key = String(colId ?? '').trim()
+     if (!key) continue
+     const normalized = normalizeColumnFilter(filter)
+     if (!normalized) continue
+     out[key] = normalized
+   }
+   return out
+ } catch {
+   return {}
+ }
+}
+
+function writeColumnFilters(viewKey: string, filters: ColumnFiltersState) {
+ try {
+   const payload: ColumnFiltersState = {}
+   for (const [colId, filter] of Object.entries(filters)) {
+     const key = String(colId ?? '').trim()
+     const normalized = normalizeColumnFilter(filter)
+     if (!key || !normalized) continue
+     payload[key] = normalized
+   }
+   if (Object.keys(payload).length === 0) {
+     localStorage.removeItem(columnFiltersStorageKey(viewKey))
+     return
+   }
+   localStorage.setItem(columnFiltersStorageKey(viewKey), JSON.stringify(payload))
+ } catch {
+   // ignore
+ }
+}
+
+export default function ProductsPage({ dataset = 'products', viewKey = dataset, query = '', period, onStats }: Props) {
  const [products, setProducts] = useState<GridRow[]>(() => (dataset === 'sales' ? [] : getCachedRows(dataset)))
  const [cols, setCols] = useState<ColDef[]>(() => readCols(dataset))
  const [sortState, setSortState] = useState<SortState>(null)
@@ -112,6 +189,9 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
  const [hasStoredCols, setHasStoredCols] = useState<boolean>(() => {
    try { return !!localStorage.getItem(colsStorageKey(dataset)) } catch { return true }
  })
+ const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() => readColumnFilters(viewKey))
+ const [openFilterColId, setOpenFilterColId] = useState<string | null>(null)
+ const [filterOptionQuery, setFilterOptionQuery] = useState('')
 
  const collapsedBtnRef = useRef<HTMLButtonElement | null>(null)
  const collapsedMenuRef = useRef<HTMLDivElement | null>(null)
@@ -139,6 +219,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
  const bodyScrollRef = useRef<HTMLDivElement | null>(null)
  const scrollSyncLockRef = useRef(false)
  const headerRowRef = useRef<HTMLTableRowElement | null>(null)
+ const filterPopoverRef = useRef<HTMLDivElement | null>(null)
 
  const clearPhotoHoverTimer = useCallback(() => {
    if (photoHoverTimerRef.current != null) {
@@ -244,6 +325,12 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    return () => { active = false }
  }, [dataset])
 
+ useEffect(() => {
+   setColumnFilters(readColumnFilters(viewKey))
+   setOpenFilterColId(null)
+   setFilterOptionQuery('')
+ }, [viewKey])
+
  const load = useCallback(async (force = false) => {
    const list = await fetchRowsCached(dataset, force, period)
    if (!Array.isArray(list)) return
@@ -279,6 +366,10 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    }, 250)
    return () => window.clearTimeout(id)
  }, [dataset, cols, colsSyncReady])
+
+ useEffect(() => {
+   writeColumnFilters(viewKey, columnFilters)
+ }, [viewKey, columnFilters])
 
  const visibleCols = useMemo(() => cols.filter((c) => c.visible), [cols])
  const rowH = useMemo(() => (visibleCols.some((c) => c.id === 'photo_url') ? 58 : 28), [visibleCols])
@@ -328,6 +419,32 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    setAddColumnMenuOpen(false)
  }, [dataset])
 
+ useEffect(() => {
+   if (!openFilterColId) return
+   const onDown = (ev: MouseEvent) => {
+     const target = ev.target as HTMLElement | null
+     if (!target) return
+     if (target.closest('[data-column-filter-popover="true"]')) return
+     if (target.closest('[data-column-filter-trigger="true"]')) return
+     setOpenFilterColId(null)
+   }
+   const onKey = (ev: KeyboardEvent) => {
+     if (ev.key === 'Escape') setOpenFilterColId(null)
+   }
+   window.addEventListener('mousedown', onDown)
+   window.addEventListener('keydown', onKey)
+   return () => {
+     window.removeEventListener('mousedown', onDown)
+     window.removeEventListener('keydown', onKey)
+   }
+ }, [openFilterColId])
+
+ useEffect(() => {
+   if (!openFilterColId) return
+   if (visibleCols.some((c) => String(c.id) === openFilterColId)) return
+   setOpenFilterColId(null)
+ }, [openFilterColId, visibleCols])
+
  const visibleSearchKey = useMemo(() => cols.map((c) => `${c.id}:${c.visible ? 1 : 0}`).join('|'), [cols])
  const visibleSearchCols = useMemo(
    () => visibleSearchKey.split('|').filter(Boolean).flatMap((entry) => {
@@ -338,37 +455,161 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    [visibleSearchKey],
  )
 
- const filtered = useMemo(() => {
+ const getFilterMeta = useCallback((p: GridRow, colId: ColDef['id']): { text: string; empty: boolean; key: string } => {
+   let text = ''
+   let empty = false
+
+   if (colId === 'archived') {
+     empty = true
+   } else if (colId === 'is_visible') {
+     text = visibilityText(p)
+   } else if (colId === 'hidden_reasons') {
+     const reasons = visibilityReasonText((p as any)[colId])
+     text = reasons === '-' ? '' : reasons
+     empty = !text
+   } else if (colId === 'brand') {
+     const brand = (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : ''
+     text = brand || 'Не указан'
+     empty = !brand
+   } else if (colId === 'name') {
+     const name = (p.name && String(p.name).trim()) ? String(p.name).trim() : ''
+     text = name || 'Без названия'
+     empty = !name
+   } else if (colId === 'ozon_sku') {
+     const value = p.ozon_sku ?? p.sku
+     const raw = (value == null || String(value).trim() === '') ? '' : String(value)
+     text = raw || '-'
+     empty = !raw
+   } else if (colId === 'seller_sku') {
+     const value = p.seller_sku ?? p.offer_id
+     const raw = (value == null || String(value).trim() === '') ? '' : String(value)
+     text = raw || '-'
+     empty = !raw
+   } else if (colId === 'fbo_sku' || colId === 'fbs_sku') {
+     const value = (p as any)[colId]
+     const raw = (value == null || String(value).trim() === '') ? '' : String(value)
+     text = raw || '-'
+     empty = !raw
+   } else if (colId === 'photo_url') {
+     const raw = (p.photo_url && String(p.photo_url).trim()) ? String(p.photo_url).trim() : ''
+     text = raw || 'Нет фото'
+     empty = !raw
+   } else if (colId === 'warehouse_name') {
+     const rawName = (p.warehouse_name == null ? '' : String(p.warehouse_name)).trim()
+     const rawId = (p.warehouse_id == null ? '' : String(p.warehouse_id)).trim()
+     text = rawName || (rawId ? `Склад #${rawId}` : 'Нет данных синхронизации')
+     empty = !rawName && !rawId
+   } else if (colId === 'placement_zone') {
+     const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
+     text = zone || 'Нет данных синхронизации'
+     empty = !zone
+   } else if (isTemporalColumnId(colId)) {
+     text = formatTemporalCellRu(colId, (p as any)[colId])
+     empty = !text
+   } else if (dataset === 'sales' && colId === 'paid_by_customer') {
+     const raw = (p as any)[colId]
+     text = formatCellNumberWithCurrency(raw, (p as any).currency)
+     empty = raw == null || raw === ''
+   } else if (isMoneyColumnId(colId)) {
+     const raw = (p as any)[colId]
+     text = formatMoneyValue(raw)
+     empty = raw == null || raw === ''
+   } else {
+     const raw = toText((p as any)[colId]).trim()
+     text = raw || '-'
+     empty = !raw
+   }
+
+   return { text, empty, key: empty ? EMPTY_FILTER_KEY : text }
+ }, [dataset])
+
+ const rowMatchesColumnFilter = useCallback((row: GridRow, colId: string, filter: ColumnFilter | null | undefined): boolean => {
+   const normalized = normalizeColumnFilter(filter)
+   if (!normalized) return true
+   const meta = getFilterMeta(row, colId)
+   if (normalized.mode === 'empty' && !meta.empty) return false
+   if (normalized.mode === 'nonempty' && meta.empty) return false
+   const needle = String(normalized.needle ?? '').trim().toLowerCase()
+   if (needle && !meta.text.toLowerCase().includes(needle)) return false
+   const selectedKeys = normalized.selectedKeys ?? []
+   if (selectedKeys.length > 0 && !selectedKeys.includes(meta.key)) return false
+   return true
+ }, [getFilterMeta])
+
+ const activeColumnFilterEntries = useMemo(() => Object.entries(columnFilters)
+   .map(([colId, filter]) => [colId, normalizeColumnFilter(filter)] as const)
+   .filter((entry): entry is readonly [string, ColumnFilter] => !!entry[0] && !!entry[1]), [columnFilters])
+
+ const globalQueryFilteredRows = useMemo(() => {
    const q = String(query ?? '').trim().toLowerCase()
    if (!q) return products
    return products.filter((p) => {
      const hay = visibleSearchCols
-       .map((colId) => {
-         if (colId === 'archived') return ''
-         if (colId === 'is_visible') return visibilityText(p)
-         if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
-         if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
-         if (colId === 'ozon_sku') {
-           const v = p.ozon_sku ?? p.sku
-           return (v == null || String(v).trim() === '') ? '-' : String(v)
-         }
-         if (colId === 'seller_sku') {
-           const v = p.seller_sku ?? p.offer_id
-           return (v == null || String(v).trim() === '') ? '-' : String(v)
-         }
-         if (colId === 'fbo_sku' || colId === 'fbs_sku') {
-           const v = (p as any)[colId]
-           return (v == null || String(v).trim() === '') ? '-' : String(v)
-         }
-         if (isTemporalColumnId(colId)) return formatTemporalCellRu(colId, (p as any)[colId])
-         if (colId === 'photo_url') return ''
-         return toText((p as any)[colId])
-       })
+       .map((colId) => getFilterMeta(p, colId).text)
        .join(' ')
        .toLowerCase()
      return hay.includes(q)
    })
- }, [products, query, visibleSearchCols])
+ }, [products, query, visibleSearchCols, getFilterMeta])
+
+ const filtered = useMemo(() => {
+   if (activeColumnFilterEntries.length === 0) return globalQueryFilteredRows
+   return globalQueryFilteredRows.filter((row) => activeColumnFilterEntries.every(([colId, filter]) => rowMatchesColumnFilter(row, colId, filter)))
+ }, [globalQueryFilteredRows, activeColumnFilterEntries, rowMatchesColumnFilter])
+
+ const filterBaseRows = useMemo(() => {
+   if (!openFilterColId) return globalQueryFilteredRows
+   return globalQueryFilteredRows.filter((row) => activeColumnFilterEntries.every(([colId, filter]) => colId === openFilterColId || rowMatchesColumnFilter(row, colId, filter)))
+ }, [globalQueryFilteredRows, activeColumnFilterEntries, openFilterColId, rowMatchesColumnFilter])
+
+ const openFilterOptions = useMemo<FilterOption[]>(() => {
+   if (!openFilterColId) return []
+   const counts = new Map<string, FilterOption>()
+   for (const row of filterBaseRows) {
+     const meta = getFilterMeta(row, openFilterColId)
+     const key = meta.key
+     const label = meta.empty ? 'Пусто' : meta.text
+     const existing = counts.get(key)
+     if (existing) existing.count += 1
+     else counts.set(key, { key, label: label || 'Пусто', count: 1 })
+   }
+   const searchNeedle = filterOptionQuery.trim().toLowerCase()
+   return Array.from(counts.values())
+     .filter((option) => !searchNeedle || option.label.toLowerCase().includes(searchNeedle))
+     .sort((left, right) => {
+       if (left.key === EMPTY_FILTER_KEY && right.key !== EMPTY_FILTER_KEY) return 1
+       if (right.key === EMPTY_FILTER_KEY && left.key !== EMPTY_FILTER_KEY) return -1
+       const countDiff = right.count - left.count
+       if (countDiff) return countDiff
+       return left.label.localeCompare(right.label, 'ru')
+     })
+ }, [openFilterColId, filterBaseRows, getFilterMeta, filterOptionQuery])
+
+ const getColumnFilterState = useCallback((colId: string) => {
+   const filter = normalizeColumnFilter(columnFilters[colId])
+   return {
+     needle: filter?.needle ?? '',
+     mode: filter?.mode ?? 'all',
+     selectedKeys: filter?.selectedKeys ?? [],
+     active: isColumnFilterActive(filter),
+   }
+ }, [columnFilters])
+
+ const updateColumnFilter = useCallback((colId: string, updater: (prev: ColumnFilter) => ColumnFilter | null) => {
+   setColumnFilters((prev) => {
+     const prevFilter = normalizeColumnFilter(prev[colId]) ?? { needle: '', selectedKeys: [], mode: 'all' }
+     const nextFilter = normalizeColumnFilter(updater(prevFilter))
+     const currentNormalized = normalizeColumnFilter(prev[colId])
+     if (!nextFilter) {
+       if (!currentNormalized) return prev
+       const nextState = { ...prev }
+       delete nextState[colId]
+       return nextState
+     }
+     if (JSON.stringify(currentNormalized) === JSON.stringify(nextFilter)) return prev
+     return { ...prev, [colId]: nextFilter }
+   })
+ }, [])
 
  const sortedRows = useMemo(() => sortTableRows(filtered, cols, sortState), [filtered, cols, sortState])
 
@@ -657,40 +898,7 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    return ctx.measureText(text).width
  }
 
- const getCellString = useCallback((p: GridRow, colId: ColDef['id']): string => {
-   if (colId === 'archived') return ''
-   if (colId === 'is_visible') return visibilityText(p)
-   if (colId === 'hidden_reasons') return visibilityReasonText((p as any)[colId])
-   if (colId === 'brand') return (p.brand && String(p.brand).trim()) ? String(p.brand).trim() : 'Не указан'
-   if (colId === 'name') return (p.name && String(p.name).trim()) ? String(p.name).trim() : 'Без названия'
-   if (colId === 'ozon_sku') {
-     const v = p.ozon_sku ?? p.sku
-     return (v == null || String(v).trim() === '') ? '-' : String(v)
-   }
-   if (colId === 'seller_sku') {
-     const v = p.seller_sku ?? p.offer_id
-     return (v == null || String(v).trim() === '') ? '-' : String(v)
-   }
-   if (colId === 'fbo_sku' || colId === 'fbs_sku') {
-     const v = (p as any)[colId]
-     return (v == null || String(v).trim() === '') ? '-' : String(v)
-   }
-   if (colId === 'photo_url') return ''
-   if (colId === 'warehouse_name') {
-     const rawName = (p.warehouse_name == null ? '' : String(p.warehouse_name)).trim()
-     if (rawName) return rawName
-     const rawId = (p.warehouse_id == null ? '' : String(p.warehouse_id)).trim()
-     return rawId ? `Склад #${rawId}` : 'Нет данных синхронизации'
-   }
-   if (colId === 'placement_zone') {
-     const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
-     return zone || 'Нет данных синхронизации'
-   }
-   if (isTemporalColumnId(colId)) return formatTemporalCellRu(colId, (p as any)[colId])
-   if (dataset === 'sales' && colId === 'paid_by_customer') return formatCellNumberWithCurrency((p as any)[colId], (p as any).currency)
-   if (isMoneyColumnId(colId)) return formatMoneyValue((p as any)[colId])
-   return toText((p as any)[colId])
- }, [dataset])
+ const getCellString = useCallback((p: GridRow, colId: ColDef['id']): string => getFilterMeta(p, colId).text, [getFilterMeta])
 
  function autoSizeColumn(colId: string, rows: GridRow[], mode: 'default' | 'fit' = 'default') {
    const col = cols.find((c) => String(c.id) === colId)
@@ -855,6 +1063,28 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
    return p.offer_id
  }, [dataset])
 
+ const handleColumnFilterNeedleChange = useCallback((colId: string, needle: string) => {
+   updateColumnFilter(colId, (prev) => ({ ...prev, needle }))
+ }, [updateColumnFilter])
+
+ const handleColumnFilterModeChange = useCallback((colId: string, mode: ColumnFilterMode) => {
+   updateColumnFilter(colId, (prev) => ({ ...prev, mode }))
+ }, [updateColumnFilter])
+
+ const handleColumnFilterOptionToggle = useCallback((colId: string, optionKey: string) => {
+   updateColumnFilter(colId, (prev) => {
+     const nextKeys = new Set(prev.selectedKeys ?? [])
+     if (nextKeys.has(optionKey)) nextKeys.delete(optionKey)
+     else nextKeys.add(optionKey)
+     return { ...prev, selectedKeys: Array.from(nextKeys) }
+   })
+ }, [updateColumnFilter])
+
+ const handleColumnFilterClear = useCallback((colId: string) => {
+   updateColumnFilter(colId, () => null)
+   setFilterOptionQuery('')
+ }, [updateColumnFilter])
+
  return (
    <ProductsGridView
      hiddenCols={hiddenCols}
@@ -873,6 +1103,9 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
      empty={sortedRows.length === 0}
      sortColId={sortState?.colId ?? null}
      sortDir={sortState?.dir}
+     openFilterColId={openFilterColId}
+     openFilterOptions={openFilterOptions}
+     filterOptionQuery={filterOptionQuery}
      photoPreview={photoPreview}
      collapsedBtnRef={collapsedBtnRef}
      collapsedMenuRef={collapsedMenuRef}
@@ -884,11 +1117,14 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
      bodyScrollRef={bodyScrollRef}
      bodyInnerRef={bodyInnerRef}
      bodyTableRef={bodyTableRef}
+     filterPopoverRef={filterPopoverRef}
      getHeaderTitleText={getHeaderTitleText}
      getRowKey={getRowKey}
      cellText={cellText}
      setCollapsedOpen={setCollapsedOpen}
      setAddColumnMenuOpen={setAddColumnMenuOpen}
+     setOpenFilterColId={setOpenFilterColId}
+     setFilterOptionQuery={setFilterOptionQuery}
      onShowCol={showCol}
      onHideCol={hideCol}
      onMoveHiddenColToBucket={moveHiddenColToBucket}
@@ -896,6 +1132,11 @@ export default function ProductsPage({ dataset = 'products', query = '', period,
      onDragOverHeader={onDragOverHeader}
      onDrop={onDrop}
      onDragEnd={onDragEnd}
+     getColumnFilterState={getColumnFilterState}
+     onColumnFilterNeedleChange={handleColumnFilterNeedleChange}
+     onColumnFilterModeChange={handleColumnFilterModeChange}
+     onColumnFilterOptionToggle={handleColumnFilterOptionToggle}
+     onClearColumnFilter={handleColumnFilterClear}
      onToggleSort={toggleSort}
      onStartResize={startResize}
      onAutoSize={(id) => autoSizeColumn(id, sortedRows, 'fit')}
