@@ -61,6 +61,12 @@ function hasConfirmedShipmentDate(row: GridRow): boolean {
   return SALES_SHIPMENT_CONFIRMED_MARKERS.some((marker) => signalText.includes(marker))
 }
 
+type FloatingPopoverState = {
+  top: number
+  left: number
+  width: number
+}
+
 type Props = {
   hiddenCols: ColDef[]
   collapsedOpen: boolean
@@ -180,10 +186,58 @@ export default function ProductsGridView(props: Props) {
     hidePhotoPreview,
   } = props
 
+  const tableWrapRef = React.useRef<HTMLDivElement | null>(null)
+  const filterTriggerRefs = React.useRef<Record<string, HTMLButtonElement | null>>({})
+  const [floatingPopover, setFloatingPopover] = React.useState<FloatingPopoverState | null>(null)
+
+  const updateFloatingPopover = React.useCallback(() => {
+    if (!openFilterColId) {
+      setFloatingPopover(null)
+      return
+    }
+    const trigger = filterTriggerRefs.current[openFilterColId]
+    const wrap = tableWrapRef.current
+    if (!trigger || !wrap) {
+      setFloatingPopover(null)
+      return
+    }
+
+    const triggerRect = trigger.getBoundingClientRect()
+    const wrapRect = wrap.getBoundingClientRect()
+    const maxWidth = Math.max(240, Math.min(320, Math.floor(wrapRect.width - 16)))
+    let left = Math.round(triggerRect.right - wrapRect.left - maxWidth)
+    const minLeft = 8
+    const maxLeft = Math.max(minLeft, Math.round(wrapRect.width - maxWidth - 8))
+    if (left < minLeft) left = minLeft
+    if (left > maxLeft) left = maxLeft
+    const top = Math.round(triggerRect.bottom - wrapRect.top + 6)
+    setFloatingPopover({ top, left, width: maxWidth })
+  }, [openFilterColId])
+
+  React.useLayoutEffect(() => {
+    updateFloatingPopover()
+  }, [updateFloatingPopover, tableWidth, visibleCols, openFilterOptions.length, filterOptionQuery])
+
+  React.useEffect(() => {
+    if (!openFilterColId) return
+    const update = () => updateFloatingPopover()
+    window.addEventListener('resize', update)
+    headScrollRef.current?.addEventListener('scroll', update, { passive: true })
+    bodyScrollRef.current?.addEventListener('scroll', update, { passive: true })
+    return () => {
+      window.removeEventListener('resize', update)
+      headScrollRef.current?.removeEventListener('scroll', update)
+      bodyScrollRef.current?.removeEventListener('scroll', update)
+    }
+  }, [openFilterColId, headScrollRef, bodyScrollRef, updateFloatingPopover])
+
+  const openFilterCol = openFilterColId ? visibleCols.find((col) => String(col.id) === openFilterColId) ?? null : null
+  const openColumnFilterState = openFilterColId ? getColumnFilterState(openFilterColId) : { needle: '', mode: 'all' as ColumnFilterMode, selectedKeys: [], active: false }
+
   return (
     <div className="productsCard">
       <div className="productsTableArea">
-        <div className="tableWrap" style={{ marginTop: 0, position: 'relative' }}>
+        <div className="tableWrap" ref={tableWrapRef} style={{ marginTop: 0, position: 'relative' }}>
           <div className="resizeIndicator" ref={resizeIndicatorRef} style={{ display: 'none' }} />
           {hiddenCols.length > 0 && (
             <div className="collapsedCorner" style={{ position: 'absolute', top: 6, right: 6, zIndex: 5 }}>
@@ -347,97 +401,28 @@ export default function ProductsGridView(props: Props) {
                               aria-haspopup="dialog"
                               aria-expanded={isFilterOpen}
                               title={columnFilter.active ? 'Фильтр включён' : 'Фильтр по столбцу'}
-                              onMouseDown={(e) => e.stopPropagation()}
+                              draggable={false}
+                              ref={(node) => {
+                                filterTriggerRefs.current[id] = node
+                              }}
+                              onMouseDown={(e) => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                              }}
                               onClick={(e) => {
+                                e.preventDefault()
                                 e.stopPropagation()
                                 setFilterOptionQuery('')
                                 setOpenFilterColId((prev) => prev === id ? null : id)
                               }}
                             >
-                              <svg viewBox="0 0 12 12" className="filterGlyph" aria-hidden="true">
-                                <path d="M1.5 2h9L7 6.2v3.2l-2 .9V6.2L1.5 2z" fill="currentColor" />
+                              <svg viewBox="0 0 16 16" className="filterGlyph" aria-hidden="true">
+                                <path d="M2.5 3.25h11L9.3 8.05v3.2l-2.6 1.5v-4.7L2.5 3.25Z" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinejoin="round" />
+                                <path d="M5 5.15h6" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+                                <path d="M5.8 6.85h4.4" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
                               </svg>
-                              {columnFilter.active && <span className="thFilterDot" aria-hidden="true" />}
                             </button>
                           </div>
-                          {isFilterOpen && (
-                            <div
-                              className="columnFilterPopover"
-                              data-column-filter-popover="true"
-                              ref={filterPopoverRef}
-                              onMouseDown={(e) => e.stopPropagation()}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <div className="columnFilterHeader">
-                                <div className="columnFilterTitle">{getHeaderTitleText(c)}</div>
-                                {columnFilter.active && (
-                                  <button
-                                    type="button"
-                                    className="columnFilterClearBtn"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      onClearColumnFilter(id)
-                                    }}
-                                  >
-                                    Сбросить
-                                  </button>
-                                )}
-                              </div>
-                              <div className="columnFilterModes" role="group" aria-label="Режим фильтра">
-                                {([
-                                  ['all', 'Все'],
-                                  ['empty', 'Пустые'],
-                                  ['nonempty', 'Не пустые'],
-                                ] as Array<[ColumnFilterMode, string]>).map(([mode, label]) => (
-                                  <button
-                                    key={mode}
-                                    type="button"
-                                    className={`columnFilterModeBtn ${columnFilter.mode === mode ? 'active' : ''}`.trim()}
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      onColumnFilterModeChange(id, mode)
-                                    }}
-                                  >
-                                    {label}
-                                  </button>
-                                ))}
-                              </div>
-                              <label className="columnFilterField">
-                                <span>Содержит</span>
-                                <input
-                                  value={columnFilter.needle}
-                                  placeholder="Текст в столбце"
-                                  onChange={(e) => onColumnFilterNeedleChange(id, e.currentTarget.value)}
-                                />
-                              </label>
-                              <label className="columnFilterField compact">
-                                <span>Значения</span>
-                                <input
-                                  value={filterOptionQuery}
-                                  placeholder="Поиск по значениям"
-                                  onChange={(e) => setFilterOptionQuery(e.currentTarget.value)}
-                                />
-                              </label>
-                              <div className="columnFilterOptions">
-                                {openFilterOptions.length > 0 ? openFilterOptions.map((option) => {
-                                  const checked = columnFilter.selectedKeys.includes(option.key)
-                                  return (
-                                    <label key={option.key} className="columnFilterOption">
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={() => onColumnFilterOptionToggle(id, option.key)}
-                                      />
-                                      <span className="columnFilterOptionText" title={option.label}>{option.label}</span>
-                                      <span className="columnFilterOptionCount">{option.count}</span>
-                                    </label>
-                                  )
-                                }) : (
-                                  <div className="columnFilterEmpty">Нет значений для выбора</div>
-                                )}
-                              </div>
-                            </div>
-                          )}
                           <div
                             className="thResizer"
                             title="Изменить ширину (двойной клик — по содержимому)"
@@ -547,6 +532,86 @@ export default function ProductsGridView(props: Props) {
               </table>
             </div>
           </div>
+
+          {openFilterCol && openFilterColId && floatingPopover && (
+            <div
+              className="columnFilterPopover columnFilterPopoverFloating"
+              data-column-filter-popover="true"
+              ref={filterPopoverRef}
+              style={{ top: floatingPopover.top, left: floatingPopover.left, width: floatingPopover.width }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="columnFilterHeader">
+                <div className="columnFilterTitle">{getHeaderTitleText(openFilterCol)}</div>
+                {openColumnFilterState.active && (
+                  <button
+                    type="button"
+                    className="columnFilterClearBtn"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onClearColumnFilter(openFilterColId)
+                    }}
+                  >
+                    Сбросить
+                  </button>
+                )}
+              </div>
+              <div className="columnFilterModes" role="group" aria-label="Режим фильтра">
+                {([
+                  ['all', 'Все'],
+                  ['empty', 'Пустые'],
+                  ['nonempty', 'Не пустые'],
+                ] as Array<[ColumnFilterMode, string]>).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`columnFilterModeBtn ${openColumnFilterState.mode === mode ? 'active' : ''}`.trim()}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onColumnFilterModeChange(openFilterColId, mode)
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <label className="columnFilterField">
+                <span>Содержит</span>
+                <input
+                  value={openColumnFilterState.needle}
+                  placeholder="Текст в столбце"
+                  onChange={(e) => onColumnFilterNeedleChange(openFilterColId, e.currentTarget.value)}
+                />
+              </label>
+              <label className="columnFilterField compact">
+                <span>Значения</span>
+                <input
+                  value={filterOptionQuery}
+                  placeholder="Поиск по значениям"
+                  onChange={(e) => setFilterOptionQuery(e.currentTarget.value)}
+                />
+              </label>
+              <div className="columnFilterOptions">
+                {openFilterOptions.length > 0 ? openFilterOptions.map((option) => {
+                  const checked = openColumnFilterState.selectedKeys.includes(option.key)
+                  return (
+                    <label key={option.key} className="columnFilterOption">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => onColumnFilterOptionToggle(openFilterColId, option.key)}
+                      />
+                      <span className="columnFilterOptionText" title={option.label}>{option.label}</span>
+                      <span className="columnFilterOptionCount">{option.count}</span>
+                    </label>
+                  )
+                }) : (
+                  <div className="columnFilterEmpty">Нет значений для выбора</div>
+                )}
+              </div>
+            </div>
+          )}
 
           {photoPreview && (
             <div className="photoPreviewPopover" style={{ left: photoPreview.x, top: photoPreview.y }} aria-hidden="true">
