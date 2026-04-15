@@ -27,6 +27,229 @@ let installerShutdownInFlight: Promise<void> | null = null
 let gracefulShutdownInFlight: Promise<void> | null = null
 let startupDbWasMissing = false
 
+type BootstrapStageKey = 'prepare' | 'products' | 'placements' | 'sales' | 'finalize'
+type BootstrapProgressTimelineEntry = {
+  key: BootstrapStageKey
+  label: string
+  status: 'pending' | 'active' | 'done' | 'error'
+  startedAt: string | null
+  finishedAt: string | null
+  detail: string | null
+}
+type BootstrapProgressState = {
+  active: boolean
+  startedAt: string | null
+  updatedAt: string | null
+  finishedAt: string | null
+  stageKey: BootstrapStageKey | null
+  stageLabel: string
+  stageMessage: string
+  percent: number
+  completedStages: number
+  totalStages: number
+  currentLoaded: number
+  currentTotal: number | null
+  currentUnitLabel: string
+  etaSeconds: number | null
+  error: string | null
+  timeline: BootstrapProgressTimelineEntry[]
+}
+
+const BOOTSTRAP_STAGE_ORDER: Array<{ key: BootstrapStageKey; label: string }> = [
+  { key: 'prepare', label: 'Подготовка' },
+  { key: 'products', label: 'Товары' },
+  { key: 'placements', label: 'Остатки и размещения' },
+  { key: 'sales', label: 'Продажи' },
+  { key: 'finalize', label: 'Финализация' },
+]
+
+function createEmptyBootstrapProgress(): BootstrapProgressState {
+  return {
+    active: false,
+    startedAt: null,
+    updatedAt: null,
+    finishedAt: null,
+    stageKey: null,
+    stageLabel: '',
+    stageMessage: '',
+    percent: 0,
+    completedStages: 0,
+    totalStages: BOOTSTRAP_STAGE_ORDER.length,
+    currentLoaded: 0,
+    currentTotal: null,
+    currentUnitLabel: 'этапов',
+    etaSeconds: null,
+    error: null,
+    timeline: BOOTSTRAP_STAGE_ORDER.map((stage) => ({
+      key: stage.key,
+      label: stage.label,
+      status: 'pending',
+      startedAt: null,
+      finishedAt: null,
+      detail: null,
+    })),
+  }
+}
+
+let bootstrapProgressState: BootstrapProgressState = createEmptyBootstrapProgress()
+
+function getBootstrapStageIndex(stageKey: BootstrapStageKey | null | undefined): number {
+  if (!stageKey) return -1
+  return BOOTSTRAP_STAGE_ORDER.findIndex((stage) => stage.key === stageKey)
+}
+
+function recalcBootstrapProgress() {
+  const totalStages = BOOTSTRAP_STAGE_ORDER.length
+  const completedStages = bootstrapProgressState.timeline.filter((step) => step.status === 'done').length
+  const activeIndex = getBootstrapStageIndex(bootstrapProgressState.stageKey)
+  let fraction = 0
+  if (bootstrapProgressState.active && activeIndex >= 0) {
+    const total = bootstrapProgressState.currentTotal
+    if (typeof total === 'number' && Number.isFinite(total) && total > 0) {
+      fraction = Math.max(0, Math.min(1, bootstrapProgressState.currentLoaded / total))
+    } else if (bootstrapProgressState.currentLoaded > 0) {
+      fraction = 0.5
+    }
+  }
+
+  let percent = Math.round(((completedStages + fraction) / totalStages) * 100)
+  if (bootstrapProgressState.finishedAt && !bootstrapProgressState.error) percent = 100
+  if (bootstrapProgressState.error) percent = Math.max(1, percent)
+
+  const startedMs = bootstrapProgressState.startedAt ? Date.parse(bootstrapProgressState.startedAt) : NaN
+  const updatedMs = bootstrapProgressState.updatedAt ? Date.parse(bootstrapProgressState.updatedAt) : NaN
+  let etaSeconds: number | null = null
+  if (Number.isFinite(startedMs) && Number.isFinite(updatedMs) && percent > 3 && percent < 100) {
+    const elapsedMs = Math.max(1, updatedMs - startedMs)
+    etaSeconds = Math.max(0, Math.round((elapsedMs * (100 - percent)) / percent / 1000))
+  }
+
+  bootstrapProgressState = {
+    ...bootstrapProgressState,
+    percent,
+    completedStages,
+    totalStages,
+    etaSeconds,
+  }
+}
+
+function cloneBootstrapProgress() {
+  return {
+    ok: true,
+    ...bootstrapProgressState,
+    timeline: bootstrapProgressState.timeline.map((step) => ({ ...step })),
+  }
+}
+
+function startBootstrapProgress() {
+  const startedAt = new Date().toISOString()
+  bootstrapProgressState = createEmptyBootstrapProgress()
+  bootstrapProgressState.active = true
+  bootstrapProgressState.startedAt = startedAt
+  bootstrapProgressState.updatedAt = startedAt
+  recalcBootstrapProgress()
+}
+
+function setBootstrapStageActive(stageKey: BootstrapStageKey, stageMessage: string, opts?: { loaded?: number; total?: number | null; unitLabel?: string; detail?: string | null }) {
+  const now = new Date().toISOString()
+  const stage = BOOTSTRAP_STAGE_ORDER.find((item) => item.key === stageKey)
+  if (!stage) return
+  bootstrapProgressState.active = true
+  bootstrapProgressState.updatedAt = now
+  bootstrapProgressState.finishedAt = null
+  bootstrapProgressState.error = null
+  bootstrapProgressState.stageKey = stage.key
+  bootstrapProgressState.stageLabel = stage.label
+  bootstrapProgressState.stageMessage = stageMessage
+  bootstrapProgressState.currentLoaded = Math.max(0, Math.trunc(opts?.loaded ?? 0))
+  bootstrapProgressState.currentTotal = typeof opts?.total === 'number' && Number.isFinite(opts.total) && opts.total >= 0 ? Math.trunc(opts.total) : null
+  bootstrapProgressState.currentUnitLabel = String(opts?.unitLabel ?? 'этапов')
+  bootstrapProgressState.timeline = bootstrapProgressState.timeline.map((step) => {
+    if (step.key !== stage.key) return step
+    return {
+      ...step,
+      status: 'active',
+      startedAt: step.startedAt ?? now,
+      finishedAt: null,
+      detail: opts?.detail ?? step.detail ?? null,
+    }
+  })
+  recalcBootstrapProgress()
+}
+
+function setBootstrapStageProgress(stageKey: BootstrapStageKey, stageMessage: string, opts?: { loaded?: number; total?: number | null; unitLabel?: string; detail?: string | null }) {
+  if (bootstrapProgressState.stageKey !== stageKey) {
+    setBootstrapStageActive(stageKey, stageMessage, opts)
+    return
+  }
+  const now = new Date().toISOString()
+  bootstrapProgressState.updatedAt = now
+  bootstrapProgressState.stageMessage = stageMessage
+  bootstrapProgressState.currentLoaded = Math.max(0, Math.trunc(opts?.loaded ?? bootstrapProgressState.currentLoaded))
+  bootstrapProgressState.currentTotal = typeof opts?.total === 'number' && Number.isFinite(opts.total) && opts.total >= 0 ? Math.trunc(opts.total) : bootstrapProgressState.currentTotal
+  bootstrapProgressState.currentUnitLabel = String(opts?.unitLabel ?? bootstrapProgressState.currentUnitLabel ?? 'этапов')
+  bootstrapProgressState.timeline = bootstrapProgressState.timeline.map((step) => step.key === stageKey ? { ...step, detail: opts?.detail ?? step.detail ?? null } : step)
+  recalcBootstrapProgress()
+}
+
+function finishBootstrapStage(stageKey: BootstrapStageKey, detail?: string | null) {
+  const now = new Date().toISOString()
+  const stage = BOOTSTRAP_STAGE_ORDER.find((item) => item.key === stageKey)
+  if (!stage) return
+  bootstrapProgressState.updatedAt = now
+  bootstrapProgressState.timeline = bootstrapProgressState.timeline.map((step) => {
+    if (step.key !== stage.key) return step
+    return {
+      ...step,
+      status: 'done',
+      startedAt: step.startedAt ?? now,
+      finishedAt: now,
+      detail: detail ?? step.detail ?? null,
+    }
+  })
+  bootstrapProgressState.stageKey = stage.key
+  bootstrapProgressState.stageLabel = stage.label
+  bootstrapProgressState.stageMessage = detail ?? `${stage.label} завершены`
+  bootstrapProgressState.currentLoaded = 0
+  bootstrapProgressState.currentTotal = null
+  bootstrapProgressState.currentUnitLabel = 'этапов'
+  recalcBootstrapProgress()
+}
+
+function failBootstrapProgress(errorMessage: string) {
+  const now = new Date().toISOString()
+  bootstrapProgressState.active = false
+  bootstrapProgressState.updatedAt = now
+  bootstrapProgressState.finishedAt = now
+  bootstrapProgressState.error = errorMessage
+  if (bootstrapProgressState.stageKey) {
+    bootstrapProgressState.timeline = bootstrapProgressState.timeline.map((step) => {
+      if (step.key !== bootstrapProgressState.stageKey) return step
+      return {
+        ...step,
+        status: 'error',
+        startedAt: step.startedAt ?? now,
+        finishedAt: now,
+        detail: errorMessage,
+      }
+    })
+  }
+  recalcBootstrapProgress()
+}
+
+function completeBootstrapProgress(detail?: string | null) {
+  const now = new Date().toISOString()
+  bootstrapProgressState.active = false
+  bootstrapProgressState.updatedAt = now
+  bootstrapProgressState.finishedAt = now
+  bootstrapProgressState.error = null
+  bootstrapProgressState.stageMessage = detail ?? 'Локальная база готова'
+  bootstrapProgressState.currentLoaded = BOOTSTRAP_STAGE_ORDER.length
+  bootstrapProgressState.currentTotal = BOOTSTRAP_STAGE_ORDER.length
+  bootstrapProgressState.currentUnitLabel = 'этапов'
+  recalcBootstrapProgress()
+}
+
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
 app.quit()
@@ -689,6 +912,8 @@ async function performProductsSync(args?: { salesPeriod?: SalesPeriod | null }) 
 if (syncProductsInFlight) return await syncProductsInFlight
 const job = (async () => {
 let storeClientId: string | null = null
+startBootstrapProgress()
+setBootstrapStageActive('prepare', 'Проверяем ключи и локальную базу', { loaded: 0, total: 1, unitLabel: 'шагов' })
 try { storeClientId = loadSecrets().clientId } catch {}
 const logId = dbLogStart('sync_products', storeClientId)
 try {
@@ -700,10 +925,25 @@ let lastId = ''
 const limit = 1000
 let pages = 0
 let total = 0
+let estimatedProductPages: number | null = null
+finishBootstrapStage('prepare', 'Ключи и локальная база готовы')
+
+setBootstrapStageActive('products', 'Загружаем товары из Ozon', { loaded: 0, total: null, unitLabel: 'страниц' })
 for (let guard = 0; guard < 200; guard++) {
 const { items, lastId: next, total: totalMaybe } = await ozonProductList(secrets, { lastId, limit })
 pages += 1
 total += items.length
+if (typeof totalMaybe === 'number' && Number.isFinite(totalMaybe) && totalMaybe > 0) {
+  estimatedProductPages = Math.max(1, Math.ceil(totalMaybe / limit))
+}
+setBootstrapStageProgress('products', 'Получаем карточки товаров', {
+  loaded: pages,
+  total: estimatedProductPages,
+  unitLabel: 'страниц',
+  detail: estimatedProductPages != null
+    ? `Загружено ${pages} из ${estimatedProductPages} страниц товаров`
+    : `Загружено ${pages} страниц товаров`,
+})
 const ids = items.map(i => i.product_id).filter(Boolean) as number[]
 const infoList = await ozonProductInfoList(secrets, ids)
 const infoMap = new Map<number, typeof infoList[number]>()
@@ -748,9 +988,12 @@ if (typeof totalMaybe === 'number' && total >= totalMaybe) break
 }
 dbDeleteProductsMissingForStore(secrets.clientId, Array.from(incomingOfferIds))
 const syncedCount = dbCountProducts(secrets.clientId)
+finishBootstrapStage('products', `Товары загружены: ${syncedCount}`)
+
 let placementRowsCount = 0
 let placementSyncError: string | null = null
 let placementCacheKept = false
+setBootstrapStageActive('placements', 'Загружаем остатки и размещения', { loaded: 0, total: null, unitLabel: 'запросов' })
 try {
 const productsForStore = dbGetProducts(secrets.clientId)
 const ozonSkuList = Array.from(new Set(productsForStore.map((p) => String(p.sku ?? '').trim()).filter(Boolean)))
@@ -771,6 +1014,11 @@ placement_zone?: string | null
 }> = []
 const placementRowKeys = new Set<string>()
 let placementApiCallCount = 0
+const totalPlacementCalls = warehouses.reduce((sum, wh) => {
+  const wid = Number((wh as any).warehouse_id)
+  if (!Number.isFinite(wid)) return sum
+  return sum + Math.ceil(ozonSkuList.length / 500) + Math.ceil(sellerSkuList.length / 500)
+}, 0)
 const appendPlacementRows = (
 warehouseId: number,
 warehouseName: string | null,
@@ -805,13 +1053,37 @@ const wid = Number(wh.warehouse_id)
 if (!Number.isFinite(wid)) continue
 for (const part of chunk(ozonSkuList, 500)) {
 placementApiCallCount += 1
+setBootstrapStageProgress('placements', 'Запрашиваем зоны размещения по складам', {
+  loaded: placementApiCallCount - 1,
+  total: totalPlacementCalls,
+  unitLabel: 'запросов',
+  detail: `Выполнено ${Math.max(0, placementApiCallCount - 1)} из ${totalPlacementCalls} запросов по складам`,
+})
 const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
 appendPlacementRows(wid, wh.name ?? null, zones)
+setBootstrapStageProgress('placements', 'Запрашиваем зоны размещения по складам', {
+  loaded: placementApiCallCount,
+  total: totalPlacementCalls,
+  unitLabel: 'запросов',
+  detail: `Выполнено ${placementApiCallCount} из ${totalPlacementCalls} запросов по складам`,
+})
 }
 for (const part of chunk(sellerSkuList, 500)) {
 placementApiCallCount += 1
+setBootstrapStageProgress('placements', 'Запрашиваем зоны размещения по складам', {
+  loaded: placementApiCallCount - 1,
+  total: totalPlacementCalls,
+  unitLabel: 'запросов',
+  detail: `Выполнено ${Math.max(0, placementApiCallCount - 1)} из ${totalPlacementCalls} запросов по складам`,
+})
 const zones = await ozonPlacementZoneInfo(secrets, { warehouseId: wid, skus: part })
 appendPlacementRows(wid, wh.name ?? null, zones)
+setBootstrapStageProgress('placements', 'Запрашиваем зоны размещения по складам', {
+  loaded: placementApiCallCount,
+  total: totalPlacementCalls,
+  unitLabel: 'запросов',
+  detail: `Выполнено ${placementApiCallCount} из ${totalPlacementCalls} запросов по складам`,
+})
 }
 }
 if (allPlacementRows.length === 0 && placementApiCallCount > 0) {
@@ -827,6 +1099,9 @@ placementRowsCount = dbReplaceProductPlacementsForStore(secrets.clientId, [])
 } catch (placementErr: any) {
 placementSyncError = placementErr?.message ?? String(placementErr)
 }
+finishBootstrapStage('placements', placementSyncError ? `Остатки: ${placementSyncError}` : `Остатки и размещения обновлены: ${placementRowsCount}`)
+
+setBootstrapStageActive('sales', 'Загружаем продажи', { loaded: 0, total: 1, unitLabel: 'этапов' })
 const localSnapshots = refreshCoreLocalDatasetSnapshots(secrets.clientId)
 let salesRowsCount = 0
 let salesSyncError: string | null = null
@@ -836,6 +1111,9 @@ salesRowsCount = Number(salesRefresh?.rowsCount ?? 0)
 } catch (salesErr: any) {
 salesSyncError = salesErr?.message ?? String(salesErr)
 }
+finishBootstrapStage('sales', salesSyncError ? `Продажи: ${salesSyncError}` : `Продажи загружены: ${salesRowsCount}`)
+
+setBootstrapStageActive('finalize', 'Финализируем локальную базу', { loaded: 0, total: 1, unitLabel: 'этапов' })
 if (!secrets.storeName) {
 try {
 const name = await ozonGetStoreName(secrets)
@@ -860,8 +1138,11 @@ salesRowsCount,
 salesSyncError,
 },
 })
+finishBootstrapStage('finalize', 'Локальная база готова')
+completeBootstrapProgress('Локальная база полностью собрана')
 return { ok: true, itemsCount: syncedCount, pages, placementRowsCount, placementSyncError, salesRowsCount, salesSyncError }
 } catch (e: any) {
+failBootstrapProgress(e?.message ?? String(e))
 dbLogFinish(logId, { status: 'error', errorMessage: e?.message ?? String(e), errorDetails: e?.details, storeClientId })
 return { ok: false, error: e?.message ?? String(e) }
 }
@@ -1027,6 +1308,14 @@ ipcMain.handle('local-server:probe', async () => {
 ipcMain.handle('app:getBootstrapState', async () => {
   try {
     return getAppBootstrapState()
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
+})
+
+ipcMain.handle('app:getBootstrapProgress', async () => {
+  try {
+    return cloneBootstrapProgress()
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) }
   }
