@@ -1206,25 +1206,53 @@ void runBackgroundSyncTick('startup-delay')
 
 
 
+function translateSalesRefreshError(messageRaw: unknown, rowsCount = 0): string {
+  const message = String(messageRaw ?? '').trim()
+  if (/HTTP\s*400/.test(message)) {
+    return rowsCount > 0
+      ? 'Ozon отклонил часть дополнительной догрузки продаж за выбранный период. Основные данные уже загружены, подробности сохранены в журнале синхронизации.'
+      : 'Ozon не принял запрос на дополнительную догрузку продаж за выбранный период. Попробуй сократить период или повторить загрузку позже.'
+  }
+  if (/HTTP\s*429/.test(message)) {
+    return rowsCount > 0
+      ? 'Ozon временно ограничил частоту запросов. Основные данные уже загружены, подробности сохранены в журнале синхронизации.'
+      : 'Ozon временно ограничил частоту запросов. Повтори загрузку позже.'
+  }
+  if (/timeout/i.test(message)) {
+    return rowsCount > 0
+      ? 'Ozon ответил не вовремя при дополнительной догрузке продаж. Основные данные уже загружены, подробности сохранены в журнале синхронизации.'
+      : 'Ozon не успел ответить при загрузке продаж. Повтори попытку позже.'
+  }
+  return rowsCount > 0
+    ? 'Во время дополнительной догрузки продаж возникла неполадка. Основные данные уже загружены, подробности сохранены в журнале синхронизации.'
+    : 'Во время загрузки продаж возникла неполадка. Подробности сохранены в журнале синхронизации.'
+}
+
 async function handleRefreshSales(period: SalesPeriod | null | undefined) {
   try {
     const secrets = loadSecrets()
     const refreshed = await refreshSalesRawSnapshotFromApi(secrets, period ?? null)
     return { ok: true, rowsCount: Number(refreshed?.rowsCount ?? 0), rateLimited: false }
   } catch (e: any) {
-    const message = e?.message ?? String(e)
-    const isRateLimited = /HTTP\s*429/.test(message)
-    if (isRateLimited) {
-      try {
-        const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
-        if (Array.isArray(rows) && rows.length > 0) {
-          return { ok: true, rowsCount: rows.length, rateLimited: true }
-        }
-      } catch {
-        // ignore
+    const technicalMessage = e?.message ?? String(e)
+    const isRateLimited = /HTTP\s*429/.test(technicalMessage)
+    try {
+      const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+      if (Array.isArray(rows) && rows.length > 0) {
+        const friendly = translateSalesRefreshError(technicalMessage, rows.length)
+        startupLog('sales.refresh.nonblocking_warning', {
+          period: period ?? null,
+          rowsCount: rows.length,
+          message: friendly,
+          technicalMessage,
+        })
+        return { ok: true, rowsCount: rows.length, rateLimited: isRateLimited, warning: friendly }
       }
+    } catch {
+      // ignore
     }
-    return { ok: false, error: message, rowsCount: 0, rateLimited: isRateLimited }
+    const friendly = translateSalesRefreshError(technicalMessage, 0)
+    return { ok: false, error: friendly, rowsCount: 0, rateLimited: isRateLimited }
   }
 }
 
