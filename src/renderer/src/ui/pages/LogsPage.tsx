@@ -246,6 +246,7 @@ function classifyTraceCategory(meta: TraceMeta): TraceCategoryKey {
   if (traceKind === 'paid_by_customer' || stage.includes('paid_by_customer')) return 'paid'
   if (stage.includes('origin.rows.built')) return 'origin'
   if (stage.includes('status.rows.built')) return 'status'
+  if (stage.startsWith('sales.snapshot.') || stage.startsWith('sales.read.')) return 'delivery'
   if (stage.includes('report.') || stage.endsWith('.rows.built')) return 'delivery'
   if (stage.includes('webhook') || stage.includes('push.') || stage.includes('api.refresh') || stage.includes('raw-cache.rebuild')) return 'shipment'
   return 'other'
@@ -284,6 +285,9 @@ function buildTraceStepTitle(meta: TraceMeta): string {
     'api.refresh.report.empty': 'Отчёт не вернул даты доставки',
     'api.refresh.report.error': 'Ошибка формирования отчёта',
     'api.refresh.snapshot.persisted': 'Локальная база обновлена',
+    'sales.snapshot.saved': 'Snapshot продаж сохранён',
+    'sales.read.snapshot': 'Продажи прочитаны из точного snapshot',
+    'sales.read.default_snapshot': 'Продажи прочитаны из rolling snapshot',
     'api.refresh.rows.built': 'Дата доставки применена к строкам продаж',
     'api.refresh.origin.rows.built': 'Склад / кластер отгрузки применён к строкам продаж',
     'api.refresh.status.rows.built': 'Статус применён к строкам продаж',
@@ -350,6 +354,21 @@ function buildTraceStepSummary(meta: TraceMeta): string {
       typeof meta?.reportSnapshotRowsCount === 'number' ? `Строк в snapshot: ${meta.reportSnapshotRowsCount}.` : '',
       typeof meta?.reportSnapshotRowsWithDeliveryDate === 'number' ? `Дат доставки в snapshot: ${meta.reportSnapshotRowsWithDeliveryDate}.` : '',
       typeof meta?.reportSnapshotRowsWithShipmentOrigin === 'number' ? `Источник отгрузки в snapshot: ${meta.reportSnapshotRowsWithShipmentOrigin}.` : '',
+    ])
+  }
+  if (stage === 'sales.snapshot.saved') {
+    return createSentence([
+      typeof meta?.snapshotRowsRequested === 'number' ? `Строк до сохранения: ${meta.snapshotRowsRequested}.` : '',
+      typeof meta?.snapshotRowsStored === 'number' ? `Строк сохранено: ${meta.snapshotRowsStored}.` : '',
+      typeof meta?.snapshotRowsDroppedByLimit === 'number' ? `Обрезано лимитом: ${meta.snapshotRowsDroppedByLimit}.` : '',
+      normalizeText(meta?.snapshotRowsSpan) ? `Диапазон строк: ${meta.snapshotRowsSpan}.` : '',
+    ])
+  }
+  if (stage === 'sales.read.snapshot' || stage === 'sales.read.default_snapshot') {
+    return createSentence([
+      typeof meta?.readRowsCount === 'number' ? `Строк отдано в таблицу: ${meta.readRowsCount}.` : '',
+      normalizeText(meta?.readRowsSpan) ? `Диапазон строк: ${meta.readRowsSpan}.` : '',
+      normalizeText(meta?.snapshotScopeKey) ? `Scope: ${meta.snapshotScopeKey}.` : '',
     ])
   }
   if (stage === 'api.refresh.rows.built' || stage === 'raw-cache.rebuild.rows.built') {
@@ -458,6 +477,14 @@ function buildSectionMetrics(key: TraceCategoryKey, merged: TraceMeta): TraceMet
     if (typeof merged?.reportSavedCsvCount === 'number') pushMetric(metrics, 'CSV-файлов сохранено на диск', merged.reportSavedCsvCount)
     if (typeof merged?.reportCsvHeaderCount === 'number') pushMetric(metrics, 'Колонок в CSV', merged.reportCsvHeaderCount)
     if (normalizeText(merged?.reportCode)) pushMetric(metrics, 'Код отчёта', merged.reportCode)
+    if (typeof merged?.snapshotRowsRequested === 'number') pushMetric(metrics, 'Строк до сохранения snapshot продаж', merged.snapshotRowsRequested)
+    if (typeof merged?.snapshotRowsStored === 'number') pushMetric(metrics, 'Строк сохранено в snapshot продаж', merged.snapshotRowsStored)
+    if (typeof merged?.snapshotRowsDroppedByLimit === 'number') pushMetric(metrics, 'Строк обрезано лимитом snapshot', merged.snapshotRowsDroppedByLimit)
+    if (typeof merged?.snapshotMaxRows === 'number' && merged.snapshotMaxRows > 0) pushMetric(metrics, 'Лимит строк snapshot продаж', merged.snapshotMaxRows)
+    if (normalizeText(merged?.snapshotRowsSpan)) pushMetric(metrics, 'Диапазон строк в snapshot продаж', merged.snapshotRowsSpan)
+    if (normalizeText(merged?.snapshotSourceKind)) pushMetric(metrics, 'Источник snapshot продаж', merged.snapshotSourceKind)
+    if (typeof merged?.readRowsCount === 'number') pushMetric(metrics, 'Строк отдано в таблицу', merged.readRowsCount)
+    if (normalizeText(merged?.readRowsSpan)) pushMetric(metrics, 'Диапазон строк на чтении', merged.readRowsSpan)
     return metrics
   }
   if (key === 'origin') {
@@ -522,6 +549,9 @@ function buildSectionNotes(key: TraceCategoryKey, merged: TraceMeta): string[] {
     if (savedCsvPaths.length) notes.push(`CSV сохранён на диск: ${savedCsvPaths.join(' | ')}.`)
     if (Number(merged?.salesRowsBeforeStrictFilter) > 0 && Number(merged?.salesRowsAfterStrictFilter) === 0) {
       notes.push('После строгой фильтрации строки исчезли полностью. Сравни запрошенный период и фактический диапазон дат строк выше.')
+    }
+    if (Number(merged?.snapshotRowsDroppedByLimit) > 0) {
+      notes.push(`Snapshot продаж был обрезан по лимиту строк: потеряно ${Number(merged.snapshotRowsDroppedByLimit)} строк.`)
     }
   }
   if (key === 'origin') {
