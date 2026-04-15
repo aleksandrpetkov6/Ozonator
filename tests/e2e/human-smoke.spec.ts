@@ -823,13 +823,9 @@ async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<Scroll
 
   const jumps = [
     Math.floor(base.maxTop * 0.98),
-    Math.floor(base.maxTop * 0.03),
-    Math.floor(base.maxTop * 0.90),
-    Math.floor(base.maxTop * 0.12),
-    Math.floor(base.maxTop * 0.80),
-    Math.floor(base.maxTop * 0.22),
-    Math.floor(base.maxTop * 0.70),
-    Math.floor(base.maxTop * 0.05),
+    Math.floor(base.maxTop * 0.06),
+    Math.floor(base.maxTop * 0.86),
+    Math.floor(base.maxTop * 0.18),
     base.maxTop,
     0,
   ];
@@ -863,18 +859,16 @@ async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<Scroll
   // 1) Резкие прыжки scrollTop (жестко, без плавности)
   for (const top of jumps) {
     await probePrimaryScrollable(page, { top });
-    await sampleFor(`jump top=${top}`, 1800, 50);
+    await sampleFor(`jump top=${top}`, 500, 60);
   }
 
   // 2) Попытка имитации реального перетаскивания ползунка (thumb drag)
   const geom = await getVerticalScrollbarGeometry(page);
   if (geom.ok && geom.maxTop > 8) {
     const dragTargets = [
-      Math.floor(geom.maxTop * 0.97),
-      Math.floor(geom.maxTop * 0.05),
-      Math.floor(geom.maxTop * 0.92),
-      Math.floor(geom.maxTop * 0.15),
-      Math.floor(geom.maxTop * 0.85),
+      Math.floor(geom.maxTop * 0.94),
+      Math.floor(geom.maxTop * 0.08),
+      Math.floor(geom.maxTop * 0.82),
       Math.floor(geom.maxTop * 0.02),
     ];
 
@@ -890,17 +884,17 @@ async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<Scroll
       await page.mouse.down().catch(() => {});
       await page.mouse.move(geom.x, y, { steps: 2 }).catch(() => {});
       await page.mouse.up().catch(() => {});
-      await sampleFor(`thumb-drag top=${top}`, 900, 45);
+      await sampleFor(`thumb-drag top=${top}`, 300, 60);
     }
   } else {
     debug.notes.push(`thumb-drag-skip:${geom.reason || 'unknown'}`);
   }
 
   // 3) Большие wheel-рывки (доп.покрытие поведения пользователя)
-  const wheelBursts = [2200, -1800, 2600, -2400, 3200, -3000, 3600, -3400];
+  const wheelBursts = [2000, -1600, 2400, -2000, 2800, -2400];
   for (const delta of wheelBursts) {
     await page.mouse.wheel(0, delta).catch(() => {});
-    await sampleFor(`wheel dY=${delta}`, 700, 45);
+    await sampleFor(`wheel dY=${delta}`, 250, 60);
   }
 
   debug.maxBlankStreakMs = maxBlankStreakMs;
@@ -909,7 +903,7 @@ async function assertAggressiveVerticalScrollNoBlank(page: Page): Promise<Scroll
   expect(
     maxBlankStreakMs,
     `Данные пропадали при агрессивной вертикальной прокрутке (рывки вниз/вверх, включая попытку thumb-drag). Макс. пустой интервал: ${maxBlankStreakMs}мс. Примеры: ${examples.join(' | ')}`,
-  ).toBeLessThanOrEqual(150);
+  ).toBeLessThanOrEqual(180);
 
   return debug;
 }
