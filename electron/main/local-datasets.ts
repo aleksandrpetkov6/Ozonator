@@ -611,6 +611,7 @@ function inspectPersistedPostingsReportSnapshot(
       price: normalizeSalesShipmentReportNumber(row?.price),
       quantity: normalizeSalesShipmentReportNumber(row?.quantity),
       paid_by_customer: normalizeSalesShipmentReportNumber(row?.paid_by_customer),
+      in_process_at: normalizeTextValue(row?.in_process_at),
       raw_row: normalizeSalesShipmentReportRawRow(row?.raw_row),
     }))
     .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number))
