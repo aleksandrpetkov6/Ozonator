@@ -611,7 +611,6 @@ function inspectPersistedPostingsReportSnapshot(
       price: normalizeSalesShipmentReportNumber(row?.price),
       quantity: normalizeSalesShipmentReportNumber(row?.quantity),
       paid_by_customer: normalizeSalesShipmentReportNumber(row?.paid_by_customer),
-      in_process_at: normalizeTextValue(row?.in_process_at),
       raw_row: normalizeSalesShipmentReportRawRow(row?.raw_row),
     }))
     .filter((row: SalesShipmentReportRow) => Boolean(row.posting_number))
@@ -712,6 +711,7 @@ function buildSalesShipmentReportRowsFromSnapshotMap(
       sku: normalizeTextValue(row?.sku),
       offer_id: normalizeTextValue(row?.offer_id),
       product_name: normalizeTextValue(row?.product_name),
+      in_process_at: normalizeTextValue((row as any)?.in_process_at),
       price: normalizeSalesShipmentReportNumber(row?.price),
       quantity: normalizeSalesShipmentReportNumber(row?.quantity),
       paid_by_customer: normalizeSalesShipmentReportNumber(row?.paid_by_customer),
