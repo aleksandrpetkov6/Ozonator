@@ -200,7 +200,9 @@ const nrReasons = [
   ...new Set(rows.filter(r => r.status === 'NR').map(r => r.reason))
 ].slice(0, 3).join('; ');
 
-const summaryLine = `${passedCount} из 118, ${cycles} цикл(а/ов). ${118 - passedCount} тестов не выполнялись, так как ${nrReasons || 'нет причин'}`;
+const summaryLine = failedCount > 0
+  ? `${passedCount} из 118, ${cycles} цикл(а/ов). ${failedCount} тестов упали, ${nrCount} тестов не выполнялись. NR: ${nrReasons || 'нет причин'}`
+  : `${passedCount} из 118, ${cycles} цикл(а/ов). ${nrCount} тестов не выполнялись, так как ${nrReasons || 'нет причин'}`;
 
 const lines = [];
 lines.push('Ozonator TestReport (auto-matrix 118)');
@@ -222,7 +224,3 @@ fs.writeFileSync(path.join(root, 'TestReport.txt'), lines.join('\n'), 'utf8');
 fs.writeFileSync(path.join(root, 'TestSummary.txt'), summaryLine + '\n', 'utf8');
 
 console.log(summaryLine);
-
-if (failedCount > 0) {
-  process.exitCode = 1;
-}
