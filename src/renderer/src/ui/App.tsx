@@ -858,31 +858,31 @@ export default function App() {
 
           {isProducts && (
             <div style={{ height: '100%' }}>
-              <ProductsPageMemo key="products" dataset="products" query={productsQuery} onStats={onProductStats} />
+              <ProductsPageMemo key="products" viewKey="products" dataset="products" query={productsQuery} onStats={onProductStats} />
             </div>
           )}
 
           {isSales && (
             <div style={{ height: '100%' }}>
-              <ProductsPageMemo key={`sales:${salesPeriod.from || "-"}:${salesPeriod.to || "-"}:${salesRefreshTick}`} dataset="sales" query={productsQuery} period={salesPeriod} onStats={onProductStats} />
+              <ProductsPageMemo key={`sales:${salesPeriod.from || "-"}:${salesPeriod.to || "-"}:${salesRefreshTick}`} viewKey="sales" dataset="sales" query={productsQuery} period={salesPeriod} onStats={onProductStats} />
             </div>
           )}
 
           {isReturns && (
             <div style={{ height: '100%' }}>
-              <ProductsPageMemo key="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
+              <ProductsPageMemo key="returns" viewKey="returns" dataset="returns" query={productsQuery} onStats={onProductStats} />
             </div>
           )}
 
           {isStocks && (
             <div style={{ height: '100%' }}>
-              <ProductsPageMemo key="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
+              <ProductsPageMemo key="stocks" viewKey="stocks" dataset="stocks" query={productsQuery} onStats={onProductStats} />
             </div>
           )}
 
           {isDemandForecast && (
             <div style={{ height: '100%' }}>
-              <ProductsPageMemo key="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
+              <ProductsPageMemo key="forecast-demand" viewKey="forecast-demand" dataset="products" query={productsQuery} onStats={onProductStats} />
             </div>
           )}
 

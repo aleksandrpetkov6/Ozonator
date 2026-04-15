@@ -607,6 +607,10 @@ button:disabled{
   padding: 2px 4px;
 }
 
+.productsCard .table th{
+  overflow: visible;
+}
+
 .logsCard .table th,
 .logsCard .table td{
   padding: 2px 4px;
@@ -831,6 +835,214 @@ button:disabled{
 
 .colToggle:hover{ background: rgba(255,255,255,1); transform: translateY(-1px); }
 .colToggle:active{ transform: translateY(0) scale(.99); }
+
+.thLabelGroup{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.thFilterBtn{
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(60,60,67,.14);
+  background: rgba(255,255,255,.78);
+  color: rgba(60,60,67,.72);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  flex: 0 0 auto;
+  transition: transform .12s ease, background .16s ease, border-color .16s ease, color .16s ease;
+}
+
+.thFilterBtn:hover{
+  background: rgba(255,255,255,1);
+  border-color: rgba(60,60,67,.24);
+  transform: translateY(-1px);
+}
+
+.thFilterBtn:active{
+  transform: translateY(0) scale(.99);
+}
+
+.thFilterBtn.active{
+  color: rgba(10,100,214,.96);
+  border-color: rgba(10,132,255,.34);
+  background: rgba(10,132,255,.12);
+}
+
+.filterGlyph{
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+.thFilterDot{
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--blue);
+}
+
+.columnFilterPopover{
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 4px;
+  width: min(320px, calc(100vw - 24px));
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(60,60,67,.14);
+  background: rgba(255,255,255,.95);
+  box-shadow: 0 18px 44px rgba(0,0,0,.14);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  z-index: 40;
+}
+
+.columnFilterHeader{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.columnFilterTitle{
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: rgba(28,28,30,.88);
+  min-width: 0;
+}
+
+.columnFilterClearBtn{
+  border: 1px solid rgba(60,60,67,.14);
+  background: rgba(255,255,255,.88);
+  color: rgba(60,60,67,.82);
+  border-radius: 999px;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.columnFilterModes{
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.columnFilterModeBtn{
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(60,60,67,.12);
+  background: rgba(255,255,255,.82);
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(60,60,67,.82);
+  cursor: pointer;
+}
+
+.columnFilterModeBtn.active{
+  border-color: rgba(10,132,255,.30);
+  background: rgba(10,132,255,.12);
+  color: rgba(10,100,214,.96);
+}
+
+.columnFilterField{
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.columnFilterField.compact{
+  margin-bottom: 8px;
+}
+
+.columnFilterField > span{
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(60,60,67,.72);
+}
+
+.columnFilterField input{
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border-radius: 10px;
+  border: 1px solid rgba(60,60,67,.14);
+  background: rgba(255,255,255,.92);
+  padding: 0 10px;
+  font-size: 12px;
+  color: rgba(28,28,30,.92);
+}
+
+.columnFilterField input:focus{
+  outline: none;
+  border-color: rgba(10,132,255,.46);
+  box-shadow: 0 0 0 3px rgba(10,132,255,.14);
+}
+
+.columnFilterOptions{
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.columnFilterOption{
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.columnFilterOption:hover{
+  background: rgba(10,132,255,.08);
+}
+
+.columnFilterOption input{
+  margin: 0;
+}
+
+.columnFilterOptionText{
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: rgba(28,28,30,.9);
+}
+
+.columnFilterOptionCount{
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(60,60,67,.64);
+}
+
+.columnFilterEmpty{
+  padding: 10px 8px;
+  font-size: 12px;
+  color: rgba(60,60,67,.72);
+}
 
 /* Collapsed columns bar */
 
