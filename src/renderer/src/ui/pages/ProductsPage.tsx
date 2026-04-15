@@ -77,6 +77,26 @@ function formatCellNumberWithCurrency(value: unknown, currencyCode: unknown): st
  const code = normalizeCurrencyCode(currencyCode)
  return code ? `${formatted} ${code}` : formatted
 }
+
+function parseCellNumber(value: unknown): number | null {
+ if (typeof value === 'number') return Number.isFinite(value) ? value : null
+ if (typeof value !== 'string') return null
+ const trimmed = value.trim()
+ if (!trimmed) return null
+ const normalized = trimmed.replace(/\s+/g, '').replace(',', '.')
+ if (!/^-?\d+(?:\.\d+)?$/.test(normalized)) return null
+ const num = Number(normalized)
+ return Number.isFinite(num) ? num : null
+}
+
+function getSalesLineTotalValue(row: GridRow, field: 'price' | 'paid_by_customer' | 'customer_currency_in_item_currency'): number | '' {
+ const base = parseCellNumber((row as any)?.[field])
+ if (base == null) return ''
+ const quantityRaw = parseCellNumber((row as any)?.quantity)
+ const quantity = quantityRaw == null || quantityRaw <= 0 ? 1 : quantityRaw
+ const total = base * quantity
+ return Number.isFinite(total) ? Number(total.toFixed(2)) : base
+}
 function rowDay(value: unknown): string {
  const raw = typeof value === 'string' ? value.trim() : ''
  if (!raw) return ''
@@ -506,10 +526,18 @@ export default function ProductsPage({ dataset = 'products', viewKey = dataset, 
    } else if (isTemporalColumnId(colId)) {
      text = formatTemporalCellRu(colId, (p as any)[colId])
      empty = !text
+   } else if (dataset === 'sales' && colId === 'price') {
+     const total = getSalesLineTotalValue(p, 'price')
+     text = formatMoneyValue(total)
+     empty = total === ''
    } else if (dataset === 'sales' && colId === 'paid_by_customer') {
-     const raw = (p as any)[colId]
-     text = formatCellNumberWithCurrency(raw, (p as any).currency)
-     empty = raw == null || raw === ''
+     const total = getSalesLineTotalValue(p, 'paid_by_customer')
+     text = formatCellNumberWithCurrency(total, (p as any).currency)
+     empty = total === ''
+   } else if (dataset === 'sales' && colId === 'customer_currency_in_item_currency') {
+     const total = getSalesLineTotalValue(p, 'customer_currency_in_item_currency')
+     text = formatCellNumberWithCurrency(total, (p as any).item_currency)
+     empty = total === ''
    } else if (isMoneyColumnId(colId)) {
      const raw = (p as any)[colId]
      text = formatMoneyValue(raw)
@@ -853,8 +881,14 @@ export default function ProductsPage({ dataset = 'products', viewKey = dataset, 
      const zone = (p.placement_zone == null ? '' : String(p.placement_zone)).trim()
      return { text: zone || 'Нет данных синхронизации' }
    }
+   if (dataset === 'sales' && colId === 'price') {
+     return { text: formatMoneyValue(getSalesLineTotalValue(p, 'price')) }
+   }
    if (dataset === 'sales' && colId === 'paid_by_customer') {
-     return { text: formatCellNumberWithCurrency(v, (p as any).currency) }
+     return { text: formatCellNumberWithCurrency(getSalesLineTotalValue(p, 'paid_by_customer'), (p as any).currency) }
+   }
+   if (dataset === 'sales' && colId === 'customer_currency_in_item_currency') {
+     return { text: formatCellNumberWithCurrency(getSalesLineTotalValue(p, 'customer_currency_in_item_currency'), (p as any).item_currency) }
    }
    if (isMoneyColumnId(colId)) {
      return { text: formatMoneyValue(v) }
