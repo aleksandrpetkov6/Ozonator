@@ -1,7 +1,5 @@
 !include "LogicLib.nsh"
 
-Var DeleteDbChoice
-Var DeleteSecretsChoice
 
 !define PERSIST_ROOT "$APPDATA\Clothes Hub\OzonatorPersistent"
 !define PRESERVE_ROOT "$APPDATA\Clothes Hub\OzonatorPersistent\preserve"
@@ -63,19 +61,19 @@ custom_install_done:
 !macroend
 
 !macro customUnInit
-  StrCpy $DeleteDbChoice "0"
-  StrCpy $DeleteSecretsChoice "0"
+  StrCpy $R8 "0"
+  StrCpy $R9 "0"
 
   MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Удалить локальную базу Ozonator (app.db)?$\r$\n$\r$\nПо умолчанию база сохраняется." IDYES uninit_delete_db
   Goto uninit_after_db
 uninit_delete_db:
-  StrCpy $DeleteDbChoice "1"
+  StrCpy $R8 "1"
 uninit_after_db:
 
   MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Удалить сохранённые Client-Id и Api-Key (secrets.json)?$\r$\n$\r$\nПо умолчанию ключи сохраняются." IDYES uninit_delete_secrets
   Goto uninit_done
 uninit_delete_secrets:
-  StrCpy $DeleteSecretsChoice "1"
+  StrCpy $R9 "1"
 uninit_done:
 !macroend
 
@@ -83,7 +81,7 @@ uninit_done:
   CreateDirectory "${PERSIST_ROOT}"
   CreateDirectory "${PRESERVE_ROOT}"
 
-  ${If} $DeleteDbChoice == "0"
+  ${If} $R8 == "0"
     IfFileExists "$INSTDIR\data\app.db" 0 +2
       CopyFiles /SILENT "$INSTDIR\data\app.db" "${PRESERVE_ROOT}\app.db"
   ${Else}
@@ -91,7 +89,7 @@ uninit_done:
     Delete "$INSTDIR\data\app.db"
   ${EndIf}
 
-  ${If} $DeleteSecretsChoice == "0"
+  ${If} $R9 == "0"
     IfFileExists "$INSTDIR\data\secrets.json" 0 +2
       CopyFiles /SILENT "$INSTDIR\data\secrets.json" "${PRESERVE_ROOT}\secrets.json"
   ${Else}
