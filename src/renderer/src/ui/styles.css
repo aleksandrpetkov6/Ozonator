@@ -44,7 +44,7 @@ a{ color: inherit; text-decoration: none; }
 
 .appShell{ height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
-.pageArea{ flex: 1; min-height: 0; overflow: hidden; }
+.pageArea{ position: relative; flex: 1; min-height: 0; overflow: hidden; }
 
 .container{
   max-width: none;
@@ -1943,4 +1943,120 @@ button:disabled{
   .logSectionMetrics{
     grid-template-columns: 1fr;
   }
+}
+
+
+.bootstrapWelcomeHost{ position: relative; }
+
+.bootstrapWelcomeOverlay{
+  position: absolute;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: linear-gradient(180deg, rgba(242,242,247,.84) 0%, rgba(251,251,253,.92) 100%);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.bootstrapWelcomeCard{
+  width: min(760px, calc(100vw - 56px));
+  padding: 28px 30px;
+  border-radius: 24px;
+  background: rgba(255,255,255,.96);
+  border: 1px solid rgba(60,60,67,.14);
+  box-shadow: 0 24px 80px rgba(15,23,42,.12);
+}
+
+.bootstrapWelcomeBadge{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 14px;
+  border-radius: 999px;
+  background: rgba(10,132,255,.10);
+  color: #0a84ff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.bootstrapWelcomeTitle{
+  margin: 0 0 10px;
+  font-size: 28px;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+}
+
+.bootstrapWelcomeText{
+  margin: 0;
+  color: rgba(60,60,67,.80);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.bootstrapWelcomePath{
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(60,60,67,.06);
+  color: rgba(28,28,30,.88);
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.bootstrapWelcomePath span{
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.bootstrapWelcomeStatus{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(10,132,255,.08);
+  color: rgba(28,28,30,.90);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.bootstrapWelcomeDot{
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: rgba(60,60,67,.32);
+}
+
+.bootstrapWelcomeDot.syncing{
+  background: var(--blue);
+  box-shadow: 0 0 0 8px rgba(10,132,255,.12);
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.bootstrapWelcomeDot.waiting-online{
+  background: #ff9f0a;
+}
+
+.bootstrapWelcomeDot.needs-secrets{
+  background: var(--blue);
+}
+
+.bootstrapWelcomeDot.error{
+  background: var(--red);
+}
+
+.bootstrapWelcomeActions{
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 22px;
 }

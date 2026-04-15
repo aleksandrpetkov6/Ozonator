@@ -177,6 +177,26 @@ function parseLogLifeDays(value: string): number | null {
   return i
 }
 
+type BootstrapStep = 'idle' | 'needs-secrets' | 'waiting-online' | 'syncing' | 'error' | 'done'
+
+type BootstrapUiState = {
+  checked: boolean
+  required: boolean
+  hasSecrets: boolean
+  storageRoot: string
+  step: BootstrapStep
+  error: string | null
+}
+
+const INITIAL_BOOTSTRAP_UI_STATE: BootstrapUiState = {
+  checked: false,
+  required: false,
+  hasSecrets: false,
+  storageRoot: '',
+  step: 'idle',
+  error: null,
+}
+
 export default function App() {
   useGlobalTableEnhancements()
   const location = useLocation()
@@ -210,6 +230,8 @@ export default function App() {
   const [adminNotice, setAdminNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const [datePresetOpen, setDatePresetOpen] = useState(false)
   const dateRangeRef = useRef<HTMLDivElement | null>(null)
+  const [bootstrapUi, setBootstrapUi] = useState<BootstrapUiState>(INITIAL_BOOTSTRAP_UI_STATE)
+  const bootstrapAutoStartedRef = useRef(false)
 
   const pathname = location.pathname || '/'
   const isLogs = pathname.startsWith('/logs')
@@ -222,6 +244,58 @@ export default function App() {
   const isProducts = !isLogs && !isSettings && !isAdmin && !isDemandForecast && !isSales && !isReturns && !isStocks
   const isDataGridTab = isProducts || isSales || isReturns || isStocks
   const isProductsLike = isDataGridTab || isDemandForecast
+
+  const syncNow = useCallback(async (reason: 'manual' | 'auto' | 'bootstrap' = 'manual') => {
+    if (runningRef.current) return { ok: false, error: 'SYNC_ALREADY_RUNNING' }
+
+    setLastError(null)
+
+    if (!online) {
+      return { ok: false, error: 'OFFLINE' }
+    }
+
+    const st = await window.api.secretsStatus()
+    if (!st.hasSecrets) {
+      const error = 'Ключи не сохранены. Откройте Настройки.'
+      if (reason === 'manual' || reason === 'bootstrap') setLastError(error)
+      return { ok: false, error }
+    }
+
+    setRunning(true)
+
+    try {
+      const isSalesRefresh = reason !== 'bootstrap' && isSales
+      if (isSalesRefresh) {
+        const resp = await window.api.refreshSales(salesPeriod)
+        if (!resp.ok) {
+          const error = resp.error ?? 'Ошибка обновления продаж'
+          setLastError(error)
+          return { ok: false, error }
+        }
+        setLastError(null)
+        setSalesRefreshTick((prev) => prev + 1)
+        window.dispatchEvent(new Event('ozon:products-updated'))
+        window.dispatchEvent(new Event('ozon:logs-updated'))
+        return { ok: true }
+      }
+
+      const resp = await window.api.syncProducts(salesPeriod)
+      if (!resp.ok) {
+        const error = resp.error ?? 'Ошибка синхронизации'
+        setLastError(error)
+        return { ok: false, error }
+      }
+
+      setLastError(null)
+      setSalesRefreshTick((prev) => prev + 1)
+      window.dispatchEvent(new Event('ozon:products-updated'))
+      window.dispatchEvent(new Event('ozon:logs-updated'))
+      window.dispatchEvent(new Event('ozon:store-updated'))
+      return { ok: true }
+    } finally {
+      setRunning(false)
+    }
+  }, [isSales, online, salesPeriod])
 
   useEffect(() => {
     if (bootDraftRestoreDoneRef.current) return
@@ -412,6 +486,132 @@ export default function App() {
     return () => window.removeEventListener('ozon:store-updated', onStore)
   }, [])
 
+  const refreshBootstrapUi = useCallback(async () => {
+    try {
+      const resp = await window.api.getBootstrapState()
+      if (!resp.ok) throw new Error(resp.error ?? 'Не удалось определить состояние локальной базы')
+
+      const required = !!resp.requiresInitialSync
+      const hasSecrets = !!resp.hasSecrets
+      const storageRoot = String(resp.storageRoot ?? '')
+
+      setBootstrapUi((prev) => {
+        const nextStep: BootstrapStep = !required
+          ? 'done'
+          : !hasSecrets
+            ? 'needs-secrets'
+            : !online
+              ? 'waiting-online'
+              : (prev.step === 'syncing' ? 'syncing' : prev.step === 'error' ? 'error' : 'idle')
+
+        return {
+          checked: true,
+          required,
+          hasSecrets,
+          storageRoot,
+          step: nextStep,
+          error: nextStep === 'error' ? prev.error : null,
+        }
+      })
+
+      if (!required) bootstrapAutoStartedRef.current = false
+    } catch (e: any) {
+      setBootstrapUi((prev) => ({
+        ...prev,
+        checked: true,
+        required: true,
+        step: 'error',
+        error: e?.message ?? 'Не удалось подготовить локальную базу',
+      }))
+    }
+  }, [online])
+
+  useEffect(() => {
+    void refreshBootstrapUi()
+    const onStore = () => { void refreshBootstrapUi() }
+    window.addEventListener('ozon:store-updated', onStore)
+    return () => window.removeEventListener('ozon:store-updated', onStore)
+  }, [refreshBootstrapUi])
+
+  useEffect(() => {
+    if (!bootstrapUi.checked || !bootstrapUi.required) return
+
+    if (!bootstrapUi.hasSecrets) {
+      bootstrapAutoStartedRef.current = false
+      if (bootstrapUi.step !== 'needs-secrets' || bootstrapUi.error) {
+        setBootstrapUi((prev) => ({ ...prev, step: 'needs-secrets', error: null }))
+      }
+      return
+    }
+
+    if (!online) {
+      bootstrapAutoStartedRef.current = false
+      if (bootstrapUi.step !== 'waiting-online' || bootstrapUi.error) {
+        setBootstrapUi((prev) => ({ ...prev, step: 'waiting-online', error: null }))
+      }
+      return
+    }
+
+    if (runningRef.current || bootstrapUi.step === 'syncing' || bootstrapUi.step === 'done') return
+    if (bootstrapAutoStartedRef.current && bootstrapUi.step !== 'idle') return
+
+    bootstrapAutoStartedRef.current = true
+    let cancelled = false
+
+    setBootstrapUi((prev) => ({ ...prev, step: 'syncing', error: null }))
+
+    void (async () => {
+      const resp = await syncNow('bootstrap')
+      if (cancelled) return
+
+      if (resp.ok) {
+        bootstrapAutoStartedRef.current = false
+        try {
+          const state = await window.api.getBootstrapState()
+          if (!cancelled && state.ok && !state.requiresInitialSync) {
+            setBootstrapUi({
+              checked: true,
+              required: false,
+              hasSecrets: !!state.hasSecrets,
+              storageRoot: String(state.storageRoot ?? ''),
+              step: 'done',
+              error: null,
+            })
+          } else if (!cancelled) {
+            setBootstrapUi((prev) => ({ ...prev, required: false, step: 'done', error: null }))
+          }
+        } catch {
+          if (!cancelled) {
+            setBootstrapUi((prev) => ({ ...prev, required: false, step: 'done', error: null }))
+          }
+        }
+        return
+      }
+
+      bootstrapAutoStartedRef.current = false
+      if (cancelled) return
+
+      const error = resp.error === 'OFFLINE'
+        ? 'Нет соединения с интернетом. Как только сеть появится, загрузка продолжится.'
+        : resp.error === 'SYNC_ALREADY_RUNNING'
+          ? null
+          : (resp.error ?? 'Не удалось загрузить локальную базу.')
+
+      if (resp.error === 'OFFLINE') {
+        setBootstrapUi((prev) => ({ ...prev, step: 'waiting-online', error: null }))
+        return
+      }
+
+      if (resp.error === 'SYNC_ALREADY_RUNNING') return
+
+      setBootstrapUi((prev) => ({ ...prev, step: 'error', error }))
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [bootstrapUi.checked, bootstrapUi.required, bootstrapUi.hasSecrets, bootstrapUi.step, bootstrapUi.error, online, syncNow])
+
   useEffect(() => {
     let cancelled = false
 
@@ -447,52 +647,7 @@ export default function App() {
     return 'ok'
   }, [online, running, lastError])
 
-  const syncNow = useCallback(async (reason: 'manual' | 'auto' = 'manual') => {
-    if (runningRef.current) return
 
-    setLastError(null)
-
-    if (!online) {
-      return
-    }
-
-    const st = await window.api.secretsStatus()
-    if (!st.hasSecrets) {
-      if (reason === 'manual') setLastError('Ключи не сохранены. Откройте Настройки.')
-      return
-    }
-
-    setRunning(true)
-
-    try {
-      const isSalesRefresh = isSales
-      if (isSalesRefresh) {
-        const resp = await window.api.refreshSales(salesPeriod)
-        if (!resp.ok) {
-          setLastError(resp.error ?? 'Ошибка обновления продаж')
-          return
-        }
-        setLastError(null)
-        setSalesRefreshTick((prev) => prev + 1)
-        window.dispatchEvent(new Event('ozon:products-updated'))
-        window.dispatchEvent(new Event('ozon:logs-updated'))
-        return
-      }
-
-      const resp = await window.api.syncProducts(salesPeriod)
-      if (!resp.ok) {
-        setLastError(resp.error ?? 'Ошибка синхронизации')
-      } else {
-        setLastError(null)
-        setSalesRefreshTick((prev) => prev + 1)
-        window.dispatchEvent(new Event('ozon:products-updated'))
-        window.dispatchEvent(new Event('ozon:logs-updated'))
-        window.dispatchEvent(new Event('ozon:store-updated'))
-      }
-    } finally {
-      setRunning(false)
-    }
-  }, [isSales, online, salesPeriod])
 
   useEffect(() => {
     if (!didOnlineBootstrapRef.current) {
@@ -539,6 +694,17 @@ export default function App() {
   const adminParsed = parseLogLifeDays(adminLogLifeDraft)
   const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
   const visibleLastError = lastError && lastError !== 'Нет интернета' ? lastError : null
+  const showBootstrapWelcome = bootstrapUi.checked && bootstrapUi.required && bootstrapUi.step !== 'done'
+  const bootstrapTitle = bootstrapUi.step === 'needs-secrets'
+    ? 'Добро пожаловать в Ozonator'
+    : 'Подготавливаем локальную базу'
+  const bootstrapDescription = bootstrapUi.step === 'needs-secrets'
+    ? 'Старая база больше не ищется на диске C. Локальные данные теперь живут только в папке установки, которую ты выбрал. Сначала сохрани ключи магазина, после этого загрузка базы стартует автоматически.'
+    : bootstrapUi.step === 'waiting-online'
+      ? 'Ждём интернет, чтобы заново скачать и собрать локальную базу в выбранную папку установки.'
+      : bootstrapUi.step === 'error'
+        ? (bootstrapUi.error ?? 'Не удалось загрузить локальную базу. Попробуй ещё раз.')
+        : 'Это первый запуск без готовой локальной базы в выбранной папке установки. Программа создаёт новую базу и загружает данные магазина.'
 
   const titleLogoSrc = './brand/ozonator-title-logo.png'
 
@@ -853,7 +1019,59 @@ export default function App() {
       </div>
 
       <div className="pageArea">
-        <div className={isProductsLike ? 'container containerWide' : 'container'}>
+        <div className={isProductsLike ? 'container containerWide bootstrapWelcomeHost' : 'container bootstrapWelcomeHost'}>
+          {showBootstrapWelcome && (
+            <div className="bootstrapWelcomeOverlay">
+              <div className="bootstrapWelcomeCard">
+                <div className="bootstrapWelcomeBadge">Первый запуск</div>
+                <h2 className="bootstrapWelcomeTitle">{bootstrapTitle}</h2>
+                <p className="bootstrapWelcomeText">{bootstrapDescription}</p>
+                {bootstrapUi.storageRoot && (
+                  <div className="bootstrapWelcomePath">
+                    Локальная папка данных: <span>{bootstrapUi.storageRoot}</span>
+                  </div>
+                )}
+
+                <div className="bootstrapWelcomeStatus">
+                  <span className={`bootstrapWelcomeDot ${bootstrapUi.step}`} aria-hidden />
+                  <span>
+                    {bootstrapUi.step === 'syncing' && 'Загрузка идёт. Окно можно не закрывать.'}
+                    {bootstrapUi.step === 'waiting-online' && 'Нет сети. Как только интернет появится, загрузка продолжится.'}
+                    {bootstrapUi.step === 'needs-secrets' && 'Сохрани Client-Id и Api-Key, чтобы начать загрузку базы.'}
+                    {bootstrapUi.step === 'error' && (bootstrapUi.error ?? 'Загрузка остановилась с ошибкой.')}
+                  </span>
+                </div>
+
+                <div className="bootstrapWelcomeActions">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => {
+                      navigate('/settings')
+                      if (bootstrapUi.step === 'needs-secrets') {
+                        setBootstrapUi((prev) => ({ ...prev, step: 'done', error: null }))
+                      }
+                    }}
+                  >
+                    {bootstrapUi.step === 'needs-secrets' ? 'Открыть Настройки' : 'Проверить ключи'}
+                  </button>
+
+                  {bootstrapUi.step === 'error' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        bootstrapAutoStartedRef.current = false
+                        setBootstrapUi((prev) => ({ ...prev, step: 'idle', error: null }))
+                      }}
+                    >
+                      Повторить загрузку
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {visibleLastError && <div className="notice error">{visibleLastError}</div>}
 
           {isProducts && (
