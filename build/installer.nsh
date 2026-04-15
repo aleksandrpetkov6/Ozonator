@@ -6,18 +6,6 @@ Var DeleteSecretsChoice
 !define PERSIST_ROOT "$APPDATA\Clothes Hub\OzonatorPersistent"
 !define PRESERVE_ROOT "$APPDATA\Clothes Hub\OzonatorPersistent\preserve"
 
-Function PreservePersistentFile
-  Exch $1
-  Exch
-  Exch $0
-  IfFileExists "$0" 0 preserve_file_done
-  CreateDirectory "${PRESERVE_ROOT}"
-  CopyFiles /SILENT "$0" "$1"
-preserve_file_done:
-  Pop $0
-  Pop $1
-FunctionEnd
-
 Function un.PreservePersistentFile
   Exch $1
   Exch
