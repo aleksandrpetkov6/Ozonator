@@ -695,7 +695,8 @@ function buildSalesShipmentReportRowsFromSnapshotMap(
 
   const normalizedRequestedPeriod = normalizeSalesPeriod(requestedPeriod)
   const snapshotPeriod = normalizeSalesPeriod(snapshot?.period ?? null)
-  const useSnapshot = sameSalesPeriod(snapshotPeriod, normalizedRequestedPeriod) || Boolean(snapshot?.rows)
+  const useSnapshot = sameSalesPeriod(snapshotPeriod, normalizedRequestedPeriod)
+    || (!normalizedRequestedPeriod.from && !normalizedRequestedPeriod.to && Boolean(snapshot?.rows))
   if (!useSnapshot) return []
 
   const rows: any[] = Array.isArray(snapshot?.rows) ? snapshot.rows : []
@@ -949,6 +950,35 @@ function sameSalesPeriod(
   right: { from?: string | null; to?: string | null } | null | undefined,
 ) {
   return (left?.from ?? null) === (right?.from ?? null) && (left?.to ?? null) === (right?.to ?? null)
+}
+
+type SalesRowsDateSpan = { from: string; to: string; count: number }
+
+function buildSalesDateSpan(values: unknown[]): SalesRowsDateSpan {
+  let from = ''
+  let to = ''
+  let count = 0
+  for (const value of values) {
+    const day = extractSalesRowPeriodDay(value)
+    if (!day) continue
+    count += 1
+    if (!from || day < from) from = day
+    if (!to || day > to) to = day
+  }
+  return { from, to, count }
+}
+
+function buildRowsDateSpan(rows: any[], fields: string[]): SalesRowsDateSpan {
+  const values: unknown[] = []
+  for (const row of Array.isArray(rows) ? rows : []) {
+    values.push(pickFirstPresent(row, fields))
+  }
+  return buildSalesDateSpan(values)
+}
+
+function formatDateSpanLabel(from: string, to: string): string {
+  if (from && to) return from === to ? from : `${from}..${to}`
+  return from || to || ''
 }
 
 function extractSalesRowPeriodDay(value: unknown): string {
@@ -1218,7 +1248,17 @@ function buildSalesRowsFromPayloads(
   const reportApplied = applySalesShipmentReportDates(mergedRows, reportRows)
   const strictRows = filterSalesRowsStrictByPeriod(reportApplied.rows, requestedPeriod)
   const normalizedRows = applySalesRelatedPostingPrefix(strictRows)
-  const traceBase = { ...((reportApplied.trace ?? {}) as SalesDeliveryDateTrace) }
+  const preFilterSpan = buildRowsDateSpan(reportApplied.rows, ['in_process_at', 'accepted_at', 'delivery_date', 'shipment_date'])
+  const postFilterSpan = buildRowsDateSpan(normalizedRows, ['in_process_at', 'accepted_at', 'delivery_date', 'shipment_date'])
+  const traceBase = {
+    ...((reportApplied.trace ?? {}) as SalesDeliveryDateTrace),
+    requestedPeriodFrom: normalizeSalesPeriod(requestedPeriod).from,
+    requestedPeriodTo: normalizeSalesPeriod(requestedPeriod).to,
+    salesRowsBeforeStrictFilter: Array.isArray(reportApplied.rows) ? reportApplied.rows.length : 0,
+    salesRowsBeforeStrictFilterSpan: formatDateSpanLabel(preFilterSpan.from, preFilterSpan.to),
+    salesRowsAfterStrictFilter: normalizedRows.length,
+    salesRowsAfterStrictFilterSpan: formatDateSpanLabel(postFilterSpan.from, postFilterSpan.to),
+  }
   return {
     rows: normalizedRows,
     sourceEndpoints: Array.from(sourceEndpoints),
@@ -1631,6 +1671,8 @@ export async function refreshSalesRawSnapshotFromApi(
     )
     const payloads = [...fbsPayloads, ...fboPayloads]
     const fboPostingNumbers = getFboPostingNumbersFromPayloads(fboPayloads)
+    const fbsAcceptedSpan = buildRowsDateSpan(fbsPayloads.flatMap((payload) => extractPostingsFromPayload(payload?.payload)), ['in_process_at', 'created_at', 'acceptance_date'])
+    const fboAcceptedSpan = buildRowsDateSpan(fboPayloads.flatMap((payload) => extractPostingsFromPayload(payload?.payload)), ['in_process_at', 'created_at', 'acceptance_date'])
 
     logFboShipmentTrace('api.refresh.list.loaded', {
       storeClientId: secrets.clientId,
@@ -1642,6 +1684,10 @@ export async function refreshSalesRawSnapshotFromApi(
         payloadCount: payloads.length,
         fboPostingCount: fboPostingNumbers.length,
         samplePostingNumbers: uniqueSample(fboPostingNumbers, 10),
+        requestedPeriodFrom: normalizedRequestedPeriod.from,
+        requestedPeriodTo: normalizedRequestedPeriod.to,
+        fbsAcceptedAtSpan: formatDateSpanLabel(fbsAcceptedSpan.from, fbsAcceptedSpan.to),
+        fboAcceptedAtSpan: formatDateSpanLabel(fboAcceptedSpan.from, fboAcceptedSpan.to),
       },
     })
 
@@ -1817,6 +1863,14 @@ export async function refreshSalesRawSnapshotFromApi(
           reportDeliveryDateSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.delivery_date)).map((row) => row.delivery_date), 10),
           reportShipmentOriginSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.shipment_origin)).map((row) => row.shipment_origin), 10),
           reportStatusSample: uniqueSample(reportRows.filter((row) => normalizeTextValue(row?.status)).map((row) => normalizeSalesReportStatusValue(row?.status)), 10),
+          reportAcceptedAtSpan: formatDateSpanLabel(
+            buildRowsDateSpan(reportRows, ['in_process_at', 'raw_row.Принят в обработку', 'raw_row.Принят в обработку (МСК)']).from,
+            buildRowsDateSpan(reportRows, ['in_process_at', 'raw_row.Принят в обработку', 'raw_row.Принят в обработку (МСК)']).to,
+          ),
+          reportDeliveryDateSpan: formatDateSpanLabel(
+            buildRowsDateSpan(reportRows, ['delivery_date']).from,
+            buildRowsDateSpan(reportRows, ['delivery_date']).to,
+          ),
           reportSavedCsvCount: reportSavedCsvFiles.length,
           reportSavedCsvPaths: reportSavedCsvFiles.map((item) => item.path),
           reportSavedCsvCleanupCount,
@@ -2021,6 +2075,7 @@ export async function refreshSalesRawSnapshotFromApi(
         reportSnapshotRowsWithDeliveryDate: persistedReportSnapshot.rowsWithDeliveryDate,
         reportSnapshotRowsWithShipmentOrigin: persistedReportSnapshot.rowsWithShipmentOrigin,
         reportSnapshotRowsWithStatus: persistedReportSnapshot.rowsWithStatus,
+        reportSnapshotPeriodMatchesRequested: persistedReportSnapshot.periodMatches,
         reportSnapshotRowsFboWithShipmentOrigin: persistedReportSnapshot.rowsFboWithShipmentOrigin,
         reportSnapshotRowsFbsWithShipmentOrigin: persistedReportSnapshot.rowsFbsWithShipmentOrigin,
         reportSnapshotResponseTruncated: persistedReportSnapshot.responseTruncated,
