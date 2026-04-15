@@ -7,7 +7,7 @@ import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } 
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
 import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, ingestOzonFboPushPayload, logFboShipmentTrace, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
-import { getLifecycleMarkerRootDir, getPersistentRootDir } from './storage/paths'
+import { getLifecycleMarkerRootDir, getPersistentRootDir, getPersistentDbPath, readPersistentStorageBootstrapState } from './storage/paths'
 import { startLocalHttpServer, type LocalHttpServerHandle } from './local-http-server'
 let mainWindow: BrowserWindow | null = null
 let localHttpServer: LocalHttpServerHandle | null = null
@@ -25,6 +25,7 @@ const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
 const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
 let installerShutdownInFlight: Promise<void> | null = null
 let gracefulShutdownInFlight: Promise<void> | null = null
+let startupDbWasMissing = false
 
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
@@ -71,6 +72,38 @@ function getOrCreateLocalServerRuntimeConfig() {
   }
 
   return { port, token, webhookToken }
+}
+
+function getAppBootstrapState() {
+  const storage = readPersistentStorageBootstrapState()
+  const dbExists = existsSync(storage.dbPath)
+  let secretsReady = false
+  let productsCount = 0
+
+  try {
+    secretsReady = hasSecrets()
+  } catch {
+    secretsReady = false
+  }
+
+  try {
+    productsCount = dbCountProducts()
+  } catch {
+    productsCount = 0
+  }
+
+  return {
+    ok: true,
+    storageMode: app.isPackaged ? 'install-local' : 'legacy-dev',
+    storageRoot: storage.root,
+    dbPath: storage.dbPath,
+    secretsPath: storage.secretsPath,
+    isFirstRun: startupDbWasMissing,
+    dbExists,
+    hasSecrets: secretsReady,
+    productsCount,
+    requiresInitialSync: startupDbWasMissing || productsCount === 0,
+  }
 }
 
 type LocalServerWebhookDiag = {
@@ -340,12 +373,13 @@ try { app.exit(0) } catch {}
 app.whenReady().then(async () => {
 try {
 startupLog('app.whenReady')
+startupDbWasMissing = !existsSync(getPersistentDbPath())
 if (!safeStorage.isEncryptionAvailable()) {
 console.warn('safeStorage encryption is not available on this machine.')
 startupLog('safeStorage.unavailable')
 }
 ensureDb()
-startupLog('ensureDb.ok')
+startupLog('ensureDb.ok', getAppBootstrapState())
 try {
   const localServerRuntime = getOrCreateLocalServerRuntimeConfig()
   localHttpServer = await startLocalHttpServer({
@@ -985,6 +1019,14 @@ ipcMain.handle('local-server:probe', async () => {
       httpStatus: resp.status,
       webhookProbeUrlLocal: localHttpServer.config.webhookProbeUrlLocal,
     }
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
+})
+
+ipcMain.handle('app:getBootstrapState', async () => {
+  try {
+    return getAppBootstrapState()
   } catch (e: any) {
     return { ok: false, error: e?.message ?? String(e) }
   }
