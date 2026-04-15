@@ -16,6 +16,7 @@ let backgroundSyncTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let syncProductsInFlight: Promise<any> | null = null
 const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
+let latestSalesWarmupScopeKey = ''
 const LOCAL_SERVER_PORT_KEY = 'local_server.port'
 const LOCAL_SERVER_TOKEN_KEY = 'local_server.token'
 const LOCAL_SERVER_WEBHOOK_TOKEN_KEY = 'local_server.webhook_token'
@@ -889,6 +890,7 @@ return `${from}|${to}`
 
 function warmupSalesSnapshotInBackground(period?: SalesPeriod | null, reason = 'sales-read') {
 const scopeKey = getSalesWarmupScopeKey(period)
+latestSalesWarmupScopeKey = scopeKey
 if (salesSnapshotWarmupInFlight.has(scopeKey)) return
 
 const job = (async () => {
@@ -909,8 +911,14 @@ if (!secrets) return
 try {
 const warmed = await ensureLocalSalesSnapshotFromApiIfMissing(secrets, period ?? null)
 if (warmed?.refreshed) {
-startupLog('sales-snapshot-warmup.refreshed', { reason, scopeKey, rowsCount: Number(warmed?.rowsCount ?? 0) })
-emitRendererDataUpdatedEvents()
+const isLatestScope = latestSalesWarmupScopeKey === scopeKey
+startupLog('sales-snapshot-warmup.refreshed', {
+reason,
+scopeKey,
+rowsCount: Number(warmed?.rowsCount ?? 0),
+isLatestScope,
+})
+if (isLatestScope) emitRendererDataUpdatedEvents()
 }
 } catch (e: any) {
 startupLog('sales-snapshot-warmup.error', { reason, scopeKey, error: e?.message ?? String(e) })
@@ -1264,8 +1272,11 @@ async function handleGetDatasetRows(datasetRaw: unknown, period: SalesPeriod | n
     const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
     const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
     if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length })
-    setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows'), 0)
-    return { ok: true, dataset, rows, truncated, totalRows: rowsAll.length }
+    const shouldWarmup = !Array.isArray(rowsAll) || rowsAll.length === 0
+    if (shouldWarmup) {
+      setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows'), 0)
+    }
+    return { ok: true, dataset, rows, truncated, totalRows: rowsAll.length, warmupScheduled: shouldWarmup }
   }
   const { rows } = readDatasetRowsSafe(dataset, period ?? null)
   return { ok: true, dataset, rows }
@@ -1282,8 +1293,11 @@ async function handleGetSales(period: SalesPeriod | null | undefined) {
   const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
   const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
   if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length, reason: 'local-server:getSales' })
-  setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales'), 0)
-  return { ok: true, rows, truncated, totalRows: rowsAll.length }
+  const shouldWarmup = !Array.isArray(rowsAll) || rowsAll.length === 0
+  if (shouldWarmup) {
+    setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales'), 0)
+  }
+  return { ok: true, rows, truncated, totalRows: rowsAll.length, warmupScheduled: shouldWarmup }
 }
 
 async function handleGetReturns() {
