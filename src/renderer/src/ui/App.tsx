@@ -188,6 +188,30 @@ type BootstrapUiState = {
   error: string | null
 }
 
+type BootstrapProgressTimelineItem = {
+  key: string
+  label: string
+  status: 'pending' | 'active' | 'done' | 'error'
+  startedAt: string | null
+  finishedAt: string | null
+  detail: string | null
+}
+
+type BootstrapProgressUiState = {
+  active: boolean
+  stageLabel: string
+  stageMessage: string
+  percent: number
+  completedStages: number
+  totalStages: number
+  currentLoaded: number
+  currentTotal: number | null
+  currentUnitLabel: string
+  etaSeconds: number | null
+  error: string | null
+  timeline: BootstrapProgressTimelineItem[]
+}
+
 const INITIAL_BOOTSTRAP_UI_STATE: BootstrapUiState = {
   checked: false,
   required: false,
@@ -195,6 +219,38 @@ const INITIAL_BOOTSTRAP_UI_STATE: BootstrapUiState = {
   storageRoot: '',
   step: 'idle',
   error: null,
+}
+
+const INITIAL_BOOTSTRAP_PROGRESS_STATE: BootstrapProgressUiState = {
+  active: false,
+  stageLabel: '',
+  stageMessage: '',
+  percent: 0,
+  completedStages: 0,
+  totalStages: 5,
+  currentLoaded: 0,
+  currentTotal: null,
+  currentUnitLabel: 'этапов',
+  etaSeconds: null,
+  error: null,
+  timeline: [],
+}
+
+function formatBootstrapEta(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return 'Считаем время…'
+  if (seconds < 60) return `~${seconds} сек.`
+  const minutes = Math.floor(seconds / 60)
+  const restSeconds = seconds % 60
+  if (minutes < 60) return restSeconds > 0 ? `~${minutes} мин. ${restSeconds} сек.` : `~${minutes} мин.`
+  const hours = Math.floor(minutes / 60)
+  const restMinutes = minutes % 60
+  return restMinutes > 0 ? `~${hours} ч. ${restMinutes} мин.` : `~${hours} ч.`
+}
+
+function formatBootstrapTime(value: string | null | undefined): string {
+  if (!value) return ''
+  const formatted = formatDateTimeRu(value)
+  return formatted || ''
 }
 
 export default function App() {
@@ -231,6 +287,7 @@ export default function App() {
   const [datePresetOpen, setDatePresetOpen] = useState(false)
   const dateRangeRef = useRef<HTMLDivElement | null>(null)
   const [bootstrapUi, setBootstrapUi] = useState<BootstrapUiState>(INITIAL_BOOTSTRAP_UI_STATE)
+  const [bootstrapProgress, setBootstrapProgress] = useState<BootstrapProgressUiState>(INITIAL_BOOTSTRAP_PROGRESS_STATE)
   const bootstrapAutoStartedRef = useRef(false)
 
   const pathname = location.pathname || '/'
@@ -526,12 +583,63 @@ export default function App() {
     }
   }, [online])
 
+  const refreshBootstrapProgress = useCallback(async () => {
+    try {
+      const resp = await window.api.getBootstrapProgress()
+      if (!resp.ok) return
+      setBootstrapProgress({
+        active: !!resp.active,
+        stageLabel: String(resp.stageLabel ?? ''),
+        stageMessage: String(resp.stageMessage ?? ''),
+        percent: Math.max(0, Math.min(100, Math.round(Number(resp.percent ?? 0) || 0))),
+        completedStages: Math.max(0, Math.trunc(Number(resp.completedStages ?? 0) || 0)),
+        totalStages: Math.max(1, Math.trunc(Number(resp.totalStages ?? 5) || 5)),
+        currentLoaded: Math.max(0, Math.trunc(Number(resp.currentLoaded ?? 0) || 0)),
+        currentTotal: typeof resp.currentTotal === 'number' && Number.isFinite(resp.currentTotal) ? Math.max(0, Math.trunc(resp.currentTotal)) : null,
+        currentUnitLabel: String(resp.currentUnitLabel ?? 'этапов'),
+        etaSeconds: typeof resp.etaSeconds === 'number' && Number.isFinite(resp.etaSeconds) ? Math.max(0, Math.round(resp.etaSeconds)) : null,
+        error: typeof resp.error === 'string' && resp.error.trim() ? resp.error : null,
+        timeline: Array.isArray(resp.timeline) ? resp.timeline.map((item) => ({
+          key: String(item?.key ?? ''),
+          label: String(item?.label ?? ''),
+          status: item?.status === 'active' || item?.status === 'done' || item?.status === 'error' ? item.status : 'pending',
+          startedAt: typeof item?.startedAt === 'string' ? item.startedAt : null,
+          finishedAt: typeof item?.finishedAt === 'string' ? item.finishedAt : null,
+          detail: typeof item?.detail === 'string' ? item.detail : null,
+        })) : [],
+      })
+    } catch {
+      // ignore
+    }
+  }, [])
+
   useEffect(() => {
     void refreshBootstrapUi()
     const onStore = () => { void refreshBootstrapUi() }
     window.addEventListener('ozon:store-updated', onStore)
     return () => window.removeEventListener('ozon:store-updated', onStore)
   }, [refreshBootstrapUi])
+
+  useEffect(() => {
+    if (!bootstrapUi.checked || !bootstrapUi.required) {
+      setBootstrapProgress(INITIAL_BOOTSTRAP_PROGRESS_STATE)
+      return
+    }
+
+    void refreshBootstrapProgress()
+    const timer = window.setInterval(() => {
+      void refreshBootstrapProgress()
+    }, 700)
+
+    return () => window.clearInterval(timer)
+  }, [bootstrapUi.checked, bootstrapUi.required, refreshBootstrapProgress])
+
+  useEffect(() => {
+    if (!bootstrapUi.checked || !bootstrapUi.required || bootstrapUi.hasSecrets) return
+    if (pathname !== '/settings') {
+      navigate('/settings', { replace: true })
+    }
+  }, [bootstrapUi.checked, bootstrapUi.required, bootstrapUi.hasSecrets, navigate, pathname])
 
   useEffect(() => {
     if (!bootstrapUi.checked || !bootstrapUi.required) return
@@ -694,17 +802,26 @@ export default function App() {
   const adminParsed = parseLogLifeDays(adminLogLifeDraft)
   const adminDirty = adminParsed !== null ? adminParsed !== adminLogLifeSaved : adminLogLifeDraft.trim() !== String(adminLogLifeSaved)
   const visibleLastError = lastError && lastError !== 'Нет интернета' ? lastError : null
-  const showBootstrapWelcome = bootstrapUi.checked && bootstrapUi.required && bootstrapUi.step !== 'done'
-  const bootstrapTitle = bootstrapUi.step === 'needs-secrets'
-    ? 'Добро пожаловать в Ozonator'
-    : 'Подготавливаем локальную базу'
-  const bootstrapDescription = bootstrapUi.step === 'needs-secrets'
-    ? 'Старая база больше не ищется на диске C. Локальные данные теперь живут только в папке установки, которую ты выбрал. Сначала сохрани ключи магазина, после этого загрузка базы стартует автоматически.'
-    : bootstrapUi.step === 'waiting-online'
-      ? 'Ждём интернет, чтобы заново скачать и собрать локальную базу в выбранную папку установки.'
-      : bootstrapUi.step === 'error'
-        ? (bootstrapUi.error ?? 'Не удалось загрузить локальную базу. Попробуй ещё раз.')
-        : 'Это первый запуск без готовой локальной базы в выбранной папке установки. Программа создаёт новую базу и загружает данные магазина.'
+  const showBootstrapWelcome = bootstrapUi.checked && bootstrapUi.required && bootstrapUi.step !== 'done' && bootstrapUi.step !== 'needs-secrets'
+  const bootstrapTitle = bootstrapUi.step === 'waiting-online'
+    ? 'Ждём интернет для первой загрузки'
+    : bootstrapUi.step === 'error'
+      ? 'Загрузка локальной базы остановилась'
+      : 'Подготавливаем локальную базу'
+  const bootstrapDescription = bootstrapUi.step === 'waiting-online'
+    ? 'Как только интернет появится, Ozonator продолжит первичную загрузку базы в выбранную папку установки.'
+    : bootstrapUi.step === 'error'
+      ? (bootstrapUi.error ?? bootstrapProgress.error ?? 'Не удалось загрузить локальную базу. Попробуй ещё раз.')
+      : 'Ozonator заново скачивает и собирает локальную базу в выбранной папке. Ниже видно, сколько уже загружено, сколько осталось и на каком этапе процесс сейчас.'
+  const bootstrapRemaining = typeof bootstrapProgress.currentTotal === 'number'
+    ? Math.max(0, bootstrapProgress.currentTotal - bootstrapProgress.currentLoaded)
+    : null
+  const bootstrapEta = formatBootstrapEta(bootstrapProgress.etaSeconds)
+  const bootstrapCurrentStageNumber = Math.min(
+    bootstrapProgress.totalStages,
+    Math.max(1, bootstrapProgress.completedStages + (bootstrapUi.step === 'syncing' || bootstrapUi.step === 'waiting-online' ? 1 : 0)),
+  )
+  const bootstrapTimelineItems = bootstrapProgress.timeline.filter((item) => item.status !== 'pending' || item.detail || item.startedAt || item.finishedAt)
 
   const titleLogoSrc = './brand/ozonator-title-logo.png'
 
@@ -1022,8 +1139,8 @@ export default function App() {
         <div className={isProductsLike ? 'container containerWide bootstrapWelcomeHost' : 'container bootstrapWelcomeHost'}>
           {showBootstrapWelcome && (
             <div className="bootstrapWelcomeOverlay">
-              <div className="bootstrapWelcomeCard">
-                <div className="bootstrapWelcomeBadge">Первый запуск</div>
+              <div className="bootstrapWelcomeCard bootstrapProgressCard">
+                <div className="bootstrapWelcomeBadge">Первая загрузка базы</div>
                 <h2 className="bootstrapWelcomeTitle">{bootstrapTitle}</h2>
                 <p className="bootstrapWelcomeText">{bootstrapDescription}</p>
                 {bootstrapUi.storageRoot && (
@@ -1032,28 +1149,80 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="bootstrapWelcomeStatus">
+                <div className="bootstrapWelcomeStatus bootstrapProgressStatus">
                   <span className={`bootstrapWelcomeDot ${bootstrapUi.step}`} aria-hidden />
-                  <span>
-                    {bootstrapUi.step === 'syncing' && 'Загрузка идёт. Окно можно не закрывать.'}
-                    {bootstrapUi.step === 'waiting-online' && 'Нет сети. Как только интернет появится, загрузка продолжится.'}
-                    {bootstrapUi.step === 'needs-secrets' && 'Сохрани Client-Id и Api-Key, чтобы начать загрузку базы.'}
-                    {bootstrapUi.step === 'error' && (bootstrapUi.error ?? 'Загрузка остановилась с ошибкой.')}
-                  </span>
+                  <div className="bootstrapProgressStatusText">
+                    <strong>
+                      {bootstrapUi.step === 'syncing' && (bootstrapProgress.stageMessage || 'Загрузка идёт. Окно можно не закрывать.')}
+                      {bootstrapUi.step === 'waiting-online' && 'Нет сети. Как только интернет появится, загрузка продолжится.'}
+                      {bootstrapUi.step === 'error' && (bootstrapUi.error ?? bootstrapProgress.error ?? 'Загрузка остановилась с ошибкой.')}
+                    </strong>
+                    <span>
+                      {bootstrapProgress.stageLabel
+                        ? `Этап ${bootstrapCurrentStageNumber} из ${bootstrapProgress.totalStages}: ${bootstrapProgress.stageLabel}`
+                        : 'Подготавливаем загрузку'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="bootstrapProgressBar" aria-hidden>
+                  <div className="bootstrapProgressBarFill" style={{ width: `${bootstrapProgress.percent}%` }} />
+                </div>
+
+                <div className="bootstrapProgressMetrics">
+                  <div className="bootstrapProgressMetric">
+                    <span className="bootstrapProgressMetricLabel">Загружено</span>
+                    <strong>{bootstrapProgress.currentLoaded} {bootstrapProgress.currentUnitLabel}</strong>
+                  </div>
+                  <div className="bootstrapProgressMetric">
+                    <span className="bootstrapProgressMetricLabel">Осталось</span>
+                    <strong>{bootstrapRemaining == null ? 'считаем…' : `${bootstrapRemaining} ${bootstrapProgress.currentUnitLabel}`}</strong>
+                  </div>
+                  <div className="bootstrapProgressMetric">
+                    <span className="bootstrapProgressMetricLabel">Готовность</span>
+                    <strong>{bootstrapProgress.percent}%</strong>
+                  </div>
+                  <div className="bootstrapProgressMetric">
+                    <span className="bootstrapProgressMetricLabel">Оценка времени</span>
+                    <strong>{bootstrapEta}</strong>
+                  </div>
+                </div>
+
+                <div className="bootstrapProgressTimeline">
+                  <div className="bootstrapProgressTimelineTitle">Таймлайн загрузки</div>
+                  <div className="bootstrapProgressTimelineList">
+                    {bootstrapTimelineItems.map((item) => (
+                      <div key={item.key} className={`bootstrapProgressTimelineItem ${item.status}`}>
+                        <span className="bootstrapProgressTimelineMarker" aria-hidden />
+                        <div className="bootstrapProgressTimelineBody">
+                          <div className="bootstrapProgressTimelineHead">
+                            <strong>{item.label}</strong>
+                            <span>
+                              {item.startedAt && item.finishedAt
+                                ? `${formatBootstrapTime(item.startedAt)} → ${formatBootstrapTime(item.finishedAt)}`
+                                : item.startedAt
+                                  ? formatBootstrapTime(item.startedAt)
+                                  : 'ожидание'}
+                            </span>
+                          </div>
+                          {(item.detail || item.status === 'active') && (
+                            <div className="bootstrapProgressTimelineDetail">
+                              {item.detail || bootstrapProgress.stageMessage || 'Выполняется…'}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="bootstrapWelcomeActions">
                   <button
                     type="button"
                     className="primary"
-                    onClick={() => {
-                      navigate('/settings')
-                      if (bootstrapUi.step === 'needs-secrets') {
-                        setBootstrapUi((prev) => ({ ...prev, step: 'done', error: null }))
-                      }
-                    }}
+                    onClick={() => navigate('/settings')}
                   >
-                    {bootstrapUi.step === 'needs-secrets' ? 'Открыть Настройки' : 'Проверить ключи'}
+                    Открыть Настройки
                   </button>
 
                   {bootstrapUi.step === 'error' && (
