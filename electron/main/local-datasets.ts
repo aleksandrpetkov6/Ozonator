@@ -1025,6 +1025,49 @@ function filterSalesRowsStrictByPeriod(
   })
 }
 
+function buildSalesSnapshotTraceMeta(args: {
+  rows: any[]
+  scopeKey: string
+  sourceKind: string
+  saveResult?: any
+  requestedPeriod?: SalesPeriod | null | undefined
+}) {
+  const span = buildRowsDateSpan(Array.isArray(args.rows) ? args.rows : [], ['in_process_at', 'accepted_at', 'delivery_date', 'shipment_date'])
+  const droppedByNormalize = Number(args.saveResult?.incomingRowsDroppedByNormalize ?? 0)
+  const droppedByCap = Number(args.saveResult?.cappedRowsDropped ?? 0)
+  return {
+    requestedPeriodFrom: normalizeSalesPeriod(args.requestedPeriod).from,
+    requestedPeriodTo: normalizeSalesPeriod(args.requestedPeriod).to,
+    snapshotScopeKey: args.scopeKey,
+    snapshotSourceKind: args.sourceKind,
+    snapshotRowsRequested: Array.isArray(args.rows) ? args.rows.length : 0,
+    snapshotRowsStored: Number(args.saveResult?.storedRowsCount ?? 0),
+    snapshotRowsDroppedByLimit: droppedByNormalize + droppedByCap,
+    snapshotRowsDroppedByNormalize: droppedByNormalize,
+    snapshotRowsDroppedByCap: droppedByCap,
+    snapshotMaxRows: Number(args.saveResult?.maxRows ?? 0),
+    snapshotMergeStrategy: normalizeTextValue(args.saveResult?.mergeStrategy),
+    snapshotRowsSpan: formatDateSpanLabel(span.from, span.to),
+  }
+}
+
+function buildSalesReadTraceMeta(args: {
+  rows: any[]
+  scopeKey: string
+  sourceKind: string
+  requestedPeriod?: SalesPeriod | null | undefined
+}) {
+  const span = buildRowsDateSpan(Array.isArray(args.rows) ? args.rows : [], ['in_process_at', 'accepted_at', 'delivery_date', 'shipment_date'])
+  return {
+    requestedPeriodFrom: normalizeSalesPeriod(args.requestedPeriod).from,
+    requestedPeriodTo: normalizeSalesPeriod(args.requestedPeriod).to,
+    snapshotScopeKey: args.scopeKey,
+    snapshotSourceKind: args.sourceKind,
+    readRowsCount: Array.isArray(args.rows) ? args.rows.length : 0,
+    readRowsSpan: formatDateSpanLabel(span.from, span.to),
+  }
+}
+
 function getSalesSnapshotMap(storeClientId: string | null | undefined) {
   const scoped = dbGetLatestApiRawResponses(storeClientId ?? null, SALES_CACHE_SNAPSHOT_KEYS as unknown as string[])
   const rows = scoped.length > 0 ? scoped : dbGetLatestApiRawResponses(null, SALES_CACHE_SNAPSHOT_KEYS as unknown as string[])
@@ -1486,7 +1529,19 @@ function readScopedSalesSnapshotRows(
     storeClientId: storeClientId ?? null,
     periodKey: buildDatasetScopeKey(requestedPeriod),
   })
-  return filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
+  const filteredRows = filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
+  logFboShipmentTrace('sales.read.snapshot', {
+    storeClientId: storeClientId ?? null,
+    period: requestedPeriod,
+    itemsCount: filteredRows.length,
+    meta: buildSalesReadTraceMeta({
+      rows: filteredRows,
+      scopeKey: buildDatasetScopeKey(requestedPeriod),
+      sourceKind: 'dataset-snapshot-exact-scope',
+      requestedPeriod,
+    }),
+  })
+  return filteredRows
 }
 
 function readRollingSalesSnapshotRows(
@@ -1505,7 +1560,19 @@ function readRollingSalesSnapshotRows(
     storeClientId: storeClientId ?? null,
     periodKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
   })
-  return filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
+  const filteredRows = filterSalesRowsStrictByPeriod(mergedRows, requestedPeriod)
+  logFboShipmentTrace('sales.read.default_snapshot', {
+    storeClientId: storeClientId ?? null,
+    period: requestedPeriod,
+    itemsCount: filteredRows.length,
+    meta: buildSalesReadTraceMeta({
+      rows: filteredRows,
+      scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+      sourceKind: 'dataset-snapshot-default-window',
+      requestedPeriod,
+    }),
+  })
+  return filteredRows
 }
 
 function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): string {
@@ -1536,7 +1603,7 @@ function persistDatasetSnapshot(args: {
   const dataset = String(args.dataset ?? '').trim()
   const sourceKind = args.sourceKind ?? 'projection'
 
-  dbSaveDatasetSnapshot({
+  return dbSaveDatasetSnapshot({
     storeClientId: args.storeClientId ?? null,
     dataset: args.dataset,
     scopeKey: args.scopeKey ?? '',
@@ -2175,7 +2242,7 @@ export async function refreshSalesRawSnapshotFromApi(
       reportRows,
     })
 
-    persistDatasetSnapshot({
+    const persistedSalesSnapshot = persistDatasetSnapshot({
       storeClientId: secrets.clientId,
       dataset: 'sales',
       scopeKey: buildDatasetScopeKey(requestedPeriod),
@@ -2185,8 +2252,21 @@ export async function refreshSalesRawSnapshotFromApi(
       sourceEndpoints,
     })
 
+    logFboShipmentTrace('sales.snapshot.saved', {
+      storeClientId: secrets.clientId,
+      period: requestedPeriod,
+      itemsCount: Number(persistedSalesSnapshot?.storedRowsCount ?? rows.length),
+      meta: buildSalesSnapshotTraceMeta({
+        rows,
+        scopeKey: buildDatasetScopeKey(requestedPeriod),
+        sourceKind: 'api-live',
+        saveResult: persistedSalesSnapshot,
+        requestedPeriod,
+      }),
+    })
+
     if (isDefaultRollingSalesPeriod(requestedPeriod)) {
-      persistDatasetSnapshot({
+      const persistedRollingSnapshot = persistDatasetSnapshot({
         storeClientId: secrets.clientId,
         dataset: 'sales',
         scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
@@ -2194,6 +2274,19 @@ export async function refreshSalesRawSnapshotFromApi(
         rows,
         sourceKind: 'api-live-default-window',
         sourceEndpoints,
+      })
+
+      logFboShipmentTrace('sales.snapshot.saved', {
+        storeClientId: secrets.clientId,
+        period: requestedPeriod,
+        itemsCount: Number(persistedRollingSnapshot?.storedRowsCount ?? rows.length),
+        meta: buildSalesSnapshotTraceMeta({
+          rows,
+          scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+          sourceKind: 'api-live-default-window',
+          saveResult: persistedRollingSnapshot,
+          requestedPeriod,
+        }),
       })
     }
 
@@ -2260,7 +2353,7 @@ export async function ensureLocalSalesSnapshotFromApiIfMissing(
 
   if (hasLocalCoverage) {
     const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId, requestedPeriod)
-    persistDatasetSnapshot({
+    const persistedSnapshot = persistDatasetSnapshot({
       storeClientId,
       dataset: 'sales',
       scopeKey: buildDatasetScopeKey(requestedPeriod),
@@ -2268,6 +2361,18 @@ export async function ensureLocalSalesSnapshotFromApiIfMissing(
       rows,
       sourceKind: 'api-raw-cache',
       sourceEndpoints,
+    })
+    logFboShipmentTrace('sales.snapshot.saved', {
+      storeClientId,
+      period: requestedPeriod,
+      itemsCount: Number(persistedSnapshot?.storedRowsCount ?? rows.length),
+      meta: buildSalesSnapshotTraceMeta({
+        rows,
+        scopeKey: buildDatasetScopeKey(requestedPeriod),
+        sourceKind: 'api-raw-cache',
+        saveResult: persistedSnapshot,
+        requestedPeriod,
+      }),
     })
     return {
       refreshed: false,
@@ -2297,7 +2402,7 @@ export function getLocalDatasetRows(
     if (scopeKey && isDefaultRollingSalesPeriod(requestedPeriod)) {
       const rollingRows = readRollingSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
       if (rollingRows && rollingRows.length > 0) {
-        persistDatasetSnapshot({
+        const persistedRollingSnapshot = persistDatasetSnapshot({
           storeClientId,
           dataset,
           scopeKey,
@@ -2305,6 +2410,18 @@ export function getLocalDatasetRows(
           rows: rollingRows,
           sourceKind: 'dataset-snapshot-default-window',
           sourceEndpoints: [],
+        })
+        logFboShipmentTrace('sales.snapshot.saved', {
+          storeClientId,
+          period: requestedPeriod,
+          itemsCount: Number(persistedRollingSnapshot?.storedRowsCount ?? rollingRows.length),
+          meta: buildSalesSnapshotTraceMeta({
+            rows: rollingRows,
+            scopeKey,
+            sourceKind: 'dataset-snapshot-default-window',
+            saveResult: persistedRollingSnapshot,
+            requestedPeriod,
+          }),
         })
         return rollingRows
       }
@@ -2314,7 +2431,7 @@ export function getLocalDatasetRows(
     const hasLocalCoverage = isRequestedSalesPeriodCoveredByRawCache(cacheByEndpoint, requestedPeriod)
     if (cacheByEndpoint.size > 0 && hasLocalCoverage) {
       const { rows, sourceEndpoints } = buildSalesRowsFromLocalRawCache(storeClientId ?? null, requestedPeriod)
-      persistDatasetSnapshot({
+      const persistedSnapshot = persistDatasetSnapshot({
         storeClientId,
         dataset,
         scopeKey,
@@ -2322,6 +2439,18 @@ export function getLocalDatasetRows(
         rows,
         sourceKind: 'api-raw-cache',
         sourceEndpoints,
+      })
+      logFboShipmentTrace('sales.snapshot.saved', {
+        storeClientId,
+        period: requestedPeriod,
+        itemsCount: Number(persistedSnapshot?.storedRowsCount ?? rows.length),
+        meta: buildSalesSnapshotTraceMeta({
+          rows,
+          scopeKey,
+          sourceKind: 'api-raw-cache',
+          saveResult: persistedSnapshot,
+          requestedPeriod,
+        }),
       })
       return rows
     }
