@@ -10,6 +10,8 @@ let db: Database.Database | null = null
 const DEFAULT_LOG_RETENTION_DAYS = 30
 const MAX_JSON_LEN = 20000
 const MAX_API_JSON_LEN = 750000
+const MAX_SNAPSHOT_ROWS_DEFAULT = 20000
+const MAX_SNAPSHOT_ROWS_SALES = 100000
 const REINSTALL_UNINSTALL_SUPPRESS_WINDOW_MS = 10 * 60 * 1000
 
 type AppLogType =
@@ -123,6 +125,12 @@ function safeJsonWithLimit(value: any, limit: number): { text: string | null; tr
     const raw = JSON.stringify({ unserializable: true })
     return { text: raw.slice(0, limit), truncated: raw.length > limit }
   }
+}
+
+function getDatasetSnapshotMaxRows(datasetRaw: unknown): number {
+  const dataset = String(datasetRaw ?? '').trim().toLowerCase()
+  if (dataset === 'sales') return MAX_SNAPSHOT_ROWS_SALES
+  return MAX_SNAPSHOT_ROWS_DEFAULT
 }
 
 function sha256Hex(input: string): string {
@@ -996,10 +1004,11 @@ export function dbSaveDatasetSnapshot(args: {
   const sourceEndpoints = Array.from(new Set((Array.isArray(args.sourceEndpoints) ? args.sourceEndpoints : [])
     .map((value) => String(value ?? '').trim())
     .filter(Boolean)))
-  const maxRows = dataset === 'sales' ? 5000 : 20000
+  const maxRows = getDatasetSnapshotMaxRows(dataset)
   const mergeStrategy = (args.mergeStrategy && String(args.mergeStrategy).trim()
     ? args.mergeStrategy
     : inferDatasetSnapshotMergeStrategy(dataset, sourceKind)) as DatasetSnapshotMergeStrategy
+  const incomingRowsRequestedCount = Array.isArray(args.rows) ? args.rows.length : 0
 
   const existingRow = mustDb().prepare(`
     SELECT rows_json, field_catalog_json, merge_strategy, merge_meta_json
@@ -1080,6 +1089,21 @@ export function dbSaveDatasetSnapshot(args: {
     merged.rowsCount,
     fetchedAt,
   )
+
+  return {
+    dataset,
+    scopeKey,
+    maxRows,
+    mergeStrategy,
+    sourceKind,
+    sourceEndpointsCount: sourceEndpoints.length,
+    existingRowsCount: Number(merged.mergeMeta?.existingRowsCount ?? existingRows.length),
+    incomingRowsRequestedCount,
+    incomingRowsAcceptedCount: Number(merged.mergeMeta?.incomingRowsCount ?? incomingRowsRequestedCount),
+    incomingRowsDroppedByNormalize: Math.max(0, incomingRowsRequestedCount - Number(merged.mergeMeta?.incomingRowsCount ?? incomingRowsRequestedCount)),
+    storedRowsCount: merged.rowsCount,
+    cappedRowsDropped: Number(merged.mergeMeta?.cappedRowsDropped ?? 0),
+  }
 }
 
 export function dbGetDatasetSnapshotRows(args: {
