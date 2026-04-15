@@ -46,6 +46,7 @@ declare global {
     api: {
       localServerConfig: () => Promise<{ ok: boolean; baseUrl?: string; healthUrlLocal?: string; token?: string; webhookPath?: string; webhookUrlLocal?: string; webhookProbePath?: string; webhookProbeUrlLocal?: string; webhookToken?: string; serverStartedAt?: string; lastProbeAt?: string; lastPushHitAt?: string; lastPushAcceptedAt?: string; lastPushAcceptedEvents?: number; error?: string }>
       localServerProbe: () => Promise<{ ok: boolean; status?: string; probeAt?: string; httpStatus?: number; webhookProbeUrlLocal?: string; error?: string }>
+      getBootstrapState: () => Promise<{ ok: boolean; storageMode?: string; storageRoot?: string; dbPath?: string; secretsPath?: string; isFirstRun?: boolean; dbExists?: boolean; hasSecrets?: boolean; productsCount?: number; requiresInitialSync?: boolean; error?: string }>
       secretsStatus: () => Promise<{ hasSecrets: boolean; encryptionAvailable: boolean }>
       saveSecrets: (secrets: { clientId: string; apiKey: string; storeName?: string }) => Promise<{ ok: boolean }>
       loadSecrets: () => Promise<{ ok: boolean; secrets: { clientId: string; apiKey: string; storeName?: string | null } }>
