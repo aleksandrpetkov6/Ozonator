@@ -221,15 +221,17 @@ export default function ProductsGridView(props: Props) {
   React.useEffect(() => {
     if (!openFilterColId) return
     const update = () => updateFloatingPopover()
+    const headEl = headScrollRef.current
+    const bodyEl = bodyScrollRef.current
     window.addEventListener('resize', update)
-    headScrollRef.current?.addEventListener('scroll', update, { passive: true })
-    bodyScrollRef.current?.addEventListener('scroll', update, { passive: true })
+    headEl?.addEventListener('scroll', update, { passive: true })
+    bodyEl?.addEventListener('scroll', update, { passive: true })
     return () => {
       window.removeEventListener('resize', update)
-      headScrollRef.current?.removeEventListener('scroll', update)
-      bodyScrollRef.current?.removeEventListener('scroll', update)
+      headEl?.removeEventListener('scroll', update)
+      bodyEl?.removeEventListener('scroll', update)
     }
-  }, [openFilterColId, headScrollRef, bodyScrollRef, updateFloatingPopover])
+  }, [openFilterColId, updateFloatingPopover])
 
   const openFilterCol = openFilterColId ? visibleCols.find((col) => String(col.id) === openFilterColId) ?? null : null
   const openColumnFilterState = openFilterColId ? getColumnFilterState(openFilterColId) : { needle: '', mode: 'all' as ColumnFilterMode, selectedKeys: [], active: false }
