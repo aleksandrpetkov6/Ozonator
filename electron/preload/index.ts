@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('api', {
   localServerConfig: () => ipcRenderer.invoke('local-server:getConfig'),
   localServerProbe: () => ipcRenderer.invoke('local-server:probe'),
   getBootstrapState: () => ipcRenderer.invoke('app:getBootstrapState'),
+  getBootstrapProgress: () => ipcRenderer.invoke('app:getBootstrapProgress'),
 
   secretsStatus: () => ipcRenderer.invoke('secrets:status'),
   saveSecrets: (secrets: { storeName?: string; clientId: string; apiKey: string }) => ipcRenderer.invoke('secrets:save', secrets),
