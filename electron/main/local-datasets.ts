@@ -1470,6 +1470,14 @@ function buildDatasetScopeKey(requestedPeriod: SalesPeriod | null | undefined): 
   return `${normalized.from ?? ''}|${normalized.to ?? ''}`
 }
 
+function translateSalesDatasetErrorMessage(messageRaw: unknown): string {
+  const message = String(messageRaw ?? '').trim()
+  if (/HTTP\s*400/.test(message)) return 'Ozon не принял часть дополнительной догрузки продаж за выбранный период.'
+  if (/HTTP\s*429/.test(message)) return 'Ozon временно ограничил частоту запросов при обновлении продаж.'
+  if (/timeout/i.test(message)) return 'Ozon не успел ответить при дополнительной догрузке продаж.'
+  return 'Во время дополнительной догрузки продаж возникла неполадка.'
+}
+
 function persistDatasetSnapshot(args: {
   storeClientId?: string | null
   dataset: string
@@ -2130,13 +2138,15 @@ export async function refreshSalesRawSnapshotFromApi(
 
     return { rowsCount: rows.length }
   } catch (e: any) {
+    const technicalMessage = e?.message ?? String(e)
     logFboShipmentTrace('api.refresh.error', {
       storeClientId: secrets.clientId,
       period: requestedPeriod,
       status: 'error',
-      errorMessage: e?.message ?? String(e),
+      errorMessage: translateSalesDatasetErrorMessage(technicalMessage),
       meta: {
         stack: e?.stack ?? null,
+        technicalError: technicalMessage,
       },
     })
     throw e
