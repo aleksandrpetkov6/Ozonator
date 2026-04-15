@@ -18,6 +18,18 @@ preserve_file_done:
   Pop $1
 FunctionEnd
 
+Function un.PreservePersistentFile
+  Exch $1
+  Exch
+  Exch $0
+  IfFileExists "$0" 0 un_preserve_file_done
+  CreateDirectory "${PRESERVE_ROOT}"
+  CopyFiles /SILENT "$0" "$1"
+un_preserve_file_done:
+  Pop $0
+  Pop $1
+FunctionEnd
+
 Function RestorePersistentFile
   Exch $1
   Exch
@@ -110,7 +122,7 @@ uninit_done:
   ${If} $DeleteDbChoice == "0"
     Push "$INSTDIR\data\app.db"
     Push "${PRESERVE_ROOT}"
-    Call PreservePersistentFile
+    Call un.PreservePersistentFile
   ${Else}
     Delete "${PRESERVE_ROOT}\app.db"
     Delete "$INSTDIR\data\app.db"
@@ -119,7 +131,7 @@ uninit_done:
   ${If} $DeleteSecretsChoice == "0"
     Push "$INSTDIR\data\secrets.json"
     Push "${PRESERVE_ROOT}"
-    Call PreservePersistentFile
+    Call un.PreservePersistentFile
   ${Else}
     Delete "${PRESERVE_ROOT}\secrets.json"
     Delete "$INSTDIR\data\secrets.json"
