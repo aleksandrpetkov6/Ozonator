@@ -307,9 +307,17 @@ function buildTraceStepTitle(meta: TraceMeta): string {
 
 function buildTraceStepSummary(meta: TraceMeta): string {
   const stage = normalizeText(meta?.stage)
+  if (stage === 'api.refresh.begin') {
+    return createSentence([
+      normalizeText(meta?.requestedPeriod?.from || meta?.period?.from) || normalizeText(meta?.requestedPeriod?.to || meta?.period?.to)
+        ? `Период: ${normalizeText(meta?.requestedPeriod?.from || meta?.period?.from)}..${normalizeText(meta?.requestedPeriod?.to || meta?.period?.to)}.`
+        : '',
+    ])
+  }
   if (stage === 'api.refresh.list.loaded') {
     return createSentence([
       typeof meta?.fboPostingCount === 'number' ? `Отправлений FBO: ${meta.fboPostingCount}.` : '',
+      normalizeText(meta?.fboAcceptedAtSpan) ? `Период FBO по «Принят в обработку»: ${meta.fboAcceptedAtSpan}.` : '',
       Array.isArray(meta?.samplePostingNumbers) && meta.samplePostingNumbers.length ? `Пример: ${meta.samplePostingNumbers.slice(0, 3).join(', ')}.` : '',
     ])
   }
@@ -334,6 +342,7 @@ function buildTraceStepSummary(meta: TraceMeta): string {
       typeof meta?.reportRowsCount === 'number' ? `Строк отчёта: ${meta.reportRowsCount}.` : '',
       typeof meta?.reportRowsWithDeliveryDate === 'number' ? `Дат доставки найдено: ${meta.reportRowsWithDeliveryDate}.` : '',
       typeof meta?.reportRowsWithStatus === 'number' ? `Статусов найдено: ${meta.reportRowsWithStatus}.` : '',
+      normalizeText(meta?.reportAcceptedAtSpan) ? `Период отчёта по «Принят в обработку»: ${meta.reportAcceptedAtSpan}.` : '',
     ])
   }
   if (stage === 'api.refresh.report.snapshot.persisted') {
@@ -347,6 +356,9 @@ function buildTraceStepSummary(meta: TraceMeta): string {
     return createSentence([
       typeof meta?.deliveryDateResolvedRows === 'number' ? `Дат доставки применено: ${meta.deliveryDateResolvedRows}.` : '',
       typeof meta?.salesRowsWithoutDeliveryDate === 'number' ? `Строк без даты доставки: ${meta.salesRowsWithoutDeliveryDate}.` : '',
+      typeof meta?.salesRowsBeforeStrictFilter === 'number' && typeof meta?.salesRowsAfterStrictFilter === 'number'
+        ? `До фильтрации: ${meta.salesRowsBeforeStrictFilter}, после: ${meta.salesRowsAfterStrictFilter}.`
+        : '',
     ])
   }
   if (stage === 'api.refresh.origin.rows.built' || stage === 'raw-cache.rebuild.origin.rows.built') {
@@ -414,8 +426,11 @@ function buildSectionMetrics(key: TraceCategoryKey, merged: TraceMeta): TraceMet
   const metrics: TraceMetric[] = []
   if (key === 'shipment') {
     pushMetric(metrics, 'Источник', 'API Ozon')
+    if (normalizeText(merged?.requestedPeriodFrom) || normalizeText(merged?.requestedPeriodTo)) pushMetric(metrics, 'Запрошенный период', `${normalizeText(merged?.requestedPeriodFrom)}..${normalizeText(merged?.requestedPeriodTo)}`)
     if (typeof merged?.fboPostingCount === 'number') pushMetric(metrics, 'Отправлений FBO', merged.fboPostingCount)
     if (typeof merged?.mergedFboDetailCount === 'number') pushMetric(metrics, 'Деталей FBO', merged.mergedFboDetailCount)
+    if (normalizeText(merged?.fboAcceptedAtSpan)) pushMetric(metrics, 'FBO: период по «Принят в обработку»', merged.fboAcceptedAtSpan)
+    if (normalizeText(merged?.fbsAcceptedAtSpan)) pushMetric(metrics, 'FBS: период по «Принят в обработку»', merged.fbsAcceptedAtSpan)
     if (typeof merged?.trace?.postingsWithResolvedShipmentDate === 'number') pushMetric(metrics, 'Дат отгрузки найдено', merged.trace.postingsWithResolvedShipmentDate)
     if (typeof merged?.persisted?.shipmentDateCount === 'number') pushMetric(metrics, 'Дат отгрузки записано в БД', merged.persisted.shipmentDateCount)
     if (typeof merged?.persisted?.shipmentTransferEventCount === 'number') pushMetric(metrics, 'Событий отгрузки записано', merged.persisted.shipmentTransferEventCount)
@@ -423,13 +438,20 @@ function buildSectionMetrics(key: TraceCategoryKey, merged: TraceMeta): TraceMet
   }
   if (key === 'delivery') {
     pushMetric(metrics, 'Источник', 'Отчёт postings CSV')
+    if (normalizeText(merged?.requestedPeriodFrom) || normalizeText(merged?.requestedPeriodTo)) pushMetric(metrics, 'Запрошенный период', `${normalizeText(merged?.requestedPeriodFrom)}..${normalizeText(merged?.requestedPeriodTo)}`)
     pushMetric(metrics, 'Режим формирования', formatStrategyLabel(merged?.reportStrategy))
     if (typeof merged?.reportRowsCount === 'number') pushMetric(metrics, 'Строк в отчёте', merged.reportRowsCount)
+    if (normalizeText(merged?.reportAcceptedAtSpan)) pushMetric(metrics, 'Период строк отчёта по «Принят в обработку»', merged.reportAcceptedAtSpan)
+    if (normalizeText(merged?.reportDeliveryDateSpan)) pushMetric(metrics, 'Период строк отчёта по дате доставки', merged.reportDeliveryDateSpan)
     if (typeof merged?.reportRowsWithDeliveryDate === 'number') pushMetric(metrics, 'Строк с датой доставки', merged.reportRowsWithDeliveryDate)
     if (typeof merged?.deliveryDateMatchedRows === 'number') pushMetric(metrics, 'Совпало по posting_number', merged.deliveryDateMatchedRows)
     if (typeof merged?.deliveryDateResolvedRows === 'number') pushMetric(metrics, 'Дат доставки применено', merged.deliveryDateResolvedRows)
     if (typeof merged?.salesRowsWithoutDeliveryDate === 'number') pushMetric(metrics, 'Строк без даты доставки', merged.salesRowsWithoutDeliveryDate)
     if (typeof merged?.reportSnapshotRowsCount === 'number') pushMetric(metrics, 'Строк в snapshot локальной БД', merged.reportSnapshotRowsCount)
+    if (typeof merged?.salesRowsBeforeStrictFilter === 'number') pushMetric(metrics, 'Строк до строгой фильтрации', merged.salesRowsBeforeStrictFilter)
+    if (normalizeText(merged?.salesRowsBeforeStrictFilterSpan)) pushMetric(metrics, 'Диапазон строк до строгой фильтрации', merged.salesRowsBeforeStrictFilterSpan)
+    if (typeof merged?.salesRowsAfterStrictFilter === 'number') pushMetric(metrics, 'Строк после строгой фильтрации', merged.salesRowsAfterStrictFilter)
+    if (normalizeText(merged?.salesRowsAfterStrictFilterSpan)) pushMetric(metrics, 'Диапазон строк после строгой фильтрации', merged.salesRowsAfterStrictFilterSpan)
     if (typeof merged?.reportSnapshotPersistedToApiRawCache === 'boolean') pushMetric(metrics, 'Snapshot записан в api_raw_cache', merged.reportSnapshotPersistedToApiRawCache ? 'Да' : 'Нет')
     if (typeof merged?.reportSnapshotResponseTruncated === 'number') pushMetric(metrics, 'Snapshot в api_raw_cache обрезан', Number(merged.reportSnapshotResponseTruncated) ? 'Да' : 'Нет')
     if (typeof merged?.reportSnapshotResponseBodyLen === 'number') pushMetric(metrics, 'Размер snapshot в api_raw_cache', merged.reportSnapshotResponseBodyLen)
@@ -477,6 +499,13 @@ function buildSectionNotes(key: TraceCategoryKey, merged: TraceMeta): string[] {
     if (sample.length) notes.push(`Без даты отгрузки: ${sample.join(', ')}.`)
   }
   if (key === 'delivery') {
+    if (typeof merged?.reportSnapshotPeriodMatchesRequested === 'boolean') {
+      notes.push(`Snapshot отчёта соответствует запрошенному периоду: ${merged.reportSnapshotPeriodMatchesRequested ? 'да' : 'нет'}.`)
+    }
+    const failedSegmentSample = Array.isArray(merged?.failedSegmentSample) ? merged.failedSegmentSample.slice(0, 6) : []
+    if (failedSegmentSample.length) {
+      notes.push(`Проблемные куски периода: ${failedSegmentSample.map((item: any) => `${normalizeText(item?.label)} → ${normalizeText(item?.error)}`).filter(Boolean).join(' | ')}.`)
+    }
     const sample = uniqueSample(merged?.missingDeliveryDatePostingNumbers, 4)
     if (sample.length) notes.push(`Без даты доставки: ${sample.join(', ')}.`)
     const dateSample = uniqueSample(merged?.reportDeliveryDateSample, 3)
@@ -491,6 +520,9 @@ function buildSectionNotes(key: TraceCategoryKey, merged: TraceMeta): string[] {
     if (headerSample.length) notes.push(`Заголовки CSV: ${headerSample.join(', ')}.`)
     const savedCsvPaths = uniqueSample(merged?.reportSavedCsvPaths ?? merged?.reportSnapshotSavedCsvPaths, 4)
     if (savedCsvPaths.length) notes.push(`CSV сохранён на диск: ${savedCsvPaths.join(' | ')}.`)
+    if (Number(merged?.salesRowsBeforeStrictFilter) > 0 && Number(merged?.salesRowsAfterStrictFilter) === 0) {
+      notes.push('После строгой фильтрации строки исчезли полностью. Сравни запрошенный период и фактический диапазон дат строк выше.')
+    }
   }
   if (key === 'origin') {
     const sample = uniqueSample(merged?.reportShipmentOriginSample, 4)

@@ -105,6 +105,13 @@ function rowDay(value: unknown): string {
  const parsed = new Date(raw)
  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10)
 }
+function getSalesRowScopeDay(row: GridRow): string {
+ const salesRow = row as any
+ return rowDay(salesRow?.in_process_at)
+   || rowDay(salesRow?.accepted_at)
+   || rowDay(salesRow?.delivery_date)
+   || rowDay(salesRow?.shipment_date)
+}
 function scopeSalesRows(rows: GridRow[], period?: { from?: string; to?: string }): GridRow[] {
  let from = normDay(period?.from)
  let to = normDay(period?.to)
@@ -114,7 +121,7 @@ function scopeSalesRows(rows: GridRow[], period?: { from?: string; to?: string }
  if (!from || !to) return rows
  if (from > to) [from, to] = [to, from]
  return rows.filter((row) => {
-   const day = rowDay((row as any)?.in_process_at)
+   const day = getSalesRowScopeDay(row)
    return !!day && day >= from && day <= to
  })
 }
