@@ -92,7 +92,7 @@ type Props = {
   bodyScrollRef: React.RefObject<HTMLDivElement>
   bodyInnerRef: React.RefObject<HTMLDivElement>
   bodyTableRef: React.RefObject<HTMLTableElement>
-  filterPopoverRef: React.RefObject<HTMLDivElement | null>
+  filterPopoverRef: React.RefObject<HTMLDivElement>
   getHeaderTitleText: (c: ColDef) => string
   getRowKey: (p: GridRow, absoluteRowIndex: number) => string
   cellText: (p: GridRow, colId: ColDef['id']) => { text: string; title?: string }
