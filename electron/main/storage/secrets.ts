@@ -1,9 +1,8 @@
 import { safeStorage } from 'electron'
-import { existsSync, readFileSync, writeFileSync, unlinkSync, copyFileSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { z } from 'zod'
 import type { Secrets } from '../types'
-import { ensurePersistentStorageReady, getLegacyPersistentRootDir, getLegacyUserDataDir, getPersistentSecretsPath } from './paths'
+import { ensurePersistentStorageReady, getPersistentSecretsPath } from './paths'
 
 const SecretsFileSchema = z.object({
   clientIdEncB64: z.string(),
@@ -20,24 +19,6 @@ function secretsPath() {
 
 function ensureSecretsReady() {
   ensurePersistentStorageReady()
-
-  const target = secretsPath()
-  if (existsSync(target)) return
-
-  const candidates = [
-    join(getLegacyPersistentRootDir(), 'secrets.json'),
-    join(getLegacyUserDataDir(), 'secrets.json'),
-  ]
-
-  for (const src of candidates) {
-    if (!existsSync(src)) continue
-    try {
-      copyFileSync(src, target)
-      return
-    } catch {
-      // попробуем следующий кандидат
-    }
-  }
 }
 
 function writeSecretsFile(payload: SecretsFile) {

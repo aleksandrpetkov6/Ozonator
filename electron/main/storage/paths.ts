@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { copyFileSync, existsSync, mkdirSync } from 'fs'
+import { mkdirSync } from 'fs'
 import { dirname, join } from 'path'
 
 const LEGACY_VENDOR_ROOT_SEGMENTS = ['Clothes Hub', 'OzonatorPersistent']
@@ -40,39 +40,18 @@ export function getLifecycleMarkerPath(kind: 'installer' | 'uninstall') {
   return join(getLifecycleMarkerRootDir(), `${kind}.marker`)
 }
 
-function tryCopyFileIfMissing(src: string, dst: string) {
-  if (existsSync(dst) || !existsSync(src)) return false
-  copyFileSync(src, dst)
-  return true
+export function ensurePersistentStorageReady() {
+  mkdirSync(getPersistentRootDir(), { recursive: true })
 }
 
-export function ensurePersistentStorageReady() {
+export function readPersistentStorageBootstrapState() {
   const root = getPersistentRootDir()
-  mkdirSync(root, { recursive: true })
+  const dbPath = join(root, 'app.db')
+  const secretsPath = join(root, 'secrets.json')
 
-  const targetDb = getPersistentDbPath()
-  if (!existsSync(targetDb)) {
-    const candidates = [
-      join(getLegacyPersistentRootDir(), 'app.db'),
-      join(getLegacyUserDataDir(), 'app.db'),
-    ]
-
-    for (const legacyDb of candidates) {
-      if (tryCopyFileIfMissing(legacyDb, targetDb)) {
-        for (const name of ['app.db-wal', 'app.db-shm']) {
-          const legacyDir = dirname(legacyDb)
-          const src = join(legacyDir, name)
-          const dst = join(root, name)
-          if (!existsSync(dst) && existsSync(src)) {
-            try {
-              copyFileSync(src, dst)
-            } catch {
-              // не критично — БД обычно уже консистентна без wal/shm
-            }
-          }
-        }
-        break
-      }
-    }
+  return {
+    root,
+    dbPath,
+    secretsPath,
   }
 }
