@@ -77,6 +77,7 @@ async function tryCallLocalServer(method: 'GET' | 'POST', path: string, body?: a
 contextBridge.exposeInMainWorld('api', {
   localServerConfig: () => ipcRenderer.invoke('local-server:getConfig'),
   localServerProbe: () => ipcRenderer.invoke('local-server:probe'),
+  getBootstrapState: () => ipcRenderer.invoke('app:getBootstrapState'),
 
   secretsStatus: () => ipcRenderer.invoke('secrets:status'),
   saveSecrets: (secrets: { storeName?: string; clientId: string; apiKey: string }) => ipcRenderer.invoke('secrets:save', secrets),
