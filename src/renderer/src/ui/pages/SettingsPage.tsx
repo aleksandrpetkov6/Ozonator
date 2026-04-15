@@ -56,6 +56,21 @@ export default function SettingsPage() {
 
   const [status, setStatus] = useState<string>('')
   const [err, setErr] = useState<string>('')
+  const [bootstrapRequired, setBootstrapRequired] = useState(false)
+  const [skipInitialSync, setSkipInitialSync] = useState(false)
+  const [bootstrapSaving, setBootstrapSaving] = useState(false)
+
+
+  async function loadBootstrapState() {
+    try {
+      const resp = await window.api.getBootstrapState()
+      if (!resp.ok) return
+      setBootstrapRequired(!!resp.requiresInitialSync)
+      setSkipInitialSync(!!resp.skipInitialSync)
+    } catch {
+      // ignore
+    }
+  }
 
   async function load() {
     try {
@@ -85,6 +100,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     load()
+    void loadBootstrapState()
   }, [])
 
   useEffect(() => {
@@ -120,6 +136,7 @@ export default function SettingsPage() {
 
         load()
 
+        await loadBootstrapState()
         window.dispatchEvent(new Event('ozon:store-updated'))
         window.dispatchEvent(new Event('ozon:logs-updated'))
       } else {
@@ -146,9 +163,27 @@ export default function SettingsPage() {
       } catch {
         // ignore
       }
+      await loadBootstrapState()
       window.dispatchEvent(new Event('ozon:store-updated'))
     } catch (e: any) {
       setErr(e?.message ?? String(e))
+    }
+  }
+
+
+  async function onToggleSkipInitialSync(nextValue: boolean) {
+    setBootstrapSaving(true)
+    setErr('')
+    try {
+      const resp = await window.api.setBootstrapSkipInitialSync(nextValue)
+      if (!resp.ok) throw new Error(resp.error ?? 'Не удалось сохранить настройку первичной загрузки')
+      setSkipInitialSync(!!resp.skipInitialSync)
+      await loadBootstrapState()
+      window.dispatchEvent(new Event('ozon:store-updated'))
+    } catch (e: any) {
+      setErr(e?.message ?? String(e))
+    } finally {
+      setBootstrapSaving(false)
     }
   }
 
@@ -179,6 +214,25 @@ export default function SettingsPage() {
         </button>
         <button onClick={onDelete}>Стереть ключи</button>
       </div>
+
+      {bootstrapRequired && (
+        <div className="notice" style={{ marginTop: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: bootstrapSaving ? 'progress' : 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={skipInitialSync}
+              disabled={bootstrapSaving}
+              onChange={(e) => {
+                void onToggleSkipInitialSync(e.target.checked)
+              }}
+            />
+            <span>Базы не загружать</span>
+          </label>
+          <div style={{ marginTop: 8, opacity: 0.8 }}>
+            Можно сохранить ключи и зайти в программу без первичной загрузки базы. Загрузишь базу позже вручную.
+          </div>
+        </div>
+      )}
 
       {status && (
         <div className="notice" style={{ marginTop: 12 }}>
