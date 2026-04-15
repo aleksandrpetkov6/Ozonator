@@ -6,7 +6,7 @@ import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMar
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
-import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, ingestOzonFboPushPayload, logFboShipmentTrace, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
+import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, hasExactLocalSalesSnapshot, ingestOzonFboPushPayload, logFboShipmentTrace, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 import { getLifecycleMarkerRootDir, getPersistentRootDir, getPersistentDbPath, readPersistentStorageBootstrapState } from './storage/paths'
 import { startLocalHttpServer, type LocalHttpServerHandle } from './local-http-server'
 let mainWindow: BrowserWindow | null = null
@@ -17,6 +17,7 @@ let isQuitting = false
 let syncProductsInFlight: Promise<any> | null = null
 const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
 let latestSalesWarmupScopeKey = ''
+let latestRequestedSalesPeriod: SalesPeriod | null = null
 const LOCAL_SERVER_PORT_KEY = 'local_server.port'
 const LOCAL_SERVER_TOKEN_KEY = 'local_server.token'
 const LOCAL_SERVER_WEBHOOK_TOKEN_KEY = 'local_server.webhook_token'
@@ -888,6 +889,22 @@ const to = typeof period?.to === 'string' ? period.to.trim() : ''
 return `${from}|${to}`
 }
 
+function normalizeSalesPeriodInput(period?: SalesPeriod | null): SalesPeriod | null {
+const from = typeof period?.from === 'string' ? period.from.trim() : ''
+const to = typeof period?.to === 'string' ? period.to.trim() : ''
+return from && to ? { from, to } : null
+}
+
+function rememberRequestedSalesPeriod(period?: SalesPeriod | null) {
+const normalized = normalizeSalesPeriodInput(period)
+if (normalized) latestRequestedSalesPeriod = normalized
+return normalized
+}
+
+function getPreferredBackgroundSalesPeriod() {
+return latestRequestedSalesPeriod ?? getDefaultRollingSalesPeriod()
+}
+
 function warmupSalesSnapshotInBackground(period?: SalesPeriod | null, reason = 'sales-read') {
 const scopeKey = getSalesWarmupScopeKey(period)
 latestSalesWarmupScopeKey = scopeKey
@@ -1131,7 +1148,8 @@ const localSnapshots = refreshCoreLocalDatasetSnapshots(secrets.clientId)
 let salesRowsCount = 0
 let salesSyncError: string | null = null
 try {
-const salesRefresh = await refreshSalesRawSnapshotFromApi(secrets, args?.salesPeriod ?? null)
+const requestedSalesPeriod = rememberRequestedSalesPeriod(args?.salesPeriod ?? null)
+const salesRefresh = await refreshSalesRawSnapshotFromApi(secrets, requestedSalesPeriod ?? null)
 salesRowsCount = Number(salesRefresh?.rowsCount ?? 0)
 } catch (salesErr: any) {
 salesSyncError = salesErr?.message ?? String(salesErr)
@@ -1186,7 +1204,7 @@ if (!mainWindow || mainWindow.isDestroyed()) return
 if (!hasSecrets()) return
 const online = await checkInternet()
 if (!online) return
-const resp = await performProductsSync({ salesPeriod: getDefaultRollingSalesPeriod() })
+const resp = await performProductsSync({ salesPeriod: getPreferredBackgroundSalesPeriod() })
 if (resp?.ok) {
 startupLog('background-sync.ok', {
 reason,
@@ -1237,15 +1255,16 @@ function translateSalesRefreshError(messageRaw: unknown, rowsCount = 0): string 
 }
 
 async function handleRefreshSales(period: SalesPeriod | null | undefined) {
+  const requestedPeriod = rememberRequestedSalesPeriod(period ?? null)
   try {
     const secrets = loadSecrets()
-    const refreshed = await refreshSalesRawSnapshotFromApi(secrets, period ?? null)
+    const refreshed = await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod ?? null)
     return { ok: true, rowsCount: Number(refreshed?.rowsCount ?? 0), rateLimited: false }
   } catch (e: any) {
     const technicalMessage = e?.message ?? String(e)
     const isRateLimited = /HTTP\s*429/.test(technicalMessage)
     try {
-      const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+      const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: requestedPeriod ?? null })
       if (Array.isArray(rows) && rows.length > 0) {
         const friendly = translateSalesRefreshError(technicalMessage, rows.length)
         startupLog('sales.refresh.nonblocking_warning', {
@@ -1267,16 +1286,18 @@ async function handleRefreshSales(period: SalesPeriod | null | undefined) {
 async function handleGetDatasetRows(datasetRaw: unknown, period: SalesPeriod | null | undefined) {
   const dataset = String(datasetRaw ?? 'products').trim() || 'products'
   if (dataset === 'sales') {
-    const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+    const requestedPeriod = rememberRequestedSalesPeriod(period ?? null)
+    const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: requestedPeriod ?? null })
     const MAX_UI_ROWS = 8000
     const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
     const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
     if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length })
-    const shouldWarmup = !Array.isArray(rowsAll) || rowsAll.length === 0
+    const hasExactSnapshot = hasExactLocalSalesSnapshot(getActiveStoreClientIdSafe(), requestedPeriod ?? null)
+    const shouldWarmup = !hasExactSnapshot
     if (shouldWarmup) {
-      setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getDatasetRows'), 0)
+      setTimeout(() => warmupSalesSnapshotInBackground(requestedPeriod ?? null, 'local-server:getDatasetRows'), 0)
     }
-    return { ok: true, dataset, rows, truncated, totalRows: rowsAll.length, warmupScheduled: shouldWarmup }
+    return { ok: true, dataset, rows, truncated, totalRows: rowsAll.length, warmupScheduled: shouldWarmup, exactSnapshot: hasExactSnapshot }
   }
   const { rows } = readDatasetRowsSafe(dataset, period ?? null)
   return { ok: true, dataset, rows }
@@ -1288,16 +1309,18 @@ async function handleGetProducts() {
 }
 
 async function handleGetSales(period: SalesPeriod | null | undefined) {
-  const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null })
+  const requestedPeriod = rememberRequestedSalesPeriod(period ?? null)
+  const rowsAll = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: requestedPeriod ?? null })
   const MAX_UI_ROWS = 8000
   const truncated = Array.isArray(rowsAll) && rowsAll.length > MAX_UI_ROWS
   const rows = truncated ? rowsAll.slice(0, MAX_UI_ROWS) : rowsAll
   if (truncated) startupLog('sales.ui.truncated', { total: rowsAll.length, sent: rows.length, reason: 'local-server:getSales' })
-  const shouldWarmup = !Array.isArray(rowsAll) || rowsAll.length === 0
+  const hasExactSnapshot = hasExactLocalSalesSnapshot(getActiveStoreClientIdSafe(), requestedPeriod ?? null)
+  const shouldWarmup = !hasExactSnapshot
   if (shouldWarmup) {
-    setTimeout(() => warmupSalesSnapshotInBackground(period ?? null, 'local-server:getSales'), 0)
+    setTimeout(() => warmupSalesSnapshotInBackground(requestedPeriod ?? null, 'local-server:getSales'), 0)
   }
-  return { ok: true, rows, truncated, totalRows: rowsAll.length, warmupScheduled: shouldWarmup }
+  return { ok: true, rows, truncated, totalRows: rowsAll.length, warmupScheduled: shouldWarmup, exactSnapshot: hasExactSnapshot }
 }
 
 async function handleGetReturns() {
