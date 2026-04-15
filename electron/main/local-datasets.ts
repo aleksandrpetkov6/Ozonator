@@ -2386,6 +2386,18 @@ export async function ensureLocalSalesSnapshotFromApiIfMissing(
   }
 }
 
+export function hasExactLocalSalesSnapshot(
+  storeClientId: string | null | undefined,
+  requestedPeriod: SalesPeriod | null | undefined,
+): boolean {
+  const rows = dbGetDatasetSnapshotRows({
+    storeClientId: storeClientId ?? null,
+    dataset: 'sales',
+    scopeKey: buildDatasetScopeKey(requestedPeriod),
+  })
+  return Array.isArray(rows)
+}
+
 export function getLocalDatasetRows(
   storeClientId: string | null | undefined,
   datasetRaw: LocalDatasetName,
@@ -2399,9 +2411,9 @@ export function getLocalDatasetRows(
     const exactSnapshotRows = readScopedSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
     if (exactSnapshotRows) return exactSnapshotRows
 
-    if (scopeKey && isDefaultRollingSalesPeriod(requestedPeriod)) {
-      const rollingRows = readRollingSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
-      if (rollingRows && rollingRows.length > 0) {
+    const rollingRows = readRollingSalesSnapshotRows(storeClientId ?? null, requestedPeriod)
+    if (rollingRows && rollingRows.length > 0) {
+      if (scopeKey && isDefaultRollingSalesPeriod(requestedPeriod)) {
         const persistedRollingSnapshot = persistDatasetSnapshot({
           storeClientId,
           dataset,
@@ -2423,8 +2435,20 @@ export function getLocalDatasetRows(
             requestedPeriod,
           }),
         })
-        return rollingRows
+      } else {
+        logFboShipmentTrace('sales.read.default_snapshot_fallback', {
+          storeClientId: storeClientId ?? null,
+          period: requestedPeriod,
+          itemsCount: rollingRows.length,
+          meta: buildSalesReadTraceMeta({
+            rows: rollingRows,
+            scopeKey: SALES_DEFAULT_ROLLING_SCOPE_KEY,
+            sourceKind: 'dataset-snapshot-default-window-fallback',
+            requestedPeriod,
+          }),
+        })
       }
+      return rollingRows
     }
 
     const cacheByEndpoint = getSalesSnapshotMap(storeClientId ?? null)
