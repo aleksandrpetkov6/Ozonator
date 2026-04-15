@@ -49,8 +49,8 @@ const SNAPSHOT_CONTRACTS: Record<string, DataEntityContract> = {
     entityKind: 'snapshot',
     schemaVersion: 2,
     defaultMergeStrategy: 'incremental_upsert_backfill',
-    stableKeyGroups: [['delivery_model', 'posting_number', 'sku', 'offer_id', 'name'], ['posting_number', 'sku'], ['posting_number', 'offer_id']],
-    notes: 'Sales snapshot keeps authoritative append/update semantics by posting/item key and allows backfill of later fields.',
+    stableKeyGroups: [['posting_number', 'sku'], ['posting_number', 'offer_id'], ['delivery_model', 'posting_number', 'sku']],
+    notes: 'Sales snapshot keeps additive append/update semantics by posting/item key and allows backfill of later fields without depending on mutable name/article/qty columns.',
   },
 }
 

@@ -149,6 +149,9 @@ function persistSalesPostingsCsvArtifacts(artifacts: SalesPostingsReportDownload
     content: String(artifact?.csvText ?? ''),
     headers: Array.isArray(artifact?.headerNames) ? artifact.headerNames.map((v) => normalizeTextValue(v)).filter(Boolean) : [],
     reportCode: normalizeTextValue(artifact?.reportCode),
+    mergeMode: 'csv_append_missing' as const,
+    identityHeaders: ['Номер отправления', 'SKU'],
+    preserveOtherFiles: true,
   }))
 
   const saved = saveCurrentPersistentArtifacts(prepared)
