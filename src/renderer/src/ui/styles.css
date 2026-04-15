@@ -845,53 +845,42 @@ button:disabled{
 }
 
 .thFilterBtn{
-  width: 20px;
-  height: 20px;
-  min-width: 20px;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
   padding: 0;
-  border-radius: 999px;
-  border: 1px solid rgba(60,60,67,.14);
-  background: rgba(255,255,255,.78);
-  color: rgba(60,60,67,.72);
+  border: none;
+  background: transparent;
+  color: rgba(60,60,67,.62);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   position: relative;
   flex: 0 0 auto;
-  transition: transform .12s ease, background .16s ease, border-color .16s ease, color .16s ease;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: color .14s ease, opacity .14s ease, transform .12s ease;
 }
 
 .thFilterBtn:hover{
-  background: rgba(255,255,255,1);
-  border-color: rgba(60,60,67,.24);
-  transform: translateY(-1px);
+  color: rgba(28,28,30,.88);
+  opacity: 1;
 }
 
 .thFilterBtn:active{
-  transform: translateY(0) scale(.99);
+  transform: scale(.96);
 }
 
 .thFilterBtn.active{
   color: rgba(10,100,214,.96);
-  border-color: rgba(10,132,255,.34);
-  background: rgba(10,132,255,.12);
 }
 
 .filterGlyph{
-  width: 10px;
-  height: 10px;
+  width: 13px;
+  height: 13px;
   display: block;
-}
-
-.thFilterDot{
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--blue);
+  overflow: visible;
 }
 
 .columnFilterPopover{
@@ -907,6 +896,10 @@ button:disabled{
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   z-index: 40;
+}
+
+.columnFilterPopoverFloating{
+  right: auto;
 }
 
 .columnFilterHeader{
