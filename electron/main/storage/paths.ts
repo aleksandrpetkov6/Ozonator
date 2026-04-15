@@ -18,7 +18,12 @@ export function getLifecycleMarkerRootDir() {
 }
 
 function getInstallRootDir() {
-  return dirname(app.getPath('exe'))
+  const exeDir = dirname(app.getPath('exe'))
+  const dirName = basename(exeDir).trim().toLowerCase()
+  if (dirName === 'ozon-seller-os-mvp0') {
+    return dirname(exeDir)
+  }
+  return exeDir
 }
 
 export function getPersistentRootDir() {
