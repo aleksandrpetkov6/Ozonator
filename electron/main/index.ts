@@ -6,7 +6,7 @@ import { ensureDb, dbGetAdminSettings, dbSaveAdminSettings, dbIngestLifecycleMar
 import { deleteSecrets, hasSecrets, loadSecrets, saveSecrets, updateStoreName } from './storage/secrets'
 import { ozonGetStoreName, ozonPlacementZoneInfo, ozonProductInfoList, ozonProductList, ozonTestAuth, ozonWarehouseList, setOzonApiCaptureHook } from './ozon'
 import { type SalesPeriod } from './sales-sync'
-import { ensureLocalSalesSnapshotFromApiIfMissing, getDefaultRollingSalesPeriod, getLocalDatasetRows, hasExactLocalSalesSnapshot, ingestOzonFboPushPayload, logFboShipmentTrace, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
+import { getDefaultRollingSalesPeriod, getLocalDatasetRows, hasExactLocalSalesSnapshot, ingestOzonFboPushPayload, logFboShipmentTrace, refreshCoreLocalDatasetSnapshots, refreshSalesRawSnapshotFromApi } from './local-datasets'
 import { getLifecycleMarkerRootDir, getPersistentRootDir, getPersistentDbPath, readPersistentStorageBootstrapState } from './storage/paths'
 import { startLocalHttpServer, type LocalHttpServerHandle } from './local-http-server'
 let mainWindow: BrowserWindow | null = null
@@ -15,6 +15,8 @@ let startupShowTimer: NodeJS.Timeout | null = null
 let backgroundSyncTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let syncProductsInFlight: Promise<any> | null = null
+let salesRefreshInFlight: Promise<{ rowsCount: number }> | null = null
+let salesRefreshInFlightScopeKey = ''
 const salesSnapshotWarmupInFlight = new Map<string, Promise<void>>()
 let latestSalesWarmupScopeKey = ''
 let latestRequestedSalesPeriod: SalesPeriod | null = null
@@ -25,6 +27,7 @@ const LOCAL_SERVER_WEBHOOK_DIAG_KEY = 'local_server.webhook_diag'
 const DEFAULT_LOCAL_SERVER_PORT = 45711
 const INSTALLER_CLOSE_REQUEST_FLAG = '--installer-close-request'
 const BOOTSTRAP_SKIP_INITIAL_SYNC_KEY = 'bootstrap.skip_initial_sync'
+const SALES_PREFERRED_PERIOD_KEY = 'sales.preferred_period'
 const hasInstallerCloseRequestFlag = process.argv.includes(INSTALLER_CLOSE_REQUEST_FLAG)
 let installerShutdownInFlight: Promise<void> | null = null
 let gracefulShutdownInFlight: Promise<void> | null = null
@@ -622,6 +625,7 @@ startupLog('safeStorage.unavailable')
 }
 ensureDb()
 startupLog('ensureDb.ok', getAppBootstrapState())
+startupLog('sales.preferred_period.loaded', loadPersistedRequestedSalesPeriod())
 try {
   const localServerRuntime = getOrCreateLocalServerRuntimeConfig()
   localHttpServer = await startLocalHttpServer({
@@ -897,12 +901,66 @@ return from && to ? { from, to } : null
 
 function rememberRequestedSalesPeriod(period?: SalesPeriod | null) {
 const normalized = normalizeSalesPeriodInput(period)
-if (normalized) latestRequestedSalesPeriod = normalized
+if (normalized) {
+latestRequestedSalesPeriod = normalized
+persistRequestedSalesPeriod(normalized)
+}
 return normalized
 }
 
 function getPreferredBackgroundSalesPeriod() {
-return latestRequestedSalesPeriod ?? getDefaultRollingSalesPeriod()
+return latestRequestedSalesPeriod ?? loadPersistedRequestedSalesPeriod() ?? getDefaultRollingSalesPeriod()
+}
+
+function loadPersistedRequestedSalesPeriod() {
+try {
+const raw = dbGetAppSetting(SALES_PREFERRED_PERIOD_KEY)
+if (!raw) return null
+const parsed = JSON.parse(raw) as SalesPeriod
+const normalized = normalizeSalesPeriodInput(parsed)
+if (normalized) latestRequestedSalesPeriod = normalized
+return normalized
+} catch {
+return null
+}
+}
+
+function persistRequestedSalesPeriod(period?: SalesPeriod | null) {
+const normalized = normalizeSalesPeriodInput(period)
+if (!normalized) return null
+try {
+dbSetAppSetting(SALES_PREFERRED_PERIOD_KEY, JSON.stringify(normalized))
+} catch {}
+return normalized
+}
+
+async function runSalesRefreshSerial(secrets: ReturnType<typeof loadSecrets>, period?: SalesPeriod | null, reason = 'sales-refresh') {
+const requestedPeriod = normalizeSalesPeriodInput(period) ?? getPreferredBackgroundSalesPeriod()
+const requestedScopeKey = getSalesWarmupScopeKey(requestedPeriod)
+if (salesRefreshInFlight) {
+try {
+await salesRefreshInFlight
+} catch {
+// ignore and continue with current request
+}
+if (hasExactLocalSalesSnapshot(getActiveStoreClientIdSafe(), requestedPeriod ?? null)) {
+const rows = getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: requestedPeriod ?? null })
+startupLog('sales.refresh.serial.reused', { reason, scopeKey: requestedScopeKey, rowsCount: Array.isArray(rows) ? rows.length : 0 })
+return { rowsCount: Array.isArray(rows) ? rows.length : 0 }
+}
+}
+const job = (async () => await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod ?? null))()
+salesRefreshInFlight = job
+salesRefreshInFlightScopeKey = requestedScopeKey
+startupLog('sales.refresh.serial.start', { reason, scopeKey: requestedScopeKey, period: requestedPeriod })
+try {
+return await job
+} finally {
+if (salesRefreshInFlight === job) {
+ salesRefreshInFlight = null
+ salesRefreshInFlightScopeKey = ''
+}
+}
 }
 
 function warmupSalesSnapshotInBackground(period?: SalesPeriod | null, reason = 'sales-read') {
@@ -926,8 +984,11 @@ secrets = null
 if (!secrets) return
 
 try {
-const warmed = await ensureLocalSalesSnapshotFromApiIfMissing(secrets, period ?? null)
-if (warmed?.refreshed) {
+const exactBefore = hasExactLocalSalesSnapshot(getActiveStoreClientIdSafe(), period ?? null)
+const warmed = exactBefore
+  ? { refreshed: false, rowsCount: getLocalDatasetRows(getActiveStoreClientIdSafe(), 'sales', { period: period ?? null }).length }
+  : await runSalesRefreshSerial(secrets, period ?? null, `warmup:${reason}`)
+if (Number(warmed?.rowsCount ?? 0) > 0) {
 const isLatestScope = latestSalesWarmupScopeKey === scopeKey
 startupLog('sales-snapshot-warmup.refreshed', {
 reason,
@@ -1149,7 +1210,7 @@ let salesRowsCount = 0
 let salesSyncError: string | null = null
 try {
 const requestedSalesPeriod = rememberRequestedSalesPeriod(args?.salesPeriod ?? null)
-const salesRefresh = await refreshSalesRawSnapshotFromApi(secrets, requestedSalesPeriod ?? null)
+const salesRefresh = await runSalesRefreshSerial(secrets, requestedSalesPeriod ?? null, 'syncProducts')
 salesRowsCount = Number(salesRefresh?.rowsCount ?? 0)
 } catch (salesErr: any) {
 salesSyncError = salesErr?.message ?? String(salesErr)
@@ -1258,7 +1319,7 @@ async function handleRefreshSales(period: SalesPeriod | null | undefined) {
   const requestedPeriod = rememberRequestedSalesPeriod(period ?? null)
   try {
     const secrets = loadSecrets()
-    const refreshed = await refreshSalesRawSnapshotFromApi(secrets, requestedPeriod ?? null)
+    const refreshed = await runSalesRefreshSerial(secrets, requestedPeriod ?? null, 'refreshSales')
     return { ok: true, rowsCount: Number(refreshed?.rowsCount ?? 0), rateLimited: false }
   } catch (e: any) {
     const technicalMessage = e?.message ?? String(e)
